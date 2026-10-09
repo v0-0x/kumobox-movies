@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
@@ -42,7 +42,7 @@ func newTestManager(t *testing.T, edit func(*config.Settings)) (*Manager, *fakeL
 		t.Fatal(err)
 	}
 	hub := events.NewHub()
-	m := NewManager(settings, history.NewStore(d), d, anilist.NewPlatform(d, hub), hub)
+	m := NewManager(settings, history.NewStore(d), d, catalog.NewPlatform(d, hub, settings), hub)
 	m.trackGuard = 50 * time.Millisecond
 	m.trackSettle = 200 * time.Millisecond
 	l := newFakeLauncher(t)

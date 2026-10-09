@@ -6,19 +6,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/history"
-	"github.com/v0-0x/kumobox-movies/server/internal/metadata"
 )
 
-// Service builds the views the UI needs by combining the AniList list,
-// local files, episode metadata and watch history.
+// Service builds the views the UI needs by combining the list, the local
+// files, the episodes of TMDB's seasons and the watch history.
 type Service struct {
 	Store    *Store
 	Scanner  *Scanner
-	Platform *anilist.Platform
-	Meta     *metadata.Service
+	Platform *catalog.Platform
 	History  *history.Store
 	DB       *db.DB // items removed from "Continue watching"
 	// Remote: the files other KumoBox apps on the network share with this one
@@ -28,7 +26,11 @@ type Service struct {
 	hiddenMu sync.Mutex
 }
 
+// EpisodeView is an episode of the title page (a movie has one). Key is
+// the episode key (see catalog), Season and Number the episode it is.
 type EpisodeView struct {
+	Key      int            `json:"key"`
+	Season   int            `json:"season"`
 	Number   int            `json:"number"`
 	Title    string         `json:"title"`
 	Image    string         `json:"image"`
@@ -44,56 +46,120 @@ type EpisodeView struct {
 	HasFile  bool           `json:"hasFile"`
 }
 
+// Images is the artwork of a title page.
+type Images struct {
+	Banner    string `json:"banner"`
+	Poster    string `json:"poster"`
+	Fanart    string `json:"fanart"`
+	Clearlogo string `json:"clearlogo"`
+}
+
+// Mappings are a title's ids on other sites.
+type Mappings struct {
+	TmdbID int    `json:"tmdbId"`
+	ImdbID string `json:"imdbId,omitempty"`
+	TvdbID int    `json:"tvdbId,omitempty"`
+}
+
 type EntryView struct {
-	Media       *anilist.Media     `json:"media"`
-	ListEntry   *anilist.ListEntry `json:"listEntry"`
+	Media       *catalog.Media     `json:"media"`
+	ListEntry   *catalog.ListEntry `json:"listEntry"`
 	Episodes    []*EpisodeView     `json:"episodes"`
 	Specials    []*EpisodeView     `json:"specials"`
 	Others      []*EpisodeView     `json:"others"`
 	NextEpisode *EpisodeView       `json:"nextEpisode"`
 	LocalCount  int                `json:"localCount"`
 	// SharedCount: files of it other KumoBox apps share with this one.
-	SharedCount  int               `json:"sharedCount"`
-	Images       metadata.Images   `json:"images"`
-	Mappings     metadata.Mappings `json:"mappings"`
-	MetadataNote string            `json:"metadataNote,omitempty"`
+	SharedCount  int      `json:"sharedCount"`
+	Images       Images   `json:"images"`
+	Mappings     Mappings `json:"mappings"`
+	MetadataNote string   `json:"metadataNote,omitempty"`
 }
 
-// Entry returns everything the anime page needs.
+// Entry returns everything the title page needs.
 func (s *Service) Entry(ctx context.Context, mediaID int, refresh bool) (*EntryView, error) {
 	media, err := s.Platform.Media(ctx, mediaID, refresh)
 	if err != nil {
 		return nil, err
 	}
-	coll, _ := s.Platform.Collection(ctx, "ANIME", false)
-	var entry *anilist.ListEntry
+	coll, _ := s.Platform.Collection(ctx, "", false)
+	var entry *catalog.ListEntry
 	if coll != nil {
 		entry = coll.Find(mediaID)
 	}
-	meta, metaErr := s.Meta.Get(ctx, mediaID)
 	files, _ := s.Store.ByMedia(mediaID)
 	localCount := len(files)
 	files = append(files, s.sharedFor(mediaID, files)...)
-	hist := s.History.ForMedia(mediaID)
 
-	v := &EntryView{Media: media, ListEntry: entry, LocalCount: localCount, SharedCount: len(files) - localCount}
-	if meta != nil {
-		v.Images, v.Mappings = meta.Images, meta.Mappings
+	v := &EntryView{
+		Media: media, ListEntry: entry, LocalCount: localCount, SharedCount: len(files) - localCount,
+		Images:   Images{Fanart: media.BannerImage, Poster: media.CoverImage.ExtraLarge},
+		Mappings: Mappings{TmdbID: media.TMDBID, ImdbID: media.IMDbID, TvdbID: media.TVDBID},
 	}
-	if metaErr != nil {
-		v.MetadataNote = "Episode metadata unavailable: " + metaErr.Error()
+	details, err := s.seasonEpisodes(ctx, media, refresh)
+	if err != nil {
+		v.MetadataNote = "Episode details unavailable: " + err.Error()
 	}
+	s.fillEpisodes(v, media, entry, files, details)
+	return v, nil
+}
+
+// seasonEpisodes fetches the episodes of every season of a show (specials
+// included), by key.
+func (s *Service) seasonEpisodes(ctx context.Context, media *catalog.Media, refresh bool) (map[int]*catalog.Episode, error) {
+	out := map[int]*catalog.Episode{}
+	if !media.IsShow() || s.Platform == nil {
+		return out, nil
+	}
+	var (
+		mu       sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+		next     = make(chan int)
+	)
+	for range min(4, len(media.Seasons)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := range next {
+				sd, err := s.Platform.Season(ctx, media.ID, n)
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+				} else {
+					for _, e := range sd.Episodes {
+						out[e.Key] = e
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, season := range media.Seasons {
+		next <- season.Number
+	}
+	close(next)
+	wg.Wait()
+	return out, firstErr
+}
+
+// fillEpisodes lists the episodes of the title page: the regular ones (the
+// movie, or the show's from its seasons, plus any its files have beyond
+// them), the specials (season 0, and special files) and the extras.
+func (s *Service) fillEpisodes(v *EntryView, media *catalog.Media, entry *catalog.ListEntry, files []*LocalFile, details map[int]*catalog.Episode) {
 	progress := 0
 	if entry != nil {
 		progress = entry.Progress
 	}
-
-	streamTitles := map[int]anilist.StreamingEpisode{}
-	for i, se := range media.StreamingEpisodes {
-		streamTitles[i+1] = se
-	}
+	hist := s.History.ForMedia(media.ID)
+	latest := media.LatestAired()
+	today := time.Now().UTC().Format(time.DateOnly)
+	fallbackImage := firstNonEmpty(media.BannerImage, media.CoverImage.ExtraLarge)
 
 	mainFiles := map[int]*LocalFile{}
+	specialFiles := map[int]*LocalFile{}
 	for _, f := range files {
 		switch {
 		case f.Kind == "main" && f.Episode > 0:
@@ -101,9 +167,11 @@ func (s *Service) Entry(ctx context.Context, mediaID int, refresh bool) (*EntryV
 				mainFiles[f.Episode] = f
 			}
 		case f.Kind == "nc":
-			v.Others = append(v.Others, &EpisodeView{Number: f.Episode, Title: f.Name, Kind: "nc", File: f, HasFile: true, Aired: true})
+			v.Others = append(v.Others, &EpisodeView{Key: f.Episode, Title: f.Name, Kind: "nc", File: f, HasFile: true, Aired: true})
+		case f.Episode > 0 && f.Episode < 1000:
+			specialFiles[f.Episode] = f
 		default:
-			sp := &EpisodeView{Number: f.Episode, Title: f.Name, Kind: "special", File: f, HasFile: true, Aired: true}
+			sp := &EpisodeView{Key: f.Episode, Title: f.Name, Kind: "special", File: f, HasFile: true, Aired: true}
 			if f.Parsed.EpisodeTitle != "" {
 				sp.Title = f.Parsed.EpisodeTitle
 			}
@@ -111,68 +179,112 @@ func (s *Service) Entry(ctx context.Context, mediaID int, refresh bool) (*EntryV
 		}
 	}
 
-	total := media.TotalEpisodes()
-	aired := media.AiredEpisodes()
-	if media.Status == "FINISHED" || media.Status == "CANCELLED" {
-		aired = total
-	}
-	maxEp := total
-	for n := range mainFiles {
-		maxEp = max(maxEp, n)
-	}
-	if meta != nil {
-		maxEp = max(maxEp, len(meta.Main()))
-	}
-	if total > 0 {
-		// Don't invent episodes past the known total unless files exist.
-		maxEp = max(total, maxLocal(mainFiles))
-	}
-	for n := 1; n <= maxEp; n++ {
-		ep := &EpisodeView{Number: n, Kind: "main", Watched: n <= progress, Aired: aired == 0 || n <= aired}
-		if md := meta.Get(n); md != nil {
-			ep.Title, ep.Image, ep.Summary, ep.AirDate, ep.Runtime = md.Title, md.Image, md.Summary, md.AirDate, md.Runtime
-		}
-		if se, ok := streamTitles[n]; ok {
-			if ep.Title == "" {
-				ep.Title = se.Title
+	view := func(key int, kind string) *EpisodeView {
+		season, number := catalog.SplitKey(key)
+		ep := &EpisodeView{Key: key, Season: season, Number: number, Kind: kind, Image: fallbackImage}
+		if !media.IsShow() {
+			ep.Season, ep.Number = 0, 1
+			ep.Title = media.PreferredTitle()
+			ep.Aired = media.Status != "NOT_YET_RELEASED"
+		} else if d := details[key]; d != nil {
+			ep.Title, ep.Summary, ep.AirDate, ep.Runtime = d.Title, d.Overview, d.AirDate, d.Runtime
+			if d.Still != "" {
+				ep.Image = d.Still
 			}
-			if ep.Image == "" {
-				ep.Image = se.Thumbnail
-			}
-		}
-		if ep.Image == "" {
-			ep.Image = firstNonEmpty(media.BannerImage, media.CoverImage.ExtraLarge)
+			ep.Aired = d.AirDate != "" && d.AirDate <= today
+		} else {
+			ep.Aired = latest == 0 && media.Status != "NOT_YET_RELEASED" || key <= latest
 		}
 		if ep.Runtime == 0 && media.Duration != nil {
 			ep.Runtime = *media.Duration
 		}
-		if f, ok := mainFiles[n]; ok {
-			ep.File, ep.HasFile, ep.Aired = f, true, true
-		}
-		if h, ok := hist[n]; ok {
+		if h, ok := hist[key]; ok {
 			ep.History = h
-			ep.ResumeAt = s.History.ResumePosition(mediaID, n)
+			ep.ResumeAt = s.History.ResumePosition(media.ID, key)
+		}
+		return ep
+	}
+
+	keys := media.EpisodeKeys()
+	known := map[int]bool{}
+	for _, k := range keys {
+		known[k] = true
+	}
+	for k := range mainFiles {
+		if !known[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Ints(keys)
+	for _, k := range keys {
+		ep := view(k, "main")
+		ep.Watched = progress > 0 && k <= progress
+		if f, ok := mainFiles[k]; ok {
+			ep.File, ep.HasFile, ep.Aired = f, true, true
 		}
 		v.Episodes = append(v.Episodes, ep)
 	}
-	if media.Format == "MOVIE" && len(v.Episodes) == 0 {
-		v.Episodes = append(v.Episodes, &EpisodeView{Number: 1, Kind: "main", Title: media.PreferredTitle(), Image: firstNonEmpty(media.BannerImage, media.CoverImage.ExtraLarge), Aired: true})
+
+	// Specials: TMDB's season 0, with the files matched to them, then the
+	// special files it doesn't have.
+	var specialKeys []int
+	for k := range details {
+		if k < 1000 {
+			specialKeys = append(specialKeys, k)
+		}
+	}
+	sort.Ints(specialKeys)
+	for _, k := range specialKeys {
+		ep := view(k, "special")
+		if f, ok := specialFiles[k]; ok {
+			ep.File, ep.HasFile, ep.Aired = f, true, true
+			delete(specialFiles, k)
+		}
+		v.Specials = append(v.Specials, ep)
+	}
+	var rest []int
+	for k := range specialFiles {
+		rest = append(rest, k)
+	}
+	sort.Ints(rest)
+	for _, k := range rest {
+		ep := view(k, "special")
+		ep.File, ep.HasFile, ep.Aired = specialFiles[k], true, true
+		if ep.Title == "" {
+			ep.Title = firstNonEmpty(ep.File.Parsed.EpisodeTitle, ep.File.Name)
+		}
+		v.Specials = append(v.Specials, ep)
 	}
 
-	// Next episode to watch: first unwatched one after progress.
+	// Next episode to watch: the first one after progress; the first one
+	// again for a title watched to the end (a rewatch) or not on the list.
+	next := media.NextEpisode(progress)
 	for _, ep := range v.Episodes {
-		if ep.Number == progress+1 {
+		if ep.Key == next {
 			v.NextEpisode = ep
 			break
 		}
 	}
-	if v.NextEpisode == nil && entry != nil && entry.Status == "COMPLETED" && len(v.Episodes) > 0 {
+	if v.NextEpisode == nil && (entry == nil || entry.Status == "COMPLETED") && len(v.Episodes) > 0 {
 		v.NextEpisode = v.Episodes[0]
 	}
-	if v.NextEpisode == nil && entry == nil && len(v.Episodes) > 0 {
-		v.NextEpisode = v.Episodes[0]
+}
+
+// EpisodesView is the episodes of a title page.
+type EpisodesView struct {
+	Episodes    []*EpisodeView `json:"episodes"`
+	Specials    []*EpisodeView `json:"specials"`
+	Others      []*EpisodeView `json:"others"`
+	NextEpisode *EpisodeView   `json:"nextEpisode"`
+}
+
+// Episodes returns a title's episodes, with their files and history.
+func (s *Service) Episodes(ctx context.Context, mediaID int) (*EpisodesView, error) {
+	v, err := s.Entry(ctx, mediaID, false)
+	if err != nil {
+		return nil, err
 	}
-	return v, nil
+	return &EpisodesView{Episodes: v.Episodes, Specials: v.Specials, Others: v.Others, NextEpisode: v.NextEpisode}, nil
 }
 
 // shared are the files other KumoBox apps share with this one.
@@ -183,7 +295,7 @@ func (s *Service) shared() []*LocalFile {
 	return s.Remote()
 }
 
-// sharedFor are an anime's shared files, but its specials and extras this
+// sharedFor are a title's shared files, but its specials and extras this
 // computer has too (same file name).
 func (s *Service) sharedFor(mediaID int, local []*LocalFile) []*LocalFile {
 	names := map[string]bool{}
@@ -199,25 +311,19 @@ func (s *Service) sharedFor(mediaID int, local []*LocalFile) []*LocalFile {
 	return out
 }
 
-func maxLocal(m map[int]*LocalFile) int {
-	n := 0
-	for k := range m {
-		n = max(n, k)
-	}
-	return n
-}
-
 // ---------------------------------------------------------------------------
 // Home / library collection view
 
 type CollectionItem struct {
-	Media       *anilist.Media     `json:"media"`
-	ListEntry   *anilist.ListEntry `json:"listEntry"`
-	LocalFiles  int                `json:"localFiles"`
-	Downloaded  []int              `json:"downloaded"`
-	NextEpisode int                `json:"nextEpisode"`
-	NextHasFile bool               `json:"nextHasFile"`
-	LastWatched int64              `json:"lastWatched"`
+	Media      *catalog.Media     `json:"media"`
+	ListEntry  *catalog.ListEntry `json:"listEntry"`
+	LocalFiles int                `json:"localFiles"`
+	// Downloaded are the keys of the episodes with a file.
+	Downloaded []int `json:"downloaded"`
+	// NextEpisode is the key of the episode to watch next (0: none).
+	NextEpisode int   `json:"nextEpisode"`
+	NextHasFile bool  `json:"nextHasFile"`
+	LastWatched int64 `json:"lastWatched"`
 }
 
 type CollectionList struct {
@@ -226,9 +332,12 @@ type CollectionList struct {
 	Items  []*CollectionItem `json:"items"`
 }
 
+// ContinueItem is a title of "Continue watching". Episode is the key of the
+// episode to watch, Index its place among the regular episodes ("13 / 24").
 type ContinueItem struct {
-	Media       *anilist.Media `json:"media"`
+	Media       *catalog.Media `json:"media"`
 	Episode     int            `json:"episode"`
+	Index       int            `json:"index"`
 	Total       int            `json:"total"`
 	Title       string         `json:"title"`
 	Image       string         `json:"image"`
@@ -251,12 +360,12 @@ type CollectionView struct {
 }
 
 var statusNames = map[string]string{
-	"CURRENT": "Currently watching", "REPEATING": "Rewatching", "PLANNING": "Planning",
-	"PAUSED": "Paused", "COMPLETED": "Completed", "DROPPED": "Dropped",
+	"CURRENT": "Watching", "REPEATING": "Rewatching", "PLANNING": "Watchlist",
+	"PAUSED": "Paused", "COMPLETED": "Watched", "DROPPED": "Dropped",
 }
 
 func (s *Service) Collection(ctx context.Context, refresh bool) (*CollectionView, error) {
-	coll, err := s.Platform.Collection(ctx, "ANIME", refresh)
+	coll, err := s.Platform.Collection(ctx, "", refresh)
 	if err != nil {
 		return nil, err
 	}
@@ -277,13 +386,13 @@ func (s *Service) Collection(ctx context.Context, refresh bool) (*CollectionView
 	}
 	last := s.History.LastWatched()
 
-	makeItem := func(e *anilist.ListEntry, media *anilist.Media) *CollectionItem {
+	makeItem := func(e *catalog.ListEntry, media *catalog.Media) *CollectionItem {
 		it := &CollectionItem{Media: media, ListEntry: e, LastWatched: last[media.ID]}
 		progress := 0
 		if e != nil {
 			progress = e.Progress
 		}
-		it.NextEpisode = progress + 1
+		it.NextEpisode = media.NextEpisode(progress)
 		seen := map[int]bool{}
 		for _, f := range filesByMedia[media.ID] {
 			if f.Kind == "main" && f.Episode > 0 && !seen[f.Episode] {
@@ -314,7 +423,7 @@ func (s *Service) Collection(ctx context.Context, refresh bool) (*CollectionView
 		}
 		l.Items = append(l.Items, makeItem(e, e.Media))
 	}
-	for _, st := range anilist.Statuses {
+	for _, st := range catalog.Statuses {
 		if l, ok := byStatus[st]; ok {
 			sort.SliceStable(l.Items, func(i, j int) bool {
 				a, b := l.Items[i], l.Items[j]
@@ -330,7 +439,7 @@ func (s *Service) Collection(ctx context.Context, refresh bool) (*CollectionView
 		}
 	}
 
-	// Matched files whose anime isn't in the list.
+	// Matched files whose title isn't in the list.
 	var missing []int
 	for id := range filesByMedia {
 		if !inList[id] {
@@ -362,30 +471,33 @@ func (s *Service) Collection(ctx context.Context, refresh bool) (*CollectionView
 	return view, nil
 }
 
-func (s *Service) continueWatching(ctx context.Context, coll *anilist.Collection, files map[int][]*LocalFile) []*ContinueItem {
+// finishedAt is how far into an episode it counts as watched.
+const finishedAt = 0.85
+
+func (s *Service) continueWatching(ctx context.Context, coll *catalog.Collection, files map[int][]*LocalFile) []*ContinueItem {
 	var out []*ContinueItem
 	seen := map[int]bool{}
 	last := s.History.LastWatched()
 	hidden := s.hiddenContinue()
 
-	add := func(media *anilist.Media, ep int, src string) {
+	add := func(media *catalog.Media, ep int, src string) {
 		if media == nil || seen[media.ID] || ep <= 0 {
 			return
 		}
 		// Removed by the user: stays away until the episode to continue
-		// with changes or the anime is watched again.
+		// with changes or the title is watched again.
 		if h, ok := hidden[media.ID]; ok && h.Episode == ep && last[media.ID] <= h.HiddenAt {
 			seen[media.ID] = true // not offered again from the history below
 			return
 		}
-		total := media.TotalEpisodes()
-		if total > 0 && ep > total {
+		// Not out yet.
+		if media.Status == "NOT_YET_RELEASED" {
 			return
 		}
-		if aired := media.AiredEpisodes(); media.Status == "RELEASING" && aired > 0 && ep > aired {
+		if aired := media.LatestAired(); media.IsShow() && media.Status == "RELEASING" && aired > 0 && ep > aired {
 			return
 		}
-		it := &ContinueItem{Media: media, Episode: ep, Total: total, LastWatched: last[media.ID], Source: src}
+		it := &ContinueItem{Media: media, Episode: ep, Index: media.EpisodeIndex(ep), Total: media.TotalEpisodes(), LastWatched: last[media.ID], Source: src}
 		if f := EpisodeFile(files[media.ID], ep); f != nil {
 			it.HasFile, it.FilePath = true, f.Path
 		}
@@ -397,11 +509,21 @@ func (s *Service) continueWatching(ctx context.Context, coll *anilist.Collection
 			it.Runtime = *media.Duration
 		}
 		it.Image = firstNonEmpty(media.BannerImage, media.CoverImage.ExtraLarge)
-		if meta, err := s.Meta.Get(ctx, media.ID); err == nil {
-			if md := meta.Get(ep); md != nil {
-				it.Title = md.Title
-				if md.Image != "" {
-					it.Image = md.Image
+		if !media.IsShow() {
+			it.Title = media.PreferredTitle()
+		} else if s.Platform != nil {
+			season, _ := catalog.SplitKey(ep)
+			if sd, err := s.Platform.Season(ctx, media.ID, season); err == nil {
+				for _, e := range sd.Episodes {
+					if e.Key == ep {
+						it.Title = e.Title
+						if e.Runtime > 0 {
+							it.Runtime = e.Runtime
+						}
+						if e.Still != "" {
+							it.Image = e.Still
+						}
+					}
 				}
 			}
 		}
@@ -409,11 +531,10 @@ func (s *Service) continueWatching(ctx context.Context, coll *anilist.Collection
 		out = append(out, it)
 	}
 
-	// 1) Shows being watched, ordered by most recent activity: on this
+	// 1) Titles being watched, ordered by most recent activity: on this
 	// computer (or another KumoBox on the same account, whose history comes
-	// over), or anywhere else on the AniList account (its list entry was
-	// updated: an episode watched on another device).
-	var watching []*anilist.ListEntry
+	// over), or a change of the list (an episode marked by hand, a sync).
+	var watching []*catalog.ListEntry
 	for _, e := range coll.Entries() {
 		if e.Status == "CURRENT" || e.Status == "REPEATING" {
 			watching = append(watching, e)
@@ -428,10 +549,10 @@ func (s *Service) continueWatching(ctx context.Context, coll *anilist.Collection
 		return watching[i].UpdatedAt > watching[j].UpdatedAt
 	})
 	for _, e := range watching {
-		ep := e.Progress + 1
+		ep := e.Media.NextEpisode(e.Progress)
 		// A partially watched episode takes priority over the next one.
-		if h := s.History.Get(e.MediaID, e.Progress+1); h == nil {
-			if hc := s.History.Get(e.MediaID, e.Progress); hc != nil && hc.Percent() < 0.85 && e.Progress > 0 {
+		if h := s.History.Get(e.MediaID, ep); h == nil && e.Progress > 0 {
+			if hc := s.History.Get(e.MediaID, e.Progress); hc != nil && hc.Percent() < finishedAt {
 				ep = e.Progress
 			}
 		}
@@ -442,7 +563,7 @@ func (s *Service) continueWatching(ctx context.Context, coll *anilist.Collection
 	}
 	// 2) Recently played things not on the list (local-only, streams).
 	for _, h := range s.History.Recent(30) {
-		if seen[h.MediaID] || len(out) >= 24 {
+		if seen[h.MediaID] || len(out) >= 24 || s.Platform == nil {
 			continue
 		}
 		media, err := s.Platform.MediaLite(ctx, h.MediaID)
@@ -450,8 +571,8 @@ func (s *Service) continueWatching(ctx context.Context, coll *anilist.Collection
 			continue
 		}
 		ep := h.Episode
-		if h.Percent() >= 0.85 {
-			ep++
+		if h.Percent() >= finishedAt {
+			ep = media.NextEpisode(h.Episode)
 		}
 		add(media, ep, h.Source)
 	}
@@ -491,9 +612,9 @@ func (s *Service) updateHidden(fn func(items map[int]hiddenItem)) error {
 	return s.DB.SetKV(continueHiddenKey, items)
 }
 
-// HideContinue removes an anime from "Continue watching" for as long as it
+// HideContinue removes a title from "Continue watching" for as long as it
 // offers that episode: it comes back by itself once the episode changes
-// (progress made elsewhere) or the anime is watched again.
+// (progress made elsewhere) or the title is watched again.
 func (s *Service) HideContinue(mediaID, episode int) error {
 	last := s.History.LastWatched()
 	now := time.Now().Unix()
@@ -507,13 +628,13 @@ func (s *Service) HideContinue(mediaID, episode int) error {
 	})
 }
 
-// UnhideContinue puts a removed anime back in "Continue watching".
+// UnhideContinue puts a removed title back in "Continue watching".
 func (s *Service) UnhideContinue(mediaID int) error {
 	return s.updateHidden(func(items map[int]hiddenItem) { delete(items, mediaID) })
 }
 
-// EpisodeFile returns the file to play for an episode among an anime's
-// files, or nil (see betterFile).
+// EpisodeFile returns the file to play for an episode (by key) among a
+// title's files, or nil (see betterFile).
 func EpisodeFile(files []*LocalFile, episode int) *LocalFile {
 	var best *LocalFile
 	for _, f := range files {
@@ -525,9 +646,9 @@ func EpisodeFile(files []*LocalFile, episode int) *LocalFile {
 }
 
 // betterFile reports whether f is the one to play when it and old are
-// matched to the same episode, e.g. a sequel's files wrongly matched to
-// its first season: a match made by hand wins, then the surer match, then
-// the bigger file. A file on this computer always wins.
+// matched to the same episode, e.g. two releases of a movie: a match made
+// by hand wins, then the surer match, then the bigger file. A file on this
+// computer always wins.
 func betterFile(f, old *LocalFile) bool {
 	// This computer's file, not one another KumoBox shares.
 	if (f.Host == "") != (old.Host == "") {

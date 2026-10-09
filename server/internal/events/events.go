@@ -14,6 +14,7 @@ const (
 	ScanDone         = "scan-done"
 	LibraryUpdated   = "library-updated"
 	CollectionUpdate = "collection-updated"
+	DiaryUpdated     = "diary-updated"
 	PlaybackStatus   = "playback-status"
 	PlaybackEnded    = "playback-ended"
 	DownloadProgress = "download-progress"

@@ -124,7 +124,7 @@ func (s *Scanner) Folders() ([]FolderInfo, error) {
 						// A "Samples" folder inside a show is expected; a show
 						// folder that is skipped isn't.
 						if depth == 0 {
-							add(FolderInfo{Dir: p, Label: labelFor(root, p), Problem: fmt.Sprintf("Its name matches the ignore pattern “%s” (Settings › Local Anime Library)", pat)})
+							add(FolderInfo{Dir: p, Label: labelFor(root, p), Problem: fmt.Sprintf("Its name matches the ignore pattern “%s” (Settings › Library)", pat)})
 						}
 						continue
 					}
@@ -205,7 +205,7 @@ func (c *folderContents) problem(videos, depth int, listedBelow, hasSubs bool) s
 	case c.discs > 0:
 		return "Only disc images (.iso) — extract or remux the videos first"
 	case c.patterned > 0:
-		return fmt.Sprintf("Ignore patterns skip its videos (%s) — change them in Settings › Local Anime Library", strings.Join(c.patterns, ", "))
+		return fmt.Sprintf("Ignore patterns skip its videos (%s) — change them in Settings › Library", strings.Join(c.patterns, ", "))
 	case len(c.other) > 0:
 		return "No video files here (" + c.summary() + ")"
 	case hasSubs:

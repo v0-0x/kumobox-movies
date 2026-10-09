@@ -1,4 +1,4 @@
-// Package downloads runs the episode download queue (ani-cli and extension
+// Package downloads runs the movie and episode download queue (streaming
 // streams). Finished files land in the library and are matched immediately.
 package downloads
 
@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
@@ -44,7 +45,7 @@ type Item struct {
 	AnimeTitle string            `json:"animeTitle"`
 	Image      string            `json:"image"`
 	Mode       string            `json:"mode"`   // sub | dub
-	Source     string            `json:"source"` // anicli | stream
+	Source     string            `json:"source"` // stream (a provider), or a resolver's name
 	Provider   string            `json:"provider"`
 	Status     string            `json:"status"`
 	Progress   float64           `json:"progress"` // 0-1
@@ -69,7 +70,8 @@ type Resolved struct {
 	SubURL   string
 }
 
-// Resolver turns a queued item into a downloadable URL (e.g. via ani-cli).
+// Resolver turns a queued item into a downloadable URL (e.g. through a
+// streaming provider).
 type Resolver func(ctx context.Context, it *Item) (*Resolved, error)
 
 type Manager struct {
@@ -398,9 +400,9 @@ func (m *Manager) execute(r *run) {
 	m.save(it, true)
 	switch done.Status {
 	case StatusCompleted:
-		m.hub.Success(fmt.Sprintf("Downloaded %s — episode %d", done.AnimeTitle, done.Episode))
+		m.hub.Success("Downloaded " + label(&done))
 	case StatusFailed:
-		m.hub.Error(fmt.Sprintf("Download failed (%s ep %d): %s", done.AnimeTitle, done.Episode, done.Error))
+		m.hub.Error(fmt.Sprintf("Download failed (%s): %s", label(&done), done.Error))
 	}
 }
 
@@ -439,7 +441,7 @@ func (m *Manager) process(r *run) error {
 		return err
 	}
 	tag := strings.ToUpper(util.FirstNonEmpty(it.Mode, "sub"))
-	name := util.SanitizeFilename(fmt.Sprintf("%s - %02d [%s]", it.AnimeTitle, it.Episode, tag))
+	name := util.SanitizeFilename(fmt.Sprintf("%s [%s]", label(&it), tag))
 	out := filepath.Join(dir, name+".mp4")
 
 	// Download into a hidden folder next to the destination (the library
@@ -507,7 +509,7 @@ func (m *Manager) process(r *run) error {
 
 // download fetches res into out with yt-dlp or ffmpeg, as configured.
 func (m *Manager) download(r *run, cfg config.Settings, res *Resolved, out string) error {
-	downloader := cfg.AniCli.Downloader
+	downloader := cfg.Downloads.Downloader
 	_, hasYtdlp := util.LookPath("yt-dlp")
 	if downloader == "" || downloader == "auto" {
 		if hasYtdlp {
@@ -522,12 +524,21 @@ func (m *Manager) download(r *run, cfg config.Settings, res *Resolved, out strin
 	return m.ffmpeg(r, res, out, cfg.Transcode.FfmpegPath, cfg.Transcode.FfprobePath)
 }
 
-// folderFor is where episodes of an anime are downloaded: the folder that
-// already holds its episodes (when it's inside the download/library
-// folder), otherwise a new folder named after the anime — never loose in
-// the library folder itself.
+// label names a download: the movie's title, or the show's with the
+// episode (Show - S01E05).
+func label(it *Item) string {
+	if catalog.IsShow(it.MediaID) && it.Episode > 0 {
+		return it.AnimeTitle + " - " + catalog.FormatKey(it.Episode)
+	}
+	return it.AnimeTitle
+}
+
+// folderFor is where a movie or the episodes of a show are downloaded: the
+// folder that already holds its files (when it's inside the
+// download/library folder), otherwise a new folder named after it — never
+// loose in the library folder itself.
 func (m *Manager) folderFor(cfg config.Settings, mediaID int, animeTitle string) (string, error) {
-	baseDir := config.ExpandHome(util.FirstNonEmpty(cfg.AniCli.DownloadDir, cfg.Library.Dir))
+	baseDir := config.ExpandHome(util.FirstNonEmpty(cfg.Downloads.Dir, cfg.Library.Dir))
 	if baseDir == "" {
 		return "", errors.New("no download directory configured")
 	}
@@ -556,7 +567,7 @@ func (m *Manager) folderFor(cfg config.Settings, mediaID int, animeTitle string)
 	}
 	name := strings.TrimSpace(animeTitle)
 	if name == "" {
-		name = fmt.Sprintf("AniList %d", mediaID)
+		name = fmt.Sprintf("Title %d", mediaID)
 	}
 	return filepath.Join(baseDir, util.SanitizeFilename(name)), nil
 }
@@ -657,7 +668,7 @@ func (m *Manager) ffmpeg(r *run, res *Resolved, out, ffmpegPath, ffprobePath str
 
 	args := []string{"-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1"}
 	// ffmpeg >= 7.1 refuses HLS segments with unusual extensions unless told
-	// otherwise (ani-cli passes the same flag); older versions don't know it.
+	// otherwise; older versions don't know it.
 	if hlsExtensionPicky(ffmpegPath) {
 		args = append(args, "-extension_picky", "0")
 	}

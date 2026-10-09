@@ -3,7 +3,6 @@ package library
 import (
 	"context"
 	"errors"
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
@@ -312,20 +312,20 @@ func TestFoldersExplainSkippedFolders(t *testing.T) {
 }
 
 // Matching got better (matcherVersion): files matched before are matched
-// again once. Season 1's files matched to R2 go to season 1 when AniList
-// confirms it, keep their match while it can't, and aren't matched again
-// after.
+// again once. The first film's files matched to its sequel go to the first
+// film when TMDB confirms it, keep their match while it can't, and aren't
+// matched again after.
 func TestScanRematchesAfterMatcherUpgrade(t *testing.T) {
 	lib := t.TempDir()
 	s, _ := newTestScanner(t, lib)
-	ep := filepath.Join(lib, "Code Geass", "Code Geass - Hangyaku no Lelouch - 01.mkv")
-	byHand := filepath.Join(lib, "Other", "Other - 01.mkv")
-	touch(t, ep)
+	film := filepath.Join(lib, "Toy Story (1995)", "Toy.Story.1995.1080p.BluRay.x264.mkv")
+	byHand := filepath.Join(lib, "Other", "Other.2001.mkv")
+	touch(t, film)
 	touch(t, byHand)
 	scan(t, s) // indexed, not matched
 	files, _ := s.Store.All()
 	for _, f := range files {
-		f.MediaID, f.Episode, f.Kind, f.MatchScore = 2904, 1, "main", 0.86 // R2, by the old matcher
+		f.MediaID, f.Episode, f.Kind, f.MatchScore = 863, 1, "main", 0.86 // the sequel, by the old matcher
 		if f.Path == byHand {
 			f.MediaID, f.Locked = 777, true // matched by hand
 		}
@@ -334,28 +334,28 @@ func TestScanRematchesAfterMatcherUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s1 := testMedia(1575, "Code Geass: Hangyaku no Lelouch", "Code Geass: Lelouch of the Rebellion")
-	r2 := testMedia(2904, "Code Geass: Hangyaku no Lelouch R2", "Code Geass: Lelouch of the Rebellion R2")
-	aniListUp := false
+	ts1 := testMovie(862, "Toy Story", 1995)
+	ts2 := testMovie(863, "Toy Story 2", 1999)
+	tmdbUp := false
 	searches := 0
 	s.newMatcher = func(threshold float64, outsideList bool) *Matcher {
 		m := NewMatcher(nil, threshold, outsideList)
-		m.listFn = func(context.Context) []*anilist.Media { return []*anilist.Media{r2} }
-		m.searchFn = func(context.Context, string) ([]*anilist.Media, error) {
+		m.listFn = func(context.Context) []*catalog.Media { return []*catalog.Media{ts2} }
+		m.searchFn = func(context.Context, string) ([]*catalog.Media, error) {
 			searches++
-			if !aniListUp {
-				return nil, errors.New("AniList is down")
+			if !tmdbUp {
+				return nil, errors.New("TMDB is down")
 			}
-			return []*anilist.Media{s1, r2}, nil
+			return []*catalog.Media{ts1, ts2}, nil
 		}
 		return m
 	}
-	matchedTo := func(path string) int {
+	matchedTo := func(path string) *LocalFile {
 		f, err := s.Store.Get(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return f.MediaID
+		return f
 	}
 	rescan := func() {
 		t.Helper()
@@ -364,21 +364,21 @@ func TestScanRematchesAfterMatcherUpgrade(t *testing.T) {
 		}
 	}
 
-	rescan() // AniList down: the old match stays, for now
-	if got := matchedTo(ep); got != 2904 {
-		t.Errorf("AniList down: matched to %d, want the old match (2904) kept", got)
+	rescan() // TMDB down: the old match stays, for now
+	if got := matchedTo(film).MediaID; got != 863 {
+		t.Errorf("TMDB down: matched to %d, want the old match (863) kept", got)
 	}
-	aniListUp = true
+	tmdbUp = true
 	rescan()
-	if got := matchedTo(ep); got != 1575 {
-		t.Errorf("AniList up: matched to %d, want season 1 (1575)", got)
+	if got := matchedTo(film); got.MediaID != 862 || got.Episode != catalog.MovieEpisode {
+		t.Errorf("TMDB up: matched to %d (episode %d), want Toy Story (862)", got.MediaID, got.Episode)
 	}
-	if got := matchedTo(byHand); got != 777 {
+	if got := matchedTo(byHand).MediaID; got != 777 {
 		t.Errorf("a match made by hand changed to %d", got)
 	}
 	searches = 0
 	rescan()
-	if searches != 0 || matchedTo(ep) != 1575 {
+	if searches != 0 || matchedTo(film).MediaID != 862 {
 		t.Errorf("matched again after the upgrade (%d searches)", searches)
 	}
 }

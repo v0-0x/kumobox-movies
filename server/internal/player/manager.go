@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
@@ -92,7 +92,7 @@ const (
 	// How long stopping waits for the old session to save its state.
 	stopWait = 10 * time.Second
 	// Playback this far into an episode (in seconds) counts as watching the
-	// anime: it goes on the "watching" list (see startWatching).
+	// title: it goes on the "watching" list (see startWatching).
 	watchingFrom = 10
 )
 
@@ -100,13 +100,13 @@ type Manager struct {
 	settings *config.Store
 	history  *history.Store
 	Tracks   *TrackStore
-	platform *anilist.Platform
+	platform *catalog.Platform
 	hub      *events.Hub
 	db       *db.DB
 
 	NextResolver NextResolver
 	OnProgress   []ProgressHook
-	// OnWatching hooks are called after an anime was put on the "watching"
+	// OnWatching hooks are called after a title was put on the "watching"
 	// list because one of its episodes started playing.
 	OnWatching []func(mediaID int)
 	// viewed observes every viewing that crossed the completion threshold,
@@ -152,7 +152,7 @@ type Manager struct {
 
 type episodeKey struct{ mediaID, episode int }
 
-func NewManager(s *config.Store, h *history.Store, d *db.DB, p *anilist.Platform, hub *events.Hub) *Manager {
+func NewManager(s *config.Store, h *history.Store, d *db.DB, p *catalog.Platform, hub *events.Hub) *Manager {
 	m := &Manager{
 		settings: s, history: h, Tracks: NewTrackStore(d), platform: p, hub: hub, db: d,
 		builtinStarted: map[episodeKey]bool{}, builtinSent: map[episodeKey]bool{},
@@ -284,13 +284,11 @@ func (m *Manager) loadSkips(s *Session, length float64) {
 	m.mu.Unlock()
 }
 
-// aniSkipTimes looks up an episode's AniSkip intervals.
+// aniSkipTimes looks up an episode's AniSkip intervals. AniSkip knows
+// anime by their MyAnimeList id, which TMDB titles don't have: none, until
+// skipping by chapter names replaces it.
 func (m *Manager) aniSkipTimes(ctx context.Context, mediaID, episode int, length float64) []SkipInterval {
-	media, err := m.platform.MediaLite(ctx, mediaID)
-	if err != nil || media.IDMal == nil {
-		return nil
-	}
-	return SkipTimes(ctx, m.db, *media.IDMal, episode, length)
+	return nil
 }
 
 // loop handles the session's mpv events until mpv exits.
@@ -435,13 +433,13 @@ func (m *Manager) applyTrackPrefs(s *Session, mpv *Mpv, w *trackWatch) {
 	if cfg.Playback.RememberTracks {
 		prefs = saved
 	}
-	// The sub/dub choice for this anime (or a "dub" default) picks the audio
+	// The sub/dub choice for this title (or a "dub" default) picks the audio
 	// of dual-audio files, unless a track was picked by hand.
 	mode := ""
 	if saved != nil {
 		mode = saved.StreamMode
 	}
-	if mode == "" && cfg.AniCli.DefaultMode == "dub" {
+	if mode == "" && cfg.OnlineStream.PreferDub {
 		mode = "dub"
 	}
 	handAudio := prefs != nil && (prefs.AudioLang != "" || prefs.AudioTitle != "" || prefs.AudioIndex > 0)
@@ -517,7 +515,7 @@ func skipSetting(p config.PlaybackSettings, typ string) (what string, on bool) {
 }
 
 // tick decides whether to save the position, whether playback just got far
-// enough to count as watching the anime and whether the episode just crossed
+// enough to count as watching the title and whether the episode just crossed
 // the completion threshold, and publishes the status. It must be called with
 // m.mu held; the caller does the returned work after unlocking.
 func (m *Manager) tick(s *Session) (save *history.Entry, start, fire bool) {
@@ -565,7 +563,7 @@ func (m *Manager) fireProgress(mediaID, episode int) {
 	}()
 }
 
-// startWatching puts an anime the user started an episode of on the
+// startWatching puts a title the user started an episode of on the
 // "watching" list, unless the list already has it there, as rewatching or as
 // completed (see Platform.StartWatching). The update runs in the background
 // and a failure is only logged: it never holds up playback.
@@ -650,7 +648,7 @@ func (m *Manager) autoNext(gen uint64, ended *Session) {
 	if stale {
 		return
 	}
-	m.hub.Info(fmt.Sprintf("Playing episode %d", next.Episode))
+	m.hub.Info("Playing " + next.Title)
 	if _, err := m.playLocked(*next); err != nil {
 		m.hub.Error(err.Error())
 	}

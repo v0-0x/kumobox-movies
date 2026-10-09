@@ -61,7 +61,7 @@ func (f *Fetcher) WithDomains(domains []string) *Fetcher {
 
 // Hosts every plugin may reach, whatever its manifest allows.
 var builtinPluginDomains = []string{
-	"api.github.com", "raw.githubusercontent.com", "shikimori.one", "anilist.co", "graphql.anilist.co",
+	"api.github.com", "raw.githubusercontent.com", "shikimori.one",
 	"myanimelist.net", "*.myanimelist.net", "trakt.tv", "*.trakt.tv", "kitsu.io",
 	"api.simkl.com", "simkl.com", "*.gstatic.com", "*.googleapis.com",
 }

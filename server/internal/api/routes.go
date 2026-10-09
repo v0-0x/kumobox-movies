@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"io/fs"
 	"net/http"
 	"os"
@@ -13,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anicli"
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
+	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
@@ -30,8 +29,6 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/settings", h(func(r *http.Request) (any, error) { return settingsFor(r, s.app.Settings.Get()), nil }))
 	m.HandleFunc("PUT /api/settings", h(s.saveSettings))
 	m.HandleFunc("GET /api/events", s.events)
-	m.HandleFunc("POST /api/auth/anilist", h(s.anilistLogin))
-	m.HandleFunc("POST /api/auth/logout", h(func(r *http.Request) (any, error) { s.app.Platform.Logout(); return nil, nil }))
 	m.HandleFunc("POST /api/auth/server-login", s.serverLogin)
 	m.HandleFunc("GET /api/fs/dirs", h(s.listDirs))
 	m.HandleFunc("POST /api/open", h(s.openPath))
@@ -43,20 +40,23 @@ func (s *Server) routes() {
 		return map[string]int{"entries": n}, err
 	}))
 
-	// --- anime / anilist
-	m.HandleFunc("GET /api/anime/collection", h(s.animeCollection))
+	// --- movies & shows (the list, title pages) and the TMDB catalog
+	m.HandleFunc("GET /api/media/collection", h(s.mediaCollection))
 	m.HandleFunc("POST /api/continue/hide", h(s.hideContinue))
 	m.HandleFunc("POST /api/continue/unhide", h(s.unhideContinue))
-	m.HandleFunc("GET /api/anime/{id}", h(s.animeEntry))
-	m.HandleFunc("POST /api/anime/{id}/entry", h(s.updateEntry))
-	m.HandleFunc("POST /api/anime/{id}/episode", h(s.markEpisode))
-	m.HandleFunc("GET /api/anime/{id}/language", h(s.getLanguage))
-	m.HandleFunc("PUT /api/anime/{id}/language", h(s.putLanguage))
-	m.HandleFunc("DELETE /api/anime/{id}/entry", h(s.deleteEntry))
-	m.HandleFunc("POST /api/anilist/search", h(s.search))
-	m.HandleFunc("GET /api/anilist/discover", h(s.discover))
-	m.HandleFunc("GET /api/anilist/schedule", h(s.schedule))
-	m.HandleFunc("GET /api/anilist/list", h(s.rawList))
+	m.HandleFunc("GET /api/media/{id}", h(s.mediaEntry))
+	m.HandleFunc("POST /api/media/{id}/entry", h(s.updateEntry))
+	m.HandleFunc("DELETE /api/media/{id}/entry", h(s.deleteEntry))
+	m.HandleFunc("POST /api/media/{id}/episode", h(s.markEpisode))
+	m.HandleFunc("GET /api/media/{id}/episodes", h(s.mediaEpisodes))
+	m.HandleFunc("GET /api/media/{id}/season/{n}", h(s.season))
+	m.HandleFunc("GET /api/media/{id}/language", h(s.getLanguage))
+	m.HandleFunc("PUT /api/media/{id}/language", h(s.putLanguage))
+	m.HandleFunc("POST /api/catalog/search", h(s.search))
+	m.HandleFunc("GET /api/catalog/discover", h(s.discover))
+	m.HandleFunc("GET /api/catalog/schedule", h(s.schedule))
+	m.HandleFunc("GET /api/catalog/list", h(s.rawList))
+	m.HandleFunc("GET /api/catalog/genres", h(func(r *http.Request) (any, error) { return s.app.Platform.Genres(r.Context()) }))
 
 	// --- library
 	m.HandleFunc("POST /api/library/scan", h(s.scan))
@@ -141,16 +141,15 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/images/stats", h(func(r *http.Request) (any, error) { return s.app.Images.Stats(), nil }))
 	m.HandleFunc("POST /api/images/clear", h(func(r *http.Request) (any, error) { return nil, s.app.Images.Clear() }))
 
-	// --- online streaming & ani-cli
-	m.HandleFunc("GET /api/onlinestream/providers", h(func(r *http.Request) (any, error) { return s.app.Stream.Providers(r.Context()), nil }))
-	m.HandleFunc("GET /api/onlinestream/episodes", h(s.osEpisodes))
-	m.HandleFunc("GET /api/onlinestream/modes", h(s.osModes))
-	m.HandleFunc("GET /api/onlinestream/sources", h(s.osSources))
-	m.HandleFunc("GET /api/onlinestream/search", h(s.osSearch))
-	m.HandleFunc("POST /api/onlinestream/mapping", h(s.osMapping))
-	m.HandleFunc("POST /api/onlinestream/play", h(s.osPlay))
-	m.HandleFunc("POST /api/onlinestream/download", h(s.osDownload))
-	m.HandleFunc("GET /api/anicli/status", h(func(r *http.Request) (any, error) { return s.app.AniCli.Status(r.Context()), nil }))
+	// --- streaming providers
+	m.HandleFunc("GET /api/providers/providers", h(func(r *http.Request) (any, error) { return s.app.Stream.Providers(r.Context()), nil }))
+	m.HandleFunc("GET /api/providers/episodes", h(s.osEpisodes))
+	m.HandleFunc("GET /api/providers/modes", h(s.osModes))
+	m.HandleFunc("GET /api/providers/sources", h(s.osSources))
+	m.HandleFunc("GET /api/providers/search", h(s.osSearch))
+	m.HandleFunc("POST /api/providers/mapping", h(s.osMapping))
+	m.HandleFunc("POST /api/providers/play", h(s.osPlay))
+	m.HandleFunc("POST /api/providers/download", h(s.osDownload))
 
 	// --- downloads
 	m.HandleFunc("GET /api/downloads", h(func(r *http.Request) (any, error) { return s.app.Downloads.List(), nil }))
@@ -204,31 +203,6 @@ func (s *Server) routes() {
 		s.app.Extensions.BroadcastPluginEvent(body)
 		return nil, nil
 	}))
-
-	// --- manga
-	m.HandleFunc("GET /api/manga/collection", h(func(r *http.Request) (any, error) {
-		return s.app.Platform.Collection(r.Context(), "MANGA", r.URL.Query().Get("refresh") == "1")
-	}))
-	m.HandleFunc("GET /api/manga/providers", h(s.mangaProviders))
-	m.HandleFunc("GET /api/manga/{id}", h(func(r *http.Request) (any, error) {
-		id, err := pathID(r, "id")
-		if err != nil {
-			return nil, err
-		}
-		return s.app.Platform.Media(r.Context(), id, r.URL.Query().Get("refresh") == "1")
-	}))
-	m.HandleFunc("GET /api/manga/{id}/chapters", h(s.mangaChapters))
-	m.HandleFunc("GET /api/manga/pages", h(func(r *http.Request) (any, error) {
-		return s.app.Manga.Pages(r.Context(), r.URL.Query().Get("provider"), r.URL.Query().Get("chapterId"))
-	}))
-	m.HandleFunc("GET /api/manga/search", h(func(r *http.Request) (any, error) {
-		return s.app.Manga.Search(r.Context(), r.URL.Query().Get("provider"), r.URL.Query().Get("q"))
-	}))
-	m.HandleFunc("POST /api/manga/mapping", h(s.mangaMapping))
-	m.HandleFunc("POST /api/manga/{id}/progress", h(s.mangaProgress))
-	m.HandleFunc("POST /api/manga/{id}/reading", h(s.mangaStartReading))
-	m.HandleFunc("GET /api/manga/{id}/position", h(s.mangaPosition))
-	m.HandleFunc("PUT /api/manga/{id}/position", h(s.saveMangaPosition))
 
 	// --- updates
 	m.HandleFunc("GET /api/update", h(s.updateStatus))
@@ -288,7 +262,6 @@ type featureStatus struct {
 	Mpv     bool `json:"mpv"`
 	Ffmpeg  bool `json:"ffmpeg"`
 	Ffprobe bool `json:"ffprobe"`
-	AniCli  bool `json:"aniCli"`
 	YtDlp   bool `json:"ytDlp"`
 	XdgOpen bool `json:"xdgOpen"`
 }
@@ -299,7 +272,6 @@ func (s *Server) status(r *http.Request) (any, error) {
 	_, feat.Mpv = util.LookPath(cfg.Mpv.Path)
 	_, feat.Ffmpeg = util.LookPath(cfg.Transcode.FfmpegPath)
 	_, feat.Ffprobe = util.LookPath(cfg.Transcode.FfprobePath)
-	feat.AniCli = anicli.Ready(cfg.AniCli.Path)
 	_, feat.YtDlp = util.LookPath("yt-dlp")
 	_, feat.XdgOpen = util.LookPath("xdg-open")
 	feat.XdgOpen = feat.XdgOpen || runtime.GOOS == "windows" || runtime.GOOS == "darwin" // Explorer, Finder
@@ -309,12 +281,14 @@ func (s *Server) status(r *http.Request) (any, error) {
 	if cfg.Server.AllowLAN {
 		lan = lanURLs(cfg.Server.Port)
 	}
+	viewer := s.app.Platform.Viewer() // the connected Letterboxd member
 	return map[string]any{
 		"version":        config.AppVersion,
 		"appName":        config.AppName,
-		"user":           s.app.Platform.Viewer(),
-		"loggedIn":       s.app.Platform.LoggedIn(),
-		"anilistAuthUrl": "https://anilist.co/api/v2/oauth/authorize?client_id=" + cfg.Anilist.ClientID + "&response_type=token",
+		"user":           viewer,
+		"loggedIn":       viewer != nil,
+		"letterboxd":     viewer,
+		"tmdbConfigured": s.app.Platform.Configured(),
 		"features":       feat,
 		"client":         kind,
 		"hostname":       host,
@@ -343,10 +317,14 @@ func (s *Server) saveSettings(r *http.Request) (any, error) {
 		next.Server = cur.Server
 		next.Mpv.Path, next.Mpv.ExtraArgs, next.Mpv.Socket = cur.Mpv.Path, cur.Mpv.ExtraArgs, cur.Mpv.Socket
 		next.Transcode.FfmpegPath, next.Transcode.FfprobePath, next.Transcode.VaapiNode = cur.Transcode.FfmpegPath, cur.Transcode.FfprobePath, cur.Transcode.VaapiNode
-		next.AniCli.Path, next.AniCli.DownloadDir = cur.AniCli.Path, cur.AniCli.DownloadDir
+		next.Downloads.Dir = cur.Downloads.Dir
 		// Torrent client logins too: they never see the passwords, and
 		// pointing the client at another host would send it the password.
 		next.Qbittorrent, next.Transmission = cur.Qbittorrent, cur.Transmission
+		// Nor the API keys, which they don't see either.
+		next.TMDB.APIKey = cur.TMDB.APIKey
+		next.Letterboxd.APIClientID, next.Letterboxd.APIClientSecret = cur.Letterboxd.APIClientID, cur.Letterboxd.APIClientSecret
+		next.TorrentSources.Torznab = cur.TorrentSources.Torznab
 		next.Library.Dir, next.Library.ExtraDirs = cur.Library.Dir, cur.Library.ExtraDirs
 		// Who this computer's library is shared with is its own business.
 		next.Sharing = cur.Sharing
@@ -359,40 +337,22 @@ func (s *Server) saveSettings(r *http.Request) (any, error) {
 	return settingsFor(r, saved), err
 }
 
-// settingsFor hides passwords from devices on the LAN.
+// settingsFor hides passwords and API keys from devices on the LAN.
 func settingsFor(r *http.Request, cfg config.Settings) config.Settings {
 	if !isTrusted(r) {
 		cfg.Server.Password = ""
 		cfg.Qbittorrent.Password, cfg.Transmission.Password = "", ""
+		cfg.TMDB.APIKey = ""
+		cfg.Letterboxd.APIClientSecret = ""
+		// A copy: the indexers are shared with the settings in memory.
+		indexers := make([]config.TorznabIndexer, len(cfg.TorrentSources.Torznab))
+		for i, ix := range cfg.TorrentSources.Torznab {
+			ix.APIKey = ""
+			indexers[i] = ix
+		}
+		cfg.TorrentSources.Torznab = indexers
 	}
 	return cfg
-}
-
-func (s *Server) anilistLogin(r *http.Request) (any, error) {
-	var body struct {
-		Token string `json:"token"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	tok := strings.TrimSpace(body.Token)
-	// Accept a pasted redirect URL too (…#access_token=XYZ&token_type=…).
-	if i := strings.Index(tok, "access_token="); i >= 0 {
-		tok = tok[i+len("access_token="):]
-		if j := strings.IndexAny(tok, "&# "); j >= 0 {
-			tok = tok[:j]
-		}
-	}
-	v, err := s.app.Platform.Login(r.Context(), tok)
-	if err != nil {
-		return nil, badRequest("AniList rejected the token: " + err.Error())
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		_, _ = s.app.Platform.Collection(ctx, "ANIME", true)
-	}()
-	return v, nil
 }
 
 func (s *Server) serverLogin(w http.ResponseWriter, r *http.Request) {
@@ -480,23 +440,59 @@ func (s *Server) openPath(r *http.Request) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Anime
+// Movies and shows
 
-func (s *Server) animeCollection(r *http.Request) (any, error) {
-	// fresh: the list as AniList has it now (another device's progress), at
-	// most a minute old; and the other KumoBoxes asked for their history.
+// mediaCollection is the Home and library page: the list, the library's
+// files, "Continue watching". type (MOVIE or TV) keeps only movies or shows.
+func (s *Server) mediaCollection(r *http.Request) (any, error) {
+	// fresh: the other KumoBoxes are asked for their watch history (another
+	// computer's progress); the list's titles still on the air are fetched
+	// again in the background when due.
 	if r.URL.Query().Get("fresh") == "1" {
-		_, _ = s.app.Platform.CollectionWithin(r.Context(), "ANIME", time.Minute)
 		s.app.Share.Refresh()
 	}
 	view, err := s.app.Library.Collection(r.Context(), r.URL.Query().Get("refresh") == "1")
-	if err == nil {
-		go s.app.PrefetchCollectionArt(view)
+	if err != nil {
+		return nil, err
 	}
-	return view, err
+	go s.app.PrefetchCollectionArt(view)
+	if t := strings.ToUpper(r.URL.Query().Get("type")); t == catalog.TypeMovie || t == catalog.TypeTV {
+		view = filterView(view, t)
+	}
+	return view, nil
 }
 
-// hideContinue removes an anime from "Continue watching" until it offers
+// filterView is a copy of the view with only the titles of a type.
+func filterView(v *library.CollectionView, mediaType string) *library.CollectionView {
+	out := *v
+	keep := func(items []*library.CollectionItem) []*library.CollectionItem {
+		kept := []*library.CollectionItem{}
+		for _, it := range items {
+			if it.Media != nil && catalog.KindOf(it.Media.ID) == mediaType {
+				kept = append(kept, it)
+			}
+		}
+		return kept
+	}
+	out.Lists = nil
+	for _, l := range v.Lists {
+		if items := keep(l.Items); len(items) > 0 {
+			nl := *l
+			nl.Items = items
+			out.Lists = append(out.Lists, &nl)
+		}
+	}
+	out.LocalOnly = keep(v.LocalOnly)
+	out.ContinueWatching = nil
+	for _, c := range v.ContinueWatching {
+		if c.Media != nil && catalog.KindOf(c.Media.ID) == mediaType {
+			out.ContinueWatching = append(out.ContinueWatching, c)
+		}
+	}
+	return &out
+}
+
+// hideContinue removes a title from "Continue watching" until it offers
 // another episode or is watched again.
 func (s *Server) hideContinue(r *http.Request) (any, error) {
 	var body struct {
@@ -533,7 +529,7 @@ func (s *Server) unhideContinue(r *http.Request) (any, error) {
 	return nil, nil
 }
 
-func (s *Server) animeEntry(r *http.Request) (any, error) {
+func (s *Server) mediaEntry(r *http.Request) (any, error) {
 	id, err := pathID(r, "id")
 	if err != nil {
 		return nil, err
@@ -545,12 +541,34 @@ func (s *Server) animeEntry(r *http.Request) (any, error) {
 	return e, err
 }
 
+// mediaEpisodes lists a title's episodes with their files and history.
+func (s *Server) mediaEpisodes(r *http.Request) (any, error) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return nil, err
+	}
+	return s.app.Library.Episodes(r.Context(), id)
+}
+
+// season is a season of a show with its episodes (TMDB's).
+func (s *Server) season(r *http.Request) (any, error) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return nil, err
+	}
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 0 || !catalog.IsShow(id) {
+		return nil, badRequest("not a season of a show")
+	}
+	return s.app.Platform.Season(r.Context(), id, n)
+}
+
 func (s *Server) updateEntry(r *http.Request) (any, error) {
 	id, err := pathID(r, "id")
 	if err != nil {
 		return nil, err
 	}
-	var u anilist.EntryUpdate
+	var u catalog.EntryUpdate
 	if err := decode(r, &u); err != nil {
 		return nil, err
 	}
@@ -567,7 +585,7 @@ func (s *Server) deleteEntry(r *http.Request) (any, error) {
 }
 
 func (s *Server) search(r *http.Request) (any, error) {
-	var p anilist.SearchParams
+	var p catalog.SearchParams
 	if err := decode(r, &p); err != nil {
 		return nil, err
 	}
@@ -579,23 +597,30 @@ func (s *Server) search(r *http.Request) (any, error) {
 }
 
 // discover is the Discover page, cached by the platform: only the very first
-// one waits for AniList.
+// one waits for TMDB.
 func (s *Server) discover(r *http.Request) (any, error) {
 	return s.app.Platform.Discover(r.Context())
 }
 
+// schedule is the TV calendar: the episodes of the shows on the list
+// airing between start and end (unix seconds; by default from yesterday,
+// for days days).
 func (s *Server) schedule(r *http.Request) (any, error) {
-	days := queryInt(r, "days")
-	if days <= 0 || days > 14 {
-		days = 7
+	start, end := int64(queryInt(r, "start")), int64(queryInt(r, "end"))
+	if start <= 0 || end <= start || end-start > 62*24*3600 {
+		days := queryInt(r, "days")
+		if days <= 0 || days > 14 {
+			days = 7
+		}
+		now := time.Now()
+		startDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -1)
+		start, end = startDay.Unix(), startDay.AddDate(0, 0, days+1).Unix()
 	}
-	now := time.Now()
-	startDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -1)
-	items, err := s.app.Platform.Schedule(r.Context(), startDay.Unix(), startDay.AddDate(0, 0, days+1).Unix())
+	items, err := s.app.Platform.Schedule(r.Context(), start, end)
 	if err != nil {
 		return nil, err
 	}
-	coll, _ := s.app.Platform.Collection(r.Context(), "ANIME", false)
+	coll, _ := s.app.Platform.Collection(r.Context(), catalog.TypeTV, false)
 	inList := map[int]string{}
 	if coll != nil {
 		for _, e := range coll.Entries() {
@@ -603,7 +628,7 @@ func (s *Server) schedule(r *http.Request) (any, error) {
 		}
 	}
 	type item struct {
-		*anilist.AiringEpisode
+		*catalog.AiringEpisode
 		ListStatus string `json:"listStatus"`
 	}
 	out := []item{}
@@ -617,10 +642,7 @@ func (s *Server) schedule(r *http.Request) (any, error) {
 	return out, nil
 }
 
+// rawList is the list itself: its movies (type=MOVIE), shows (TV) or both.
 func (s *Server) rawList(r *http.Request) (any, error) {
-	t := strings.ToUpper(r.URL.Query().Get("type"))
-	if t == "" {
-		t = "ANIME"
-	}
-	return s.app.Platform.Collection(r.Context(), t, r.URL.Query().Get("refresh") == "1")
+	return s.app.Platform.Collection(r.Context(), r.URL.Query().Get("type"), r.URL.Query().Get("refresh") == "1")
 }

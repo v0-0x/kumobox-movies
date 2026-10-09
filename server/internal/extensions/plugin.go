@@ -460,7 +460,8 @@ func (h *PluginHost) bindings(r *Runtime, vm *goja.Runtime) *goja.Object {
 		}
 	}
 
-	// $anilist ("anilist" scope).
+	// $anilist ("anilist" scope): kept for plugins written for Kumo, answered
+	// from the catalog and the list (see app/plugins.go).
 	al := vm.NewObject()
 	_ = al.SetPrototype(nil)
 	_ = al.Set("getAnime", func(id int) goja.Value {

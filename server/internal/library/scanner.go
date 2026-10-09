@@ -15,14 +15,14 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
 )
 
 type Scanner struct {
 	Store    *Store
-	platform *anilist.Platform
+	platform *catalog.Platform
 	settings *config.Store
 	hub      *events.Hub
 	// OnScanned runs after each scan that went through (in the background).
@@ -40,7 +40,7 @@ type Scanner struct {
 	stopWatch chan struct{}
 }
 
-func NewScanner(store *Store, p *anilist.Platform, s *config.Store, hub *events.Hub) *Scanner {
+func NewScanner(store *Store, p *catalog.Platform, s *config.Store, hub *events.Hub) *Scanner {
 	sc := &Scanner{Store: store, platform: p, settings: s, hub: hub}
 	sc.newMatcher = func(threshold float64, outsideList bool) *Matcher { return NewMatcher(p, threshold, outsideList) }
 	return sc
@@ -49,17 +49,16 @@ func NewScanner(store *Store, p *anilist.Platform, s *config.Store, hub *events.
 // matcherVersion goes up when matching gets better: the files matched
 // automatically before are matched again, once, at the next scan.
 //
-//	2: other seasons kept apart (Code Geass and R2), also when AniList
-//	   can't be searched.
+//	1: TMDB movies and shows.
 const (
-	matcherVersion    = 2
+	matcherVersion    = 1
 	matcherVersionKey = "library:matcher-version"
 )
 
 type ScanOptions struct {
 	// Re-match every unlocked file, not only new/unmatched ones.
 	Full bool `json:"full"`
-	// Skip the AniList matching step (just index files).
+	// Skip the matching step (just index files).
 	SkipMatching bool `json:"skipMatching"`
 }
 
@@ -145,7 +144,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 		s.hub.Publish(events.ScanProgress, ScanProgress{Stage: "walking", Done: len(found), Message: "Found " + itoa(len(found)) + " files…"})
 	}
 	if len(walked) == 0 {
-		return nil, errors.New("no library directory found — set one in Settings › Local Anime Library")
+		return nil, errors.New("no library directory found — set one in Settings › Library")
 	}
 
 	existing, err := s.Store.All()
@@ -187,6 +186,9 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 		}
 		f.Kind = f.Parsed.Kind
 		f.Episode = max(f.Parsed.Episode, 0)
+		if f.Parsed.Season > 0 && f.Episode > 0 {
+			f.Episode = catalog.EpisodeKey(f.Parsed.Season, f.Episode)
+		}
 		f.AiredEpisode = f.Parsed.Episode
 		if old != nil {
 			f.Locked, f.Ignored = old.Locked, old.Ignored
@@ -210,7 +212,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 			s.hub.Publish(events.ScanProgress, ScanProgress{Stage: "matching", Done: done, Total: total, Message: "Matching " + title})
 		})
 		if upgrade {
-			// Matched again only to do better: a file AniList couldn't
+			// Matched again only to do better: a file TMDB couldn't
 			// confirm a match for keeps its old one, and the upgrade is
 			// done again next scan.
 			for _, f := range toMatch {

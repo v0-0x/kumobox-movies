@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -191,8 +191,8 @@ func TestNyaa(t *testing.T) {
 		t.Fatalf("batch not detected: %+v", res[2])
 	}
 
-	media := &anilist.Media{Format: "TV", Title: anilist.Title{Romaji: "Steins;Gate 0", English: "Steins;Gate 0"}}
-	ep, err := n.SmartSearch(ctx, SmartQuery{Media: media, Episode: 5, Resolution: "1080"})
+	media := &catalog.Media{ID: catalog.ShowID(1), Type: catalog.TypeTV, Format: "TV", Title: catalog.Title{Romaji: "Steins;Gate 0", English: "Steins;Gate 0"}}
+	ep, err := n.SmartSearch(ctx, SmartQuery{Media: media, Episode: catalog.EpisodeKey(1, 5), Resolution: "1080"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestNyaa(t *testing.T) {
 	if len(ep) != 2 || ep[0].EpisodeNumber != -1 || ep[1].EpisodeNumber != 5 {
 		t.Fatalf("smart search episode 5: %+v", ep)
 	}
-	if q := queries[len(queries)-1]; q != "Steins;Gate 0 05 1080" {
+	if q := queries[len(queries)-1]; q != "Steins;Gate 0 S01E05 1080" {
 		t.Fatalf("query %q", q)
 	}
 	batch, err := n.SmartSearch(ctx, SmartQuery{Media: media, Batch: true})
@@ -217,7 +217,7 @@ func TestNyaa(t *testing.T) {
 		if len(res) != 0 || (b != `<rss><channel></channel></rss>` && err == nil) {
 			t.Fatalf("body %q: %v %v", b, res, err)
 		}
-		if _, err := n.SmartSearch(ctx, SmartQuery{Media: media, Episode: 1}); b == `<rss><channel></channel></rss>` && err != nil {
+		if _, err := n.SmartSearch(ctx, SmartQuery{Media: media, Episode: catalog.EpisodeKey(1, 1)}); b == `<rss><channel></channel></rss>` && err != nil {
 			t.Fatalf("empty feed: %v", err)
 		}
 	}
@@ -233,100 +233,74 @@ func toshoItemJSON(title string, seeders int, files int) map[string]any {
 
 func TestAnimeToshoSmartSearch(t *testing.T) {
 	var mu sync.Mutex
-	var requests []string
-	newest := []map[string]any{ // the "aid" feed: only the latest releases
-		toshoItemJSON("[SubsPlease] Kaiju No. 8 - 12 (1080p)", 50, 1),
-		toshoItemJSON("[SubsPlease] Kaiju No. 8 - 11 (1080p)", 40, 1),
-		toshoItemJSON("[Erai-raws] Kaiju No. 8 - 11 [1080p][Multiple Subtitle]", 30, 2),
-		toshoItemJSON("[SubsPlease] Kaiju No. 8 (01-12) (1080p) [Batch]", 20, 12),
-	}
+	var queries []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/json" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		q := r.URL.Query()
+		q := r.URL.Query().Get("q")
 		mu.Lock()
-		requests = append(requests, q.Encode())
+		queries = append(queries, q)
 		mu.Unlock()
 		switch {
-		case q.Get("aid") == "18287":
-			_ = json.NewEncoder(w).Encode(newest)
-		case q.Get("aid") == "1":
-			_, _ = io.WriteString(w, `[]`)
-		case q.Get("aid") == "2":
-			_, _ = io.WriteString(w, `null`)
-		case q.Get("eid") == "300":
-			_ = json.NewEncoder(w).Encode([]map[string]any{toshoItemJSON("[SubsPlease] Kaiju No. 8 - 03 (720p)", 5, 1)})
-		case strings.Contains(q.Get("q"), "03"):
+		case strings.Contains(q, "batch"):
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				toshoItemJSON("[SubsPlease] Kaiju No. 8 (01-12) (1080p) [Batch]", 20, 12),
+				toshoItemJSON("[SubsPlease] Kaiju No. 8 - 12 (1080p)", 50, 1),
+			})
+		case strings.Contains(q, "S01E03"):
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				toshoItemJSON("[SubsPlease] Kaiju No. 8 - 03 (1080p)", 10, 1),
+				toshoItemJSON("[Erai-raws] Kaiju No. 8 - 03 [1080p][Multiple Subtitle]", 30, 2),
 				toshoItemJSON("[SubsPlease] Kaiju No. 8 - 13 (1080p)", 10, 1),
 			})
 		default:
-			_, _ = io.WriteString(w, `[]`)
+			_, _ = io.WriteString(w, `null`)
 		}
 	}))
 	defer srv.Close()
 	useTestHTTP(t, srv)
 	a := &AnimeTosho{Base: srv.URL}
 	ctx := context.Background()
-	media := &anilist.Media{Format: "TV", Title: anilist.Title{Romaji: "Kaiju No. 8", English: "Kaiju No. 8"}}
-	reset := func() {
-		mu.Lock()
-		requests = nil
-		mu.Unlock()
-	}
+	media := &catalog.Media{ID: catalog.ShowID(1), Type: catalog.TypeTV, Format: "TV", Title: catalog.Title{Romaji: "Kaiju No. 8", English: "Kaiju No. 8"}}
 
-	// A recent episode is on the AniDB feed: no title search needed.
-	reset()
-	res, err := a.SmartSearch(ctx, SmartQuery{Media: media, Episode: 11, Resolution: "1080", AnidbAID: 18287})
-	if err != nil || len(res) != 3 || len(requests) != 1 {
-		t.Fatalf("episode 11: %d results %v, requests %v", len(res), err, requests)
+	res, err := a.SmartSearch(ctx, SmartQuery{Media: media, Episode: catalog.EpisodeKey(1, 3), Resolution: "1080"})
+	if err != nil || len(res) != 2 {
+		t.Fatalf("episode 3: %+v %v (queries %v)", res, err, queries)
 	}
+	// Two files with an episode's name is still that episode; episode 13
+	// is dropped.
 	for _, r := range res {
-		if r.EpisodeNumber != 11 && !r.IsBatch {
-			t.Fatalf("episode 11: unexpected %+v", r)
+		if r.EpisodeNumber != 3 || r.IsBatch {
+			t.Fatalf("episode 3: unexpected %+v", r)
 		}
 	}
-	// Two files with an episode's name is still that episode.
-	if res[1].Name != "[Erai-raws] Kaiju No. 8 - 11 [1080p][Multiple Subtitle]" || res[1].IsBatch {
-		t.Fatalf("multi-file episode: %+v", res[1])
+	if q := queries[len(queries)-1]; q != "Kaiju No. 8 S01E03 1080" {
+		t.Errorf("query %q", q)
 	}
 
-	// An older episode isn't on it (only the batch matches): the title
-	// search runs too, and the batch is kept.
-	reset()
-	res, err = a.SmartSearch(ctx, SmartQuery{Media: media, Episode: 3, Resolution: "1080", AnidbAID: 18287})
-	if err != nil || len(res) != 2 || !res[0].IsBatch || res[1].EpisodeNumber != 3 || len(requests) != 2 {
-		t.Fatalf("episode 3: %+v %v (requests %v)", res, err, requests)
-	}
-
-	// Batches: found on the feed.
-	reset()
-	res, err = a.SmartSearch(ctx, SmartQuery{Media: media, Batch: true, AnidbAID: 18287})
-	if err != nil || len(res) != 1 || !res[0].IsBatch || len(requests) != 1 {
+	res, err = a.SmartSearch(ctx, SmartQuery{Media: media, Batch: true})
+	if err != nil || len(res) != 1 || !res[0].IsBatch {
 		t.Fatalf("batch: %+v %v", res, err)
 	}
 
-	// Empty or null feeds fall back to the title search.
-	for _, aid := range []int{1, 2} {
-		reset()
-		res, err = a.SmartSearch(ctx, SmartQuery{Media: media, Episode: 3, AnidbAID: aid})
-		if err != nil || len(res) != 1 || res[0].EpisodeNumber != 3 || len(requests) < 2 {
-			t.Fatalf("aid %d: %+v %v (requests %v)", aid, res, err, requests)
-		}
+	// A null answer: nothing, no error.
+	if res, err := a.SmartSearch(ctx, SmartQuery{Media: media, Episode: catalog.EpisodeKey(2, 1)}); err != nil || len(res) != 0 {
+		t.Fatalf("nothing found: %+v %v", res, err)
 	}
+}
 
-	// Episode id lookup whose releases don't have the resolution asked for.
-	reset()
-	res, err = a.SmartSearch(ctx, SmartQuery{Media: media, Episode: 3, Resolution: "1080", AnidbEID: 300})
-	if err != nil || len(res) != 1 || res[0].Resolution != "1080p" {
-		t.Fatalf("eid: %+v %v (requests %v)", res, err, requests)
+// A movie is searched by its title and year.
+func TestSmartQueriesForMovies(t *testing.T) {
+	year := 2008
+	movie := &catalog.Media{ID: 155, Type: catalog.TypeMovie, Format: catalog.TypeMovie, SeasonYear: &year,
+		Title: catalog.Title{English: "The Dark Knight", Romaji: "The Dark Knight"}}
+	if got := smartQueries(SmartQuery{Media: movie, Resolution: "2160p"}); len(got) != 1 || got[0] != "The Dark Knight 2008 2160p" {
+		t.Errorf("movie queries %q", got)
 	}
-	reset()
-	res, err = a.SmartSearch(ctx, SmartQuery{Media: media, Episode: 3, Resolution: "720", AnidbEID: 300})
-	if err != nil || len(res) != 1 || res[0].Resolution != "720p" || len(requests) != 1 {
-		t.Fatalf("eid 720p: %+v %v (requests %v)", res, err, requests)
+	amelie := &catalog.Media{ID: 194, Type: catalog.TypeMovie, Title: catalog.Title{English: "Amélie", Romaji: "Le Fabuleux Destin d'Amélie Poulain"}}
+	if got := smartQueries(SmartQuery{Media: amelie}); len(got) != 2 || got[0] != "Amélie" || got[1] != "Le Fabuleux Destin d'Amélie Poulain" {
+		t.Errorf("both titles: %q", got)
 	}
 }

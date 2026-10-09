@@ -6,14 +6,19 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/torrent"
 )
 
-// ProviderMedia is the media shape providers receive (hibike's Media).
+// ProviderMedia is the media shape providers receive (hibike's Media), with
+// the TMDB and IMDb ids of the movie or show and its type (MOVIE or TV) on
+// top.
 type ProviderMedia struct {
 	ID                   int        `json:"id"`
 	IDMal                *int       `json:"idMal,omitempty"`
+	TmdbID               int        `json:"tmdbId,omitempty"`
+	ImdbID               string     `json:"imdbId,omitempty"`
+	Type                 string     `json:"type,omitempty"`
 	Status               string     `json:"status,omitempty"`
 	Format               string     `json:"format,omitempty"`
 	EnglishTitle         *string    `json:"englishTitle,omitempty"`
@@ -31,13 +36,16 @@ type FuzzyDate struct {
 	Day   *int `json:"day"`
 }
 
-func ToProviderMedia(m *anilist.Media) ProviderMedia {
+func ToProviderMedia(m *catalog.Media) ProviderMedia {
 	if m == nil {
 		return ProviderMedia{Synonyms: []string{}, Status: "NOT_YET_RELEASED", Format: "TV", EpisodeCount: -1}
 	}
 	pm := ProviderMedia{
-		ID: m.ID, IDMal: m.IDMal, Status: m.Status, Format: m.Format, RomajiTitle: m.Title.Romaji,
-		EpisodeCount: -1, Synonyms: m.Synonyms, IsAdult: m.IsAdult,
+		ID: m.ID, TmdbID: m.TMDBID, ImdbID: m.IMDbID, Type: m.Type, Status: m.Status, Format: m.Format,
+		RomajiTitle: m.Title.Romaji, EpisodeCount: -1, Synonyms: m.Synonyms, IsAdult: m.IsAdult,
+	}
+	if pm.RomajiTitle == "" {
+		pm.RomajiTitle = m.PreferredTitle()
 	}
 	if pm.Synonyms == nil {
 		pm.Synonyms = []string{}
@@ -156,12 +164,18 @@ func (p *TorrentProvider) SmartSearch(ctx context.Context, q torrent.SmartQuery)
 		return nil, err
 	}
 	media := ToProviderMedia(q.Media)
+	// The episode as providers number them: in its season (the season and
+	// the KumoBox key come along).
+	season, episode := 0, 0
+	if q.Media != nil && q.Media.IsShow() && q.Episode > 0 {
+		season, episode = catalog.SplitKey(q.Episode)
+	}
 	if q.Query != "" || !p.settings(ctx) {
 		query := q.Query
 		if query == "" && q.Media != nil {
-			query = q.Media.Title.Romaji
-			if !q.Batch && q.Episode > 0 {
-				query = fmt.Sprintf("%s %02d", query, q.Episode)
+			query = q.Media.EnglishOrRomaji()
+			if !q.Batch && episode > 0 {
+				query = fmt.Sprintf("%s %s", query, catalog.FormatKey(q.Episode))
 			}
 		}
 		raw, err := rt.CallProvider(ctx, "search", map[string]any{"media": media, "query": query})
@@ -171,8 +185,8 @@ func (p *TorrentProvider) SmartSearch(ctx context.Context, q torrent.SmartQuery)
 		return p.convert(raw)
 	}
 	opts := map[string]any{
-		"media": media, "query": "", "batch": q.Batch, "episodeNumber": q.Episode,
-		"resolution": strings.TrimSuffix(q.Resolution, "p"), "anidbAID": q.AnidbAID, "anidbEID": q.AnidbEID, "bestReleases": false,
+		"media": media, "query": "", "batch": q.Batch, "episodeNumber": episode, "seasonNumber": season, "episodeKey": q.Episode,
+		"resolution": strings.TrimSuffix(q.Resolution, "p"), "anidbAID": 0, "anidbEID": 0, "bestReleases": false,
 	}
 	raw, err := rt.CallProvider(ctx, "smartSearch", opts)
 	if err != nil {
@@ -293,7 +307,7 @@ func (p *OnlineStreamProvider) Settings(ctx context.Context) OSSettings {
 	return s
 }
 
-func (p *OnlineStreamProvider) Search(ctx context.Context, media *anilist.Media, query string, dub bool) ([]OSSearchResult, error) {
+func (p *OnlineStreamProvider) Search(ctx context.Context, media *catalog.Media, query string, dub bool) ([]OSSearchResult, error) {
 	rt, err := p.ext.Runtime()
 	if err != nil {
 		return nil, err
@@ -351,90 +365,4 @@ func (p *OnlineStreamProvider) FindEpisodeServer(ctx context.Context, ep OSEpiso
 		out.Server = server
 	}
 	return &out, nil
-}
-
-// ---------------------------------------------------------------------------
-// Manga providers
-
-type MangaSearchResult struct {
-	ID           string            `json:"id"`
-	Title        string            `json:"title"`
-	Synonyms     []string          `json:"synonyms,omitempty"`
-	Year         int               `json:"year,omitempty"`
-	Image        string            `json:"image,omitempty"`
-	ImageHeaders map[string]string `json:"imageHeaders,omitempty"`
-	SearchRating float64           `json:"searchRating,omitempty"`
-}
-
-type MangaChapter struct {
-	ID        string  `json:"id"`
-	URL       string  `json:"url"`
-	Title     string  `json:"title"`
-	Chapter   string  `json:"chapter"`
-	Index     float64 `json:"index"`
-	Scanlator string  `json:"scanlator,omitempty"`
-	Language  string  `json:"language,omitempty"`
-	Rating    float64 `json:"rating,omitempty"`
-	UpdatedAt string  `json:"updatedAt,omitempty"`
-}
-
-type MangaPage struct {
-	URL     string            `json:"url"`
-	Index   float64           `json:"index"`
-	Headers map[string]string `json:"headers"`
-}
-
-type MangaProvider struct {
-	ext *Loaded
-}
-
-func (p *MangaProvider) ID() string   { return p.ext.Manifest.ID }
-func (p *MangaProvider) Name() string { return p.ext.Manifest.Name }
-
-func (p *MangaProvider) Search(ctx context.Context, query string, year int) ([]MangaSearchResult, error) {
-	rt, err := p.ext.Runtime()
-	if err != nil {
-		return nil, err
-	}
-	raw, err := rt.CallProvider(ctx, "search", map[string]any{"query": query, "year": year})
-	if err != nil {
-		return nil, err
-	}
-	var out []MangaSearchResult
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("%s returned unexpected search data: %w", p.Name(), err)
-	}
-	return out, nil
-}
-
-func (p *MangaProvider) FindChapters(ctx context.Context, id string) ([]MangaChapter, error) {
-	rt, err := p.ext.Runtime()
-	if err != nil {
-		return nil, err
-	}
-	raw, err := rt.CallProvider(ctx, "findChapters", id)
-	if err != nil {
-		return nil, err
-	}
-	var out []MangaChapter
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("%s returned unexpected chapter data: %w", p.Name(), err)
-	}
-	return out, nil
-}
-
-func (p *MangaProvider) FindChapterPages(ctx context.Context, id string) ([]MangaPage, error) {
-	rt, err := p.ext.Runtime()
-	if err != nil {
-		return nil, err
-	}
-	raw, err := rt.CallProvider(ctx, "findChapterPages", id)
-	if err != nil {
-		return nil, err
-	}
-	var out []MangaPage
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("%s returned unexpected page data: %w", p.Name(), err)
-	}
-	return out, nil
 }

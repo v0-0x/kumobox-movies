@@ -11,7 +11,7 @@ import (
 )
 
 // TrackPrefs remembers which audio and subtitle track the user picked for an
-// anime so the next episodes open with the same choice.
+// title so the next episodes open with the same choice.
 type TrackPrefs struct {
 	MediaID    int    `json:"mediaId"`
 	AudioLang  string `json:"audioLang"`
@@ -21,7 +21,7 @@ type TrackPrefs struct {
 	SubTitle   string `json:"subTitle"`
 	SubIndex   int    `json:"subIndex"`
 	SubOff     bool   `json:"subOff"`
-	// Preferred online stream mode for this anime: sub | dub.
+	// Preferred online stream mode for this title: sub | dub.
 	StreamMode string `json:"streamMode"`
 	UpdatedAt  int64  `json:"updatedAt"`
 }

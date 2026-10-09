@@ -13,7 +13,7 @@ import (
 
 	"github.com/5rahim/habari"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -42,15 +42,25 @@ type SearchResult struct {
 	Dub           bool   `json:"dub"`
 }
 
-// SmartQuery is what the UI asks for when searching from an anime page.
+// SmartQuery is what the UI asks for when searching from a title page.
+// Episode is the key of the episode looked for (see catalog), 0 for a movie
+// or a whole show; Batch asks for a season or a whole show at once.
 type SmartQuery struct {
-	Media      *anilist.Media
+	Media      *catalog.Media
 	Query      string // free text overrides the generated one
 	Episode    int
 	Batch      bool
 	Resolution string
-	AnidbAID   int
-	AnidbEID   int
+}
+
+// episodeNumber is the number of the episode q looks for in its season,
+// as release names number them (0: none).
+func (q SmartQuery) episodeNumber() int {
+	if q.Episode <= 0 || q.Media == nil || !q.Media.IsShow() {
+		return 0
+	}
+	_, e := catalog.SplitKey(q.Episode)
+	return e
 }
 
 // Provider searches for torrents.
@@ -240,7 +250,7 @@ func smartQueries(q SmartQuery) []string {
 		return []string{q.Query}
 	}
 	var titles []string
-	for _, t := range []string{q.Media.Title.Romaji, q.Media.Title.English} {
+	for _, t := range []string{q.Media.Title.English, q.Media.Title.Romaji} {
 		t = strings.TrimSpace(t)
 		if t != "" && !containsFold(titles, t) {
 			titles = append(titles, t)
@@ -250,10 +260,13 @@ func smartQueries(q SmartQuery) []string {
 	for _, t := range titles {
 		t = searchText(t)
 		s := t
-		if !q.Batch && q.Episode > 0 && q.Media.Format != "MOVIE" {
-			s = fmt.Sprintf("%s %02d", t, q.Episode)
-		} else if q.Batch {
+		switch {
+		case !q.Batch && q.episodeNumber() > 0:
+			s = t + " " + catalog.FormatKey(q.Episode)
+		case q.Batch && q.Media.IsShow():
 			s = t + " batch"
+		case !q.Media.IsShow() && q.Media.Year() > 0:
+			s = fmt.Sprintf("%s %d", t, q.Media.Year())
 		}
 		if q.Resolution != "" {
 			s += " " + q.Resolution
@@ -292,12 +305,12 @@ func filterSmart(results []*SearchResult, q SmartQuery) []*SearchResult {
 	var out []*SearchResult
 	for _, r := range results {
 		if q.Batch {
-			if r.IsBatch || q.Media.Format == "MOVIE" {
+			if r.IsBatch || !q.Media.IsShow() {
 				out = append(out, r)
 			}
 			continue
 		}
-		if q.Episode > 0 && r.EpisodeNumber >= 0 && r.EpisodeNumber != q.Episode && !r.IsBatch {
+		if ep := q.episodeNumber(); ep > 0 && r.EpisodeNumber >= 0 && r.EpisodeNumber != ep && !r.IsBatch {
 			continue
 		}
 		out = append(out, r)
@@ -438,7 +451,6 @@ type toshoItem struct {
 	TotalSize  int64  `json:"total_size"`
 	Timestamp  int64  `json:"timestamp"`
 	NumFiles   int    `json:"num_files"`
-	AnidbEID   int    `json:"anidb_eid"`
 }
 
 func (a *AnimeTosho) fetch(ctx context.Context, params url.Values) ([]*SearchResult, error) {
@@ -474,26 +486,6 @@ func (a *AnimeTosho) Search(ctx context.Context, query string) ([]*SearchResult,
 }
 
 func (a *AnimeTosho) SmartSearch(ctx context.Context, q SmartQuery) ([]*SearchResult, error) {
-	// Exact episode lookups via AniDB ids when available.
-	if q.Query == "" && q.AnidbEID > 0 && !q.Batch {
-		if res, err := a.fetch(ctx, url.Values{"eid": {strconv.Itoa(q.AnidbEID)}}); err == nil {
-			if res = filterRes(res, q.Resolution); len(res) > 0 {
-				return dedupeSort(res), nil
-			}
-		}
-	}
-	// The AniDB anime feed only lists the newest releases: an older episode
-	// or a batch needs the title search too.
-	var byID []*SearchResult
-	if q.Query == "" && q.AnidbAID > 0 {
-		res, err := a.fetch(ctx, url.Values{"aid": {strconv.Itoa(q.AnidbAID)}})
-		if err == nil {
-			byID = filterRes(filterSmart(res, q), q.Resolution)
-			if answers(byID, q) {
-				return dedupeSort(byID), nil
-			}
-		}
-	}
 	var all []*SearchResult
 	var firstErr error
 	for _, s := range smartQueries(q) {
@@ -504,38 +496,11 @@ func (a *AnimeTosho) SmartSearch(ctx context.Context, q SmartQuery) ([]*SearchRe
 		}
 		all = append(all, res...)
 	}
-	all = append(filterSmart(all, q), byID...)
+	all = filterSmart(all, q)
 	if len(all) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
 	return dedupeSort(all), nil
-}
-
-// answers reports whether results already filtered for q have what it asks
-// for: a release of the episode, or anything for other queries.
-func answers(results []*SearchResult, q SmartQuery) bool {
-	if q.Batch || q.Episode <= 0 || q.Media == nil || q.Media.Format == "MOVIE" {
-		return len(results) > 0
-	}
-	for _, r := range results {
-		if r.EpisodeNumber == q.Episode && !r.IsBatch {
-			return true
-		}
-	}
-	return false
-}
-
-func filterRes(res []*SearchResult, resolution string) []*SearchResult {
-	if resolution == "" {
-		return res
-	}
-	var out []*SearchResult
-	for _, r := range res {
-		if strings.Contains(r.Resolution, strings.TrimSuffix(resolution, "p")) {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 func (a *AnimeTosho) Magnet(_ context.Context, r *SearchResult) (string, error) {

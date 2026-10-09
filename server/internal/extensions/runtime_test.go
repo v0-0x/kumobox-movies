@@ -32,7 +32,7 @@ func TestMarketplaceProvidersLoad(t *testing.T) {
 	if root == "" {
 		t.Skip("KUMOBOX_EXT_SAMPLES not set")
 	}
-	for _, typ := range []string{TypeOnlineStream, TypeTorrent, TypeManga} {
+	for _, typ := range []string{TypeOnlineStream, TypeTorrent} {
 		dirs, _ := os.ReadDir(filepath.Join(root, typ))
 		for _, d := range dirs {
 			dir := filepath.Join(root, typ, d.Name())

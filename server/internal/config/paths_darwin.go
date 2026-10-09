@@ -5,8 +5,7 @@ import (
 	"path/filepath"
 )
 
-// videosFolder is the home folder for videos (the library's default is its
-// Anime folder).
+// videosFolder is the home folder for videos: the library's default
 const videosFolder = "Movies"
 
 // defaultDataDir is ~/Library/Application Support/KumoBox. The desktop app

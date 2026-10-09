@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/subtle"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/app"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/downloads"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
-	"github.com/v0-0x/kumobox-movies/server/internal/manga"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
@@ -121,7 +120,8 @@ type pathsBody struct {
 	Paths   []string `json:"paths"`
 	MediaID int      `json:"mediaId"`
 	Ignored bool     `json:"ignored"`
-	// Optional: shift episode numbers (e.g. -12 when a folder uses absolute numbering).
+	// Optional: shift the episode numbers of the file names (e.g. -12 when a
+	// folder numbers a show's episodes from the first one).
 	EpisodeOffset int `json:"episodeOffset"`
 	// Optional: number the episodes 1, 2, 3… in file-name order instead
 	// (for files whose names carry no usable episode number).
@@ -171,32 +171,27 @@ func (s *Server) match(r *http.Request) (any, error) {
 	}
 	for _, f := range files {
 		f.MediaID, f.Locked, f.Ignored, f.MatchScore = body.MediaID, true, false, 1
-		ep := f.Parsed.Episode + body.EpisodeOffset
+		// The episode by the number in its name (or its place), shifted.
+		numbered := *f
+		if f.Parsed.Episode >= 0 {
+			numbered.Parsed.Episode = f.Parsed.Episode + body.EpisodeOffset
+		}
 		if n, ok := order[f.Path]; ok {
-			ep = n + body.EpisodeOffset
+			numbered.Parsed.Episode = n + body.EpisodeOffset
 		}
-		switch {
-		case f.Kind == "nc":
-			f.Episode = 0
-		case f.Parsed.Episode < 0 && (media.Format == "MOVIE" || media.TotalEpisodes() == 1):
-			f.Episode = 1
-		case ep > 0:
-			f.Episode = ep
-		default:
-			f.Episode = 0
-		}
+		f.Episode = library.FileKey(&numbered, media)
 	}
 	if err := s.app.Files.Save(files...); err != nil {
 		return nil, err
 	}
 	s.app.Hub.Publish("library-updated", nil)
-	s.app.PrefetchAnime(body.MediaID)
+	s.app.PrefetchMedia(body.MediaID)
 	return nil, nil
 }
 
-// torrentFolder is where a torrent for an anime is saved: the folder that
-// already holds its episodes (inside the library), else the usual new
-// per-anime folder.
+// torrentFolder is where a torrent for a title is saved: the folder that
+// already holds its files (inside the library), else the usual new folder
+// of its own.
 func (s *Server) torrentFolder(mediaID int, title string) string {
 	def := s.app.Torrents.SavePathFor(title)
 	cfg := s.app.Settings.Get()
@@ -377,10 +372,7 @@ func (s *Server) episodeTitle(ctx context.Context, mediaID, episode int, fallbac
 	if err != nil {
 		return fallback
 	}
-	if media.Format == "MOVIE" {
-		return media.PreferredTitle()
-	}
-	return fmt.Sprintf("%s — Episode %d", media.PreferredTitle(), episode)
+	return app.EpisodeTitle(media, episode)
 }
 
 func (s *Server) playLocal(r *http.Request) (any, error) {
@@ -526,18 +518,11 @@ func (s *Server) saveTracks(r *http.Request) (any, error) {
 	return nil, s.app.Player.Tracks.Save(p)
 }
 
+// skips are the parts of an episode the in-app player offers to skip.
+// AniSkip only knows anime (by MyAnimeList id): none for TMDB titles, until
+// skipping by chapter names replaces it.
 func (s *Server) skips(r *http.Request) (any, error) {
-	mediaID, ep := queryInt(r, "mediaId"), queryInt(r, "episode")
-	media, err := s.app.Platform.MediaLite(r.Context(), mediaID)
-	if err != nil || media.IDMal == nil {
-		return []player.SkipInterval{}, nil
-	}
-	length, _ := strconv.ParseFloat(r.URL.Query().Get("length"), 64)
-	out := player.SkipTimes(r.Context(), s.app.DB, *media.IDMal, ep, length)
-	if out == nil {
-		out = []player.SkipInterval{}
-	}
-	return out, nil
+	return []player.SkipInterval{}, nil
 }
 
 func (s *Server) clearHistory(r *http.Request) (any, error) {
@@ -545,9 +530,14 @@ func (s *Server) clearHistory(r *http.Request) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Online streaming
+// Streaming providers
 
-func (s *Server) mediaFromQuery(r *http.Request) (*anilist.Media, error) {
+// providerOf is the streaming provider asked for, else the default one.
+func (s *Server) providerOf(id string) string {
+	return util.FirstNonEmpty(id, s.app.Settings.Get().OnlineStream.DefaultProvider)
+}
+
+func (s *Server) mediaFromQuery(r *http.Request) (*catalog.Media, error) {
 	id := queryInt(r, "mediaId")
 	if id <= 0 {
 		return nil, badRequest("missing mediaId")
@@ -571,18 +561,18 @@ func (s *Server) osEpisodes(r *http.Request) (any, error) {
 		}
 		_ = s.setLanguageMode(media.ID, mm)
 	}
-	return s.app.Stream.Episodes(r.Context(), util2(q.Get("provider"), stream.AniCliProvider), media, dub, q.Get("refresh") == "1")
+	return s.app.Stream.Episodes(r.Context(), s.providerOf(q.Get("provider")), media, dub, q.Get("refresh") == "1")
 }
 
-// osModes tells whether the provider has the anime subtitled and dubbed: the
-// anime page offers only those.
+// osModes tells whether the provider has the title subtitled and dubbed: the
+// title page offers only those.
 func (s *Server) osModes(r *http.Request) (any, error) {
 	media, err := s.mediaFromQuery(r)
 	if err != nil {
 		return nil, err
 	}
 	q := r.URL.Query()
-	return s.app.Stream.Modes(r.Context(), util2(q.Get("provider"), stream.AniCliProvider), media, q.Get("refresh") == "1"), nil
+	return s.app.Stream.Modes(r.Context(), s.providerOf(q.Get("provider")), media, q.Get("refresh") == "1"), nil
 }
 
 func proxied(src stream.Source) map[string]any {
@@ -612,7 +602,7 @@ func (s *Server) osSources(r *http.Request) (any, error) {
 	q := r.URL.Query()
 	ep, _ := strconv.ParseFloat(q.Get("episode"), 64)
 	dub := q.Get("dub") == "1" || q.Get("dub") == "true"
-	res, err := s.app.Stream.Sources(r.Context(), util2(q.Get("provider"), stream.AniCliProvider), media, ep, dub, q.Get("server"), q.Get("quality"))
+	res, err := s.app.Stream.Sources(r.Context(), s.providerOf(q.Get("provider")), media, ep, dub, q.Get("server"), q.Get("quality"))
 	if err != nil {
 		return nil, err
 	}
@@ -625,20 +615,21 @@ func (s *Server) osSources(r *http.Request) (any, error) {
 	}
 	// Only the in-app player asks for sources, when it opens an episode: a
 	// new viewing, which may update progress again (rewatch).
-	s.app.Player.ResetBuiltinProgress(media.ID, int(ep))
+	key := stream.EpisodeKeyOf(media, ep)
+	s.app.Player.ResetBuiltinProgress(media.ID, key)
 	out := make([]map[string]any, 0, len(res.Sources))
 	for _, src := range res.Sources {
 		out = append(out, proxied(src))
 	}
 	return map[string]any{
 		"provider": res.Provider, "episode": res.Episode, "sources": out, "errors": res.Errors, "title": res.Title,
-		"resumeAt": s.app.History.ResumePosition(media.ID, int(ep)), "tracks": s.app.Player.Tracks.Get(media.ID),
+		"resumeAt": s.app.History.ResumePosition(media.ID, key), "tracks": s.app.Player.Tracks.Get(media.ID), "key": key,
 	}, nil
 }
 
 func (s *Server) osSearch(r *http.Request) (any, error) {
 	q := r.URL.Query()
-	return s.app.Stream.Search(r.Context(), util2(q.Get("provider"), stream.AniCliProvider), q.Get("q"), q.Get("dub") == "1")
+	return s.app.Stream.Search(r.Context(), s.providerOf(q.Get("provider")), q.Get("q"), q.Get("dub") == "1")
 }
 
 func (s *Server) osMapping(r *http.Request) (any, error) {
@@ -689,7 +680,7 @@ func (s *Server) osPlay(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	provider := util2(body.Provider, stream.AniCliProvider)
+	provider := s.providerOf(body.Provider)
 	res, err := s.app.Stream.Sources(r.Context(), provider, media, body.Episode, body.Dub, body.Server, body.Quality)
 	if err != nil {
 		return nil, err
@@ -703,18 +694,15 @@ func (s *Server) osPlay(r *http.Request) (any, error) {
 	for _, sub := range src.Subtitles {
 		subs = append(subs, sub.URL)
 	}
-	source := "stream"
-	if provider == stream.AniCliProvider {
-		source = "anicli"
-	}
 	mode := "sub"
 	if body.Dub {
 		mode = "dub"
 	}
 	_ = s.setLanguageMode(media.ID, mode)
-	title := fmt.Sprintf("%s — Episode %s [%s]", media.PreferredTitle(), strconv.FormatFloat(body.Episode, 'f', -1, 64), strings.ToUpper(mode))
+	key := stream.EpisodeKeyOf(media, body.Episode)
+	title := fmt.Sprintf("%s [%s]", app.EpisodeTitle(media, key), strings.ToUpper(mode))
 	return s.app.Player.PlayMpv(player.PlayRequest{
-		MediaID: media.ID, Episode: int(body.Episode), Title: title, Source: source, Target: src.URL,
+		MediaID: media.ID, Episode: key, Title: title, Source: "stream", Target: src.URL,
 		Headers: src.Headers, Referrer: src.Referrer, SubFiles: subs,
 	})
 }
@@ -734,11 +722,7 @@ func (s *Server) osDownload(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	provider := util2(body.Provider, stream.AniCliProvider)
-	source := "stream"
-	if provider == stream.AniCliProvider {
-		source = "anicli"
-	}
+	provider := s.providerOf(body.Provider)
 	mode := "sub"
 	if body.Dub {
 		mode = "dub"
@@ -746,15 +730,15 @@ func (s *Server) osDownload(r *http.Request) (any, error) {
 	var items []*downloads.Item
 	for _, ep := range body.Episodes {
 		it, err := s.app.Downloads.Enqueue(downloads.Item{
-			MediaID: media.ID, Episode: int(ep), AnimeTitle: media.PreferredTitle(), Image: media.CoverImage.Large,
-			Mode: mode, Source: source, Provider: provider, Quality: body.Quality,
+			MediaID: media.ID, Episode: stream.EpisodeKeyOf(media, ep), AnimeTitle: media.PreferredTitle(), Image: media.CoverImage.Large,
+			Mode: mode, Source: "stream", Provider: provider, Quality: body.Quality,
 		})
 		if err != nil {
 			return nil, err
 		}
 		items = append(items, it)
 	}
-	s.app.Hub.Info(fmt.Sprintf("Queued %d episode(s) for download", len(items)))
+	s.app.Hub.Info(fmt.Sprintf("Queued %d download(s)", len(items)))
 	return items, nil
 }
 
@@ -787,9 +771,6 @@ func (s *Server) torrentSearch(r *http.Request) (any, error) {
 			return nil, err
 		}
 		q := torrent.SmartQuery{Media: media, Query: body.Query, Episode: body.Episode, Batch: body.Batch, Resolution: body.Resolution}
-		if meta, err := s.app.Meta.Get(r.Context(), media.ID); err == nil {
-			q.AnidbAID = meta.Mappings.AnidbID
-		}
 		search = func(ctx context.Context, p torrent.Provider) ([]*torrent.SearchResult, error) {
 			return p.SmartSearch(ctx, q)
 		}
@@ -992,102 +973,4 @@ func (s *Server) pluginEvent(r *http.Request) (any, error) {
 		}
 	}
 	return nil, s.app.Extensions.DispatchPluginEvent(r.PathValue("id"), evt)
-}
-
-// ---------------------------------------------------------------------------
-// Manga
-
-func (s *Server) mangaProviders(r *http.Request) (any, error) {
-	out := []map[string]string{}
-	for _, p := range s.app.Extensions.MangaProviders() {
-		out = append(out, map[string]string{"id": p.ID(), "name": p.Name()})
-	}
-	return out, nil
-}
-
-func (s *Server) mangaChapters(r *http.Request) (any, error) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		return nil, err
-	}
-	media, err := s.app.Platform.MediaLite(r.Context(), id)
-	if err != nil {
-		return nil, err
-	}
-	provider := r.URL.Query().Get("provider")
-	if provider == "" {
-		provider = s.app.Settings.Get().Manga.DefaultProvider
-	}
-	return s.app.Manga.Chapters(r.Context(), provider, media, r.URL.Query().Get("refresh") == "1")
-}
-
-func (s *Server) mangaMapping(r *http.Request) (any, error) {
-	var body struct {
-		Provider string `json:"provider"`
-		MediaID  int    `json:"mediaId"`
-		ID       string `json:"id"`
-		Title    string `json:"title"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	if body.Provider == "" || body.MediaID <= 0 || body.ID == "" {
-		return nil, badRequest("provider, mediaId and id are required")
-	}
-	s.app.Manga.SetMapping(body.Provider, body.MediaID, manga.Mapping{ID: body.ID, Title: body.Title, Score: 1})
-	return nil, nil
-}
-
-func (s *Server) mangaPosition(r *http.Request) (any, error) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		return nil, err
-	}
-	return s.app.Manga.Position(id), nil
-}
-
-func (s *Server) saveMangaPosition(r *http.Request) (any, error) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		return nil, err
-	}
-	var p manga.Position
-	if err := decode(r, &p); err != nil {
-		return nil, err
-	}
-	if err := s.app.Manga.SetPosition(id, p); errors.Is(err, manga.ErrBadPosition) {
-		return nil, badRequest(err.Error())
-	} else if err != nil {
-		return nil, err
-	}
-	return nil, nil
-}
-
-func (s *Server) mangaStartReading(r *http.Request) (any, error) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		return nil, err
-	}
-	added, err := s.app.Manga.StartReading(r.Context(), id)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]bool{"added": added}, nil
-}
-
-func (s *Server) mangaProgress(r *http.Request) (any, error) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		return nil, err
-	}
-	var body struct {
-		Chapter string `json:"chapter"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	if err := s.app.Manga.MarkRead(r.Context(), id, body.Chapter); err != nil {
-		return nil, err
-	}
-	return nil, nil
 }

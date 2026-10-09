@@ -7,16 +7,16 @@ import (
 	"time"
 )
 
-// Every anime with files, this computer's or shared with it by another
-// KumoBox, gets all its data downloaded once: its AniList page, ani.zip's
-// episode titles and summaries, its artwork and episode thumbnails. Its page
-// then opens at once, also offline. One anime every few seconds when they
-// have to be fetched, which leaves room under AniList's rate limit for the
-// rest of the app.
+// Every movie and show with files, this computer's or shared with it by
+// another KumoBox, gets all its data downloaded once: its TMDB page, its
+// seasons' episode titles and synopses, its artwork and episode stills. Its
+// page then opens at once, also offline. One title a second when they have
+// to be fetched, which leaves room under TMDB's rate limit for the rest of
+// the app.
 
 const (
-	// Between two anime fetched from AniList.
-	prefetchEvery = 3 * time.Second
+	// Between two titles fetched from TMDB.
+	prefetchEvery = time.Second
 	// Done again after this long: new episodes, new artwork.
 	prefetchedFor = 30 * 24 * time.Hour
 )
@@ -34,9 +34,9 @@ func newPrefetcher() *prefetcher {
 
 func prefetchedKey(id int) string { return fmt.Sprintf("prefetched:%d", id) }
 
-// PrefetchAnime downloads the data of these anime, those that don't have it
-// yet, in the background.
-func (a *App) PrefetchAnime(ids ...int) {
+// PrefetchMedia downloads the data of these titles, those that don't have
+// it yet, in the background.
+func (a *App) PrefetchMedia(ids ...int) {
 	p := a.prefetch
 	added := false
 	p.mu.Lock()
@@ -58,9 +58,13 @@ func (a *App) PrefetchAnime(ids ...int) {
 	}
 }
 
-// prefetchLibrary queues every anime with files: after a scan, when the
-// libraries shared with this KumoBox change, at startup.
+// prefetchLibrary queues every title with files: after a scan, when the
+// libraries shared with this KumoBox change, at startup. Nothing without a
+// TMDB key.
 func (a *App) prefetchLibrary() {
+	if !a.Platform.Configured() {
+		return
+	}
 	files, _ := a.Files.All()
 	files = append(files, a.Share.RemoteFiles()...)
 	seen := map[int]bool{}
@@ -71,11 +75,11 @@ func (a *App) prefetchLibrary() {
 			ids = append(ids, f.MediaID)
 		}
 	}
-	a.PrefetchAnime(ids...)
+	a.PrefetchMedia(ids...)
 }
 
-// runPrefetch downloads the queued anime's data, one at a time, until KumoBox
-// stops.
+// runPrefetch downloads the queued titles' data, one at a time, until
+// KumoBox stops.
 func (a *App) runPrefetch(ctx context.Context) {
 	p := a.prefetch
 	for {
@@ -109,9 +113,9 @@ func (a *App) runPrefetch(ctx context.Context) {
 	}
 }
 
-// prefetchOne downloads an anime's data, and reports whether it had to ask
-// AniList. Not marked done when a part couldn't be had (AniList or ani.zip
-// not answering): it's tried again next time.
+// prefetchOne downloads a title's data, and reports whether it had to ask
+// TMDB. Not marked done when a part couldn't be had (TMDB not answering):
+// it's tried again next time.
 func (a *App) prefetchOne(ctx context.Context, id int) (fetched bool) {
 	fetched = !a.Platform.HasDetails(id)
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
