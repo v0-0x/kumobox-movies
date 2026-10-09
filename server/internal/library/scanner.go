@@ -416,8 +416,11 @@ func (s *Scanner) StartWatcher() {
 		log.Printf("library watcher: %v", err)
 		return
 	}
+	watched := map[string]bool{} // the folders watched (only the goroutine below uses it then)
 	for _, dir := range dirs {
-		_ = w.Add(dir)
+		if w.Add(dir) == nil {
+			watched[dir] = true
+		}
 	}
 	stop := make(chan struct{})
 	s.watcherMu.Lock()
@@ -449,22 +452,37 @@ func (s *Scanner) StartWatcher() {
 				if strings.HasPrefix(filepath.Base(ev.Name), ".") {
 					continue
 				}
+				// A folder added or gone counts whatever its name ("Show.S01.
+				// 1080p.WEB-GRP" has an extension): one moved in (a finished
+				// torrent) brings videos that send no events of their own, and
+				// its subfolders are watched too.
+				dir := watched[ev.Name]
 				if ev.Op&fsnotify.Create != 0 {
 					if st, err := os.Stat(ev.Name); err == nil && st.IsDir() {
-						_ = w.Add(ev.Name)
+						dir = true
+						if res, err := walkLibrary(ev.Name, cfg.Library.IgnorePatterns, nil); err == nil {
+							for _, d := range res.dirs {
+								if w.Add(d) == nil {
+									watched[d] = true
+								}
+							}
+						}
 					}
+				}
+				if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+					delete(watched, ev.Name)
 				}
 				if ev.Op&(fsnotify.Create|fsnotify.Remove|fsnotify.Rename|fsnotify.Write) == 0 {
 					continue
 				}
-				if !IsVideo(ev.Name) && filepath.Ext(ev.Name) != "" {
+				if !dir && !IsVideo(ev.Name) && filepath.Ext(ev.Name) != "" {
 					continue
 				}
 				// Debounce: torrents/downloads write files for a while.
 				if timer != nil {
 					timer.Stop()
 				}
-				timer = time.AfterFunc(8*time.Second, func() {
+				timer = time.AfterFunc(watchDebounce, func() {
 					select {
 					case trigger <- struct{}{}:
 					default:
@@ -483,6 +501,10 @@ func (s *Scanner) StartWatcher() {
 
 // pollEvery is how often a library too big to watch is checked for changes.
 var pollEvery = 10 * time.Minute
+
+// watchDebounce is how long the watcher waits for changes to stop before it
+// scans: torrent clients and downloads write files for a while.
+var watchDebounce = 8 * time.Second
 
 // overBudget counts the entries of dirs (and the dirs themselves), the
 // files watching them takes on macOS, until there are more than budget.

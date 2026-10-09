@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
@@ -67,6 +68,59 @@ func scan(t *testing.T, s *Scanner) *ScanResult {
 		t.Fatal(err)
 	}
 	return res
+}
+
+// waitIndexed waits for a scan to index path.
+func waitIndexed(t *testing.T, s *Scanner, path string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if f, err := s.Store.Get(path); err == nil && f != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s was never indexed: %v", path, paths(t, s))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The watcher scans the library when a folder is moved into it (a torrent
+// client moving a finished download): a release folder whose name has dots
+// ("Show.S01.1080p.WEB-DL-GRP") too, though its videos send no events of
+// their own; and its subfolders are watched from then on.
+func TestWatcherSeesFoldersMovedIn(t *testing.T) {
+	lib, outside := t.TempDir(), t.TempDir()
+	s, settings := newTestScanner(t, lib)
+	cfg := settings.Get()
+	cfg.Library.AutoRefresh = true
+	if _, err := settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	debounce := watchDebounce
+	watchDebounce = 50 * time.Millisecond
+	t.Cleanup(func() { watchDebounce = debounce })
+	s.StartWatcher()
+	t.Cleanup(func() {
+		// No scan may still read the folders when they're removed.
+		s.StopWatcher()
+		time.Sleep(4 * watchDebounce)
+		for deadline := time.Now().Add(10 * time.Second); s.Running() && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+		s.mu.Lock() // the last scan is over
+		s.mu.Unlock()
+	})
+
+	release := filepath.Join(outside, "Show.S01.1080p.WEB-DL-GRP")
+	touch(t, filepath.Join(release, "Season 1", "Show.S01E01.mkv"))
+	moved := filepath.Join(lib, filepath.Base(release))
+	if err := os.Rename(release, moved); err != nil {
+		t.Fatal(err)
+	}
+	waitIndexed(t, s, filepath.Join(moved, "Season 1", "Show.S01E01.mkv"))
+	touch(t, filepath.Join(moved, "Season 1", "Show.S01E02.mkv"))
+	waitIndexed(t, s, filepath.Join(moved, "Season 1", "Show.S01E02.mkv"))
 }
 
 func TestScanFollowsSymlinks(t *testing.T) {
