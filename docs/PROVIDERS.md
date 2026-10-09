@@ -42,8 +42,8 @@ the LAN can use them, not install or remove them).
 Providers & extensions › Stremio addons:
 
 * **Paste an addon URL.** Any of these work: the manifest URL
-  (`https://torrentio.strem.fun/manifest.json`), the addon's base URL
-  (`https://torrentio.strem.fun`) or a `stremio://` install link. Addons
+  (`https://addon.example/manifest.json`), the addon's base URL
+  (`https://addon.example`) or a `stremio://` install link. Addons
   that keep their settings in the URL (`https://addon.example/<config>/manifest.json`)
   are installed with that configuration.
 * **Browse a collection.** The official Stremio collection
