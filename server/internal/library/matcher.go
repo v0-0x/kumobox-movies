@@ -556,8 +556,34 @@ func (m *Matcher) find(ctx context.Context, g *group) (*catalog.Media, float64, 
 			}
 		}
 	}
+	// A film's year can be further off than TMDB's searches allow (the year
+	// of its release rather than of its festival premiere...): once more
+	// without it, for the same title of a film a few years apart at most,
+	// not a remake.
+	if !g.show && g.year > 0 {
+		for _, t := range g.titles {
+			media, err := m.platform.FindMovie(ctx, t, 0)
+			if errors.Is(err, catalog.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, 0, err
+			}
+			y := media.Year()
+			if s := titleScore([]string{t}, media); s >= max(m.threshold, noYearSure) && (y == 0 || abs(y-g.year) <= noYearSpan) {
+				return media, s, nil
+			}
+		}
+	}
 	return nil, 0, catalog.ErrNotFound
 }
+
+// A film found without its year must have the title looked for, at most
+// noYearSpan years from the one in the names.
+const (
+	noYearSure = 0.95
+	noYearSpan = 5
+)
 
 // mediaLite is a title with its seasons.
 func (m *Matcher) mediaLite(ctx context.Context, id int) (*catalog.Media, error) {

@@ -233,6 +233,34 @@ func TestMatchByTVDBTag(t *testing.T) {
 	}
 }
 
+// A film named with a year more than one off TMDB's (its festival premiere
+// came long before its release) is looked for once more without the year,
+// and taken when the title is the same — but never a remake decades away.
+func TestMatchMovieYearFarOff(t *testing.T) {
+	f := testCatalog(t)
+	f.movie(915935, "Anatomy of a Fall", "2023-05-21")
+	lib := t.TempDir()
+	tree(t, lib,
+		"Anatomy.of.a.Fall.2025.1080p.WEB-DL.mkv",
+		"Dune (1987)/Dune.1987.mkv",
+		"Anatomy of Fall (2025)/Anatomy.of.Fall.2025.mkv",
+	)
+	s, _ := newMatchingScanner(t, f, lib)
+	if _, err := s.Scan(context.Background(), ScanOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	got := matches(t, s, lib)
+	for path, want := range map[string]string{
+		"Anatomy.of.a.Fall.2025.1080p.WEB-DL.mkv":         "915935/1/main",
+		"Dune (1987)/Dune.1987.mkv":                       "0/0/main",
+		"Anatomy of Fall (2025)/Anatomy.of.Fall.2025.mkv": "0/0/main",
+	} {
+		if got[path] != want {
+			t.Errorf("%s: %s, want %s", path, got[path], want)
+		}
+	}
+}
+
 // Files matched by hand (locked) keep their match, and new files in their
 // folder follow it.
 func TestMatchFollowsFoldersMatchedByHand(t *testing.T) {
