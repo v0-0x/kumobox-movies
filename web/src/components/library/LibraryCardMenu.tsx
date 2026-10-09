@@ -10,7 +10,7 @@ import { mostCommon, plural, title } from "@/lib/utils"
 import { DropdownItem, DropdownLabel, DropdownSeparator } from "../ui"
 import { MatchDialog } from "./MatchDialog"
 
-// The menu of an anime card that is in the library because of local files
+// The menu of a movie or show card that is in the library because of local files
 // (Home's "In your library", the Local library page). It acts on those
 // files, to get rid of a wrong match. Pass menu(media) to each MediaCard and
 // render dialog once.
@@ -61,7 +61,7 @@ function LibraryCardMenu({ media, onMatch }: { media: Media; onMatch: (files: Lo
             action: { label: "Show", onClick: () => navigate("/library?tab=unmatched") },
         })
     })
-    // Searches AniList for the title the files carry, not the wrong match's.
+    // Searches TMDB for the title the files carry, not the wrong match's.
     const match = act(fs => onMatch(fs, fs.find(f => f.parsed?.folderTitle)?.parsed.folderTitle || fs.find(f => f.parsed?.title)?.parsed.title || ""))
     const openFolder = act(fs => api.post("/api/open", { path: mostCommon(fs.map(f => f.dir)) }))
     const none = files?.length === 0
@@ -76,7 +76,7 @@ function LibraryCardMenu({ media, onMatch }: { media: Media; onMatch: (files: Lo
                 Unmatch files
             </DropdownItem>
             <DropdownItem icon={<Link2 />} disabled={none} onSelect={match}>
-                Match to another anime…
+                Match to another title…
             </DropdownItem>
             {status?.client !== "lan" && (
                 <>

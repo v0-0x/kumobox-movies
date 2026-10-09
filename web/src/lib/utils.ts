@@ -1,23 +1,26 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
-import type { Media } from "./types"
+import type { FuzzyDate, Media } from "./types"
 
 export function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs))
 }
 
+// The title the app shows (in the metadata language), then the original one.
 export function title(m?: Media | null) {
     if (!m) return ""
-    return m.title.userPreferred || m.title.romaji || m.title.english || m.title.native || ""
+    return m.title.userPreferred || m.title.english || m.title.romaji || m.title.native || ""
 }
 
-export function englishTitle(m?: Media | null) {
+// The original title when it differs from the one shown.
+export function originalTitle(m?: Media | null) {
     if (!m) return ""
-    return m.title.english || m.title.userPreferred || m.title.romaji || ""
+    const t = m.title.native || m.title.romaji || ""
+    return t && t !== title(m) ? t : ""
 }
 
 // Artwork is downloaded once by the server and served from its local cache
-// (/api/img), so covers keep working offline.
+// (/api/img), so posters keep working offline.
 export function img(url?: string | null) {
     if (!url) return ""
     if (url.startsWith("http://") || url.startsWith("https://")) return `/api/img?u=${encodeURIComponent(url)}`
@@ -32,69 +35,124 @@ export function banner(m?: Media | null) {
     return img(m?.bannerImage || m?.coverImage?.extraLarge || "")
 }
 
-export function totalEpisodes(m?: Media | null) {
-    if (!m) return 0
-    if (m.episodes) return m.episodes
-    if (m.nextAiringEpisode) return m.nextAiringEpisode.episode - 1
-    return 0
+// The release (first air) year, or 0.
+export function year(m?: Media | null) {
+    return m?.seasonYear || m?.startDate?.year || 0
 }
 
-export function airedEpisodes(m?: Media | null) {
-    if (!m) return 0
-    if (m.nextAiringEpisode) return m.nextAiringEpisode.episode - 1
-    if (m.status === "NOT_YET_RELEASED") return 0
-    return m.episodes || 0
+// The release (first air) date as YYYY-MM-DD, "" when unknown: sorts by date.
+export const releaseDateOf = (m?: Media | null) => fuzzyDate(m?.startDate)
+
+export function fuzzyDate(d?: FuzzyDate | null) {
+    if (!d?.year) return ""
+    return `${d.year}-${String(d.month ?? 1).padStart(2, "0")}-${String(d.day ?? 1).padStart(2, "0")}`
+}
+
+// "2026-03-14" as the user's locale writes it ("Mar 14, 2026").
+export function formatDate(iso?: string, opts: Intl.DateTimeFormatOptions = { year: "numeric", month: "short", day: "numeric" }) {
+    if (!iso) return ""
+    const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso)
+    return isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, opts)
+}
+
+// Today as YYYY-MM-DD, in the user's timezone.
+export function today() {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+}
+
+// 134 minutes → "2h 14m".
+export function runtimeLabel(min?: number | null) {
+    if (!min || min <= 0) return ""
+    const h = Math.floor(min / 60)
+    const m = min % 60
+    return h > 0 ? `${h}h${m ? ` ${m}m` : ""}` : `${m}m`
 }
 
 const FORMATS: Record<string, string> = {
-    TV: "TV",
-    TV_SHORT: "TV Short",
     MOVIE: "Movie",
-    SPECIAL: "Special",
-    OVA: "OVA",
-    ONA: "ONA",
-    MUSIC: "Music",
-    MANGA: "Manga",
-    NOVEL: "Light Novel",
-    ONE_SHOT: "One Shot",
+    TV: "TV series",
+    MINISERIES: "Miniseries",
 }
-export const formatLabel = (f?: string) => (f ? FORMATS[f] ?? f : "")
+export const formatLabel = (f?: string) => (f ? (FORMATS[f] ?? f.charAt(0) + f.slice(1).toLowerCase()) : "")
 
-const STATUSES: Record<string, string> = {
-    FINISHED: "Finished",
-    RELEASING: "Airing",
-    NOT_YET_RELEASED: "Upcoming",
-    CANCELLED: "Cancelled",
-    HIATUS: "Hiatus",
+// "Movie · 2010 · 2h 28m", "TV series · 2019 · 24 episodes".
+export function mediaSummary(m: Media) {
+    const extra = m.type === "TV" ? (m.episodes ? plural(m.episodes, "episode") : "") : runtimeLabel(m.duration)
+    return [formatLabel(m.format), year(m) || "", extra].filter(Boolean).join(" · ")
 }
-export const statusLabel = (s?: string) => (s ? STATUSES[s] ?? s : "")
 
+// A media's status in movie and TV words: a movie is released or upcoming,
+// a show airing, ended or cancelled.
+export function statusLabel(s?: string, type?: string) {
+    switch (s) {
+        case "FINISHED":
+            return type === "TV" ? "Ended" : "Released"
+        case "RELEASING":
+            return type === "MOVIE" ? "In theaters" : "Airing"
+        case "NOT_YET_RELEASED":
+            return "Upcoming"
+        case "CANCELLED":
+            return "Cancelled"
+        default:
+            return s ? s.charAt(0) + s.slice(1).toLowerCase() : ""
+    }
+}
+
+// List statuses keep AniList's codes; the UI names them in movie words.
 export const LIST_STATUS: Record<string, string> = {
     CURRENT: "Watching",
     REPEATING: "Rewatching",
-    PLANNING: "Planning",
+    PLANNING: "Watchlist",
     PAUSED: "Paused",
-    COMPLETED: "Completed",
-    DROPPED: "Dropped",
-}
-export const LIST_STATUS_MANGA: Record<string, string> = {
-    CURRENT: "Reading",
-    REPEATING: "Rereading",
-    PLANNING: "Planning",
-    PAUSED: "Paused",
-    COMPLETED: "Completed",
+    COMPLETED: "Watched",
     DROPPED: "Dropped",
 }
 
-export const SEASONS = ["WINTER", "SPRING", "SUMMER", "FALL"]
-export const GENRES = [
-    "Action", "Adventure", "Comedy", "Drama", "Ecchi", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music",
-    "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller",
+// The Home page's sections (settings.ui.homeSections lists the ones shown,
+// in order; the ids are Kumo's).
+export const HOME_SECTIONS: { id: string; label: string; help: string }[] = [
+    { id: "continue", label: "Continue watching", help: "Movies you stopped and the next episodes of your shows" },
+    { id: "genres", label: "Genres", help: "Filter the rows of your list by genre" },
+    { id: "watching", label: "Watching", help: "What you're watching and rewatching" },
+    { id: "airing", label: "Airing shows", help: "Shows on your list with episodes coming out" },
+    { id: "planning", label: "Watchlist", help: "What you plan to watch" },
+    { id: "completed", label: "Recently watched", help: "What you finished last" },
 ]
 
-export function seasonLabel(s?: string, y?: number | null) {
-    if (!s) return y ? String(y) : ""
-    return `${s.charAt(0)}${s.slice(1).toLowerCase()}${y ? " " + y : ""}`
+// Original languages Search filters by (ISO 639-1).
+export const LANGUAGES: { value: string; label: string }[] = [
+    ["en", "English"],
+    ["fr", "French"],
+    ["es", "Spanish"],
+    ["de", "German"],
+    ["it", "Italian"],
+    ["pt", "Portuguese"],
+    ["ja", "Japanese"],
+    ["ko", "Korean"],
+    ["zh", "Chinese"],
+    ["hi", "Hindi"],
+    ["sv", "Swedish"],
+    ["da", "Danish"],
+    ["no", "Norwegian"],
+    ["nl", "Dutch"],
+    ["pl", "Polish"],
+    ["ru", "Russian"],
+    ["tr", "Turkish"],
+    ["th", "Thai"],
+].map(([value, label]) => ({ value, label }))
+
+export const languageName = (code?: string) => (code ? (LANGUAGES.find(l => l.value === code)?.label ?? code.toUpperCase()) : "")
+
+// Scores are 0-100; Letterboxd shows 0.5-5 stars, a half star per 10 points.
+export const scoreToStars = (score?: number | null) => Math.round((score ?? 0) / 10) / 2
+export const starsToScore = (stars: number) => Math.round(stars * 2) * 10
+
+// "★★★½" for a 0-100 score, "" for none.
+export function starText(score?: number | null) {
+    const stars = scoreToStars(score)
+    if (stars <= 0) return ""
+    return "★".repeat(Math.floor(stars)) + (stars % 1 ? "½" : "")
 }
 
 export function formatDuration(sec: number) {
@@ -127,6 +185,20 @@ export function timeUntil(seconds: number) {
     return `${m}m`
 }
 
+// When an episode airs, from its day (TMDB only has air dates): "today",
+// "tomorrow", "in 3 days", or the date.
+export function airsIn(airingAt: number) {
+    const day = new Date(airingAt * 1000)
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    const local = new Date(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate())
+    const days = Math.round((local.getTime() - start.getTime()) / 86400_000)
+    if (days <= 0) return "today"
+    if (days === 1) return "tomorrow"
+    if (days < 7) return `in ${days} days`
+    return local.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+}
+
 export function relativeTime(unix: number) {
     const diff = Date.now() / 1000 - unix
     if (diff < 60) return "just now"
@@ -136,7 +208,7 @@ export function relativeTime(unix: number) {
     return new Date(unix * 1000).toLocaleDateString()
 }
 
-// AniList descriptions contain a little HTML (<br>, <i>, <b>).
+// Overviews can carry a little HTML (<br>, <i>, <b>) or entities.
 export function cleanDescription(html?: string) {
     if (!html) return ""
     return html
@@ -148,13 +220,12 @@ export function cleanDescription(html?: string) {
         .replace(/&#039;/g, "'")
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
-        .replace(/\(Source:[^)]*\)/gi, "")
         .trim()
 }
 
 export function scoreColor(score?: number | null) {
     if (!score) return "text-muted"
-    if (score >= 80) return "text-emerald-400"
+    if (score >= 75) return "text-emerald-400"
     if (score >= 65) return "text-lime-300"
     if (score >= 50) return "text-amber-300"
     return "text-rose-400"
@@ -213,6 +284,17 @@ export function mostCommon(xs: string[]) {
     return best
 }
 
-export function entryUrl(m: { id: number; type?: string }) {
-    return m.type === "MANGA" ? `/manga/entry?id=${m.id}` : `/entry?id=${m.id}`
+export function entryUrl(m: { id: number }) {
+    return `/entry?id=${m.id}`
+}
+
+// Links to the same title elsewhere: TMDB, IMDb and, for movies, Letterboxd
+// (which finds films by their TMDB id).
+export function externalLinks(m: Media) {
+    const show = m.type === "TV"
+    const out: { label: string; url: string }[] = []
+    out.push({ label: "TMDB", url: m.siteUrl || `https://www.themoviedb.org/${show ? "tv" : "movie"}/${m.tmdbId}` })
+    if (m.imdbId) out.push({ label: "IMDb", url: `https://www.imdb.com/title/${m.imdbId}/` })
+    if (!show && m.tmdbId) out.push({ label: "Letterboxd", url: `https://letterboxd.com/tmdb/${m.tmdbId}/` })
+    return out
 }

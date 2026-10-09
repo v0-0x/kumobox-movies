@@ -4,36 +4,38 @@ import { useSearchParams } from "react-router-dom"
 import { ListCardMenu } from "@/components/ListCardMenu"
 import { MediaCard, MediaCardSkeleton, MediaGrid } from "@/components/MediaCard"
 import { Button, EmptyState, ErrorState, Input, Select } from "@/components/ui"
-import { useSearch } from "@/lib/queries"
+import { useGenres, useSearch } from "@/lib/queries"
 import type { Media } from "@/lib/types"
-import { cn, GENRES, SEASONS } from "@/lib/utils"
+import { cn, LANGUAGES } from "@/lib/utils"
 
 const SORTS = [
     { value: "", label: "Best match / trending" },
     { value: "POPULARITY_DESC", label: "Popularity" },
-    { value: "SCORE_DESC", label: "Score" },
+    { value: "SCORE_DESC", label: "Rating" },
     { value: "TRENDING_DESC", label: "Trending" },
     { value: "START_DATE_DESC", label: "Newest" },
-    { value: "FAVOURITES_DESC", label: "Favourites" },
-    { value: "TITLE_ROMAJI", label: "Title" },
+    { value: "START_DATE", label: "Oldest" },
+    { value: "TITLE", label: "Title" },
 ]
-const FORMATS = ["TV", "MOVIE", "OVA", "ONA", "SPECIAL", "TV_SHORT"]
-const MANGA_FORMATS = ["MANGA", "NOVEL", "ONE_SHOT"]
-const FILTERS = ["genre", "season", "year", "format", "status"]
-const formatsFor = (type: string) => (type === "MANGA" ? MANGA_FORMATS : FORMATS)
+const TYPES = [
+    { value: "", label: "All" },
+    { value: "MOVIE", label: "Movies" },
+    { value: "TV", label: "Shows" },
+]
+const FILTERS = ["genre", "year", "status", "minScore", "lang"]
 
 export default function SearchPage() {
     const [params, setParams] = useSearchParams()
     const q = params.get("q") ?? ""
     const [text, setText] = useState(q)
-    const type = (params.get("type") as "ANIME" | "MANGA") || "ANIME"
+    const type = TYPES.find(t => t.value === params.get("type"))?.value ?? ""
     const genres = params.getAll("genre")
-    const season = params.get("season") ?? ""
     const year = params.get("year") ?? ""
-    // A format of the other type (e.g. from an old link) isn't sent, as the select shows.
-    const format = formatsFor(type).find(f => f === params.get("format")) ?? ""
     const status = params.get("status") ?? ""
+    const minScore = params.get("minScore") ?? ""
+    const lang = params.get("lang") ?? ""
     const sort = params.get("sort") ?? ""
+    const { data: allGenres } = useGenres()
     const [page, setPage] = useState(1)
     const [acc, setAcc] = useState<Media[]>([])
 
@@ -79,12 +81,12 @@ export default function SearchPage() {
     const query = useMemo(
         () => ({
             search: params.get("q") ?? undefined,
-            type,
+            type: type || undefined,
             genres: genres.length ? genres : undefined,
-            season: season || undefined,
             year: year ? Number(year) : undefined,
-            formats: format ? [format] : undefined,
             status: status || undefined,
+            minScore: minScore ? Number(minScore) : undefined,
+            language: lang || undefined,
             sort: sort ? [sort] : undefined,
             perPage: 36,
         }),
@@ -101,8 +103,10 @@ export default function SearchPage() {
         setAcc(prev => (page === 1 ? data.media! : [...prev, ...data.media!.filter(m => !prev.some(p => p.id === m.id))]))
     }, [data, page])
 
-    const years = Array.from({ length: new Date().getFullYear() - 1959 }, (_, i) => String(new Date().getFullYear() + 1 - i))
-    const active = genres.length + (season ? 1 : 0) + (year ? 1 : 0) + (format ? 1 : 0) + (status ? 1 : 0)
+    const years = Array.from({ length: new Date().getFullYear() - 1899 }, (_, i) => String(new Date().getFullYear() + 2 - i))
+    const active = genres.length + (year ? 1 : 0) + (status ? 1 : 0) + (minScore ? 1 : 0) + (lang ? 1 : 0)
+    // A genre from a link that TMDB doesn't list still shows, to be turned off.
+    const genreChips = [...(allGenres ?? []), ...genres.filter(g => !(allGenres ?? []).includes(g))]
 
     return (
         <div className="min-h-full px-6 pt-8 pb-24 md:px-8 xl:px-10">
@@ -110,41 +114,39 @@ export default function SearchPage() {
                 <div className="flex items-center justify-between gap-4">
                     <h1 className="text-[1.75rem] font-semibold tracking-tight">Search</h1>
                     <div className="flex rounded-lg bg-white/[0.04] p-0.5">
-                        {(["ANIME", "MANGA"] as const).map(t => (
+                        {TYPES.map(t => (
                             <button
-                                key={t}
-                                onClick={() =>
-                                    update(p => {
-                                        if (t === "ANIME") p.delete("type")
-                                        else p.set("type", t)
-                                        // Anime and manga have different formats.
-                                        if (!formatsFor(t).includes(p.get("format") ?? "")) p.delete("format")
-                                    })
-                                }
-                                className={cn("h-7 rounded-md px-3 text-[13px] font-medium transition-colors", type === t ? "bg-white/[0.1] text-fg" : "text-muted hover:text-fg")}
+                                key={t.value}
+                                onClick={() => set("type", t.value || null)}
+                                className={cn("h-7 rounded-md px-3 text-[13px] font-medium transition-colors", type === t.value ? "bg-white/[0.1] text-fg" : "text-muted hover:text-fg")}
                             >
-                                {t === "ANIME" ? "Anime" : "Manga"}
+                                {t.label}
                             </button>
                         ))}
                     </div>
                 </div>
-                <Input autoFocus value={text} onChange={e => setText(e.target.value)} placeholder="Search by title…" icon={<SearchIcon className="size-4" />} className="h-11 text-[15px]" />
+                <Input autoFocus value={text} onChange={e => setText(e.target.value)} placeholder="Search movies and TV shows by title…" icon={<SearchIcon className="size-4" />} className="h-11 text-[15px]" />
                 <div className="flex flex-wrap items-center gap-3">
                     <SlidersHorizontal className="size-4 text-subtle" />
-                    <Select className="w-44" value={season} onChange={v => set("season", v)} options={[{ value: "", label: "Any season" }, ...SEASONS.map(s => ({ value: s, label: s.charAt(0) + s.slice(1).toLowerCase() }))]} />
                     <Select className="w-32" value={year} onChange={v => set("year", v)} options={[{ value: "", label: "Any year" }, ...years.map(y => ({ value: y, label: y }))]} />
-                    <Select className="w-40" value={format} onChange={v => set("format", v)} options={[{ value: "", label: "Any format" }, ...formatsFor(type).map(f => ({ value: f, label: f.replace("_", " ") }))]} />
                     <Select
                         className="w-40"
                         value={status}
                         onChange={v => set("status", v)}
                         options={[
                             { value: "", label: "Any status" },
-                            { value: "RELEASING", label: "Airing" },
-                            { value: "FINISHED", label: "Finished" },
+                            { value: "RELEASING", label: type === "MOVIE" ? "In theaters" : type === "TV" ? "Airing" : "Airing / in theaters" },
+                            { value: "FINISHED", label: type === "TV" ? "Ended" : "Released" },
                             { value: "NOT_YET_RELEASED", label: "Upcoming" },
                         ]}
                     />
+                    <Select
+                        className="w-40"
+                        value={minScore}
+                        onChange={v => set("minScore", v)}
+                        options={[{ value: "", label: "Any rating" }, ...[90, 80, 70, 60, 50].map(n => ({ value: String(n), label: `${(n / 10).toFixed(0)}+ on TMDB` }))]}
+                    />
+                    <Select className="w-44" value={lang} onChange={v => set("lang", v)} options={[{ value: "", label: "Any language" }, ...LANGUAGES]} />
                     <Select className="w-52" value={sort} onChange={v => set("sort", v)} options={SORTS} />
                     {active > 0 && (
                         <Button variant="ghost" size="sm" icon={<X className="size-4" />} onClick={() => update(p => FILTERS.forEach(k => p.delete(k)))}>
@@ -153,7 +155,7 @@ export default function SearchPage() {
                     )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                    {GENRES.map(g => {
+                    {genreChips.map(g => {
                         const on = genres.includes(g)
                         return (
                             <button
@@ -181,7 +183,7 @@ export default function SearchPage() {
                     ))}
                 </MediaGrid>
             ) : acc.length === 0 && error ? (
-                <ErrorState title="Couldn't search AniList" error={error} onRetry={() => refetch()} />
+                <ErrorState title="Couldn't search TMDB" error={error} onRetry={() => refetch()} />
             ) : acc.length === 0 ? (
                 <EmptyState icon={<SearchIcon className="size-6" />} title="Nothing found">
                     Try a different title or fewer filters.

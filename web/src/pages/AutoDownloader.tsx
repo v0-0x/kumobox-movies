@@ -38,7 +38,7 @@ export default function AutoDownloaderPage() {
             <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
                 <div>
                     <h1 className="text-[1.75rem] font-semibold tracking-tight">Auto downloader</h1>
-                    <p className="mt-1 max-w-2xl text-muted">Automatically grab new episodes of airing shows from torrent RSS feeds and send them to your torrent client.</p>
+                    <p className="mt-1 max-w-2xl text-muted">Automatically grab new episodes of the shows you follow from your torrent sources and send them to your torrent client.</p>
                 </div>
                 <div className="flex items-center gap-3">
                     {settings && (
@@ -54,7 +54,7 @@ export default function AutoDownloaderPage() {
                         variant="primary"
                         icon={<Plus className="size-4" />}
                         onClick={() =>
-                            setEditing({ enabled: true, mediaId: 0, title: "", releaseGroups: [], resolutions: [settings?.torrent.preferredResolution || "1080"], additionalTerms: [], episodeType: "recent", minSeeders: 1, provider: "nyaa" })
+                            setEditing({ enabled: true, mediaId: 0, title: "", releaseGroups: [], resolutions: [settings?.torrent.preferredResolution || "1080"], additionalTerms: [], episodeType: "recent", minSeeders: 1, provider: "" })
                         }
                     >
                         New rule
@@ -68,7 +68,7 @@ export default function AutoDownloaderPage() {
             )}
             {!isLoading && (rules ?? []).length === 0 && (
                 <EmptyState icon={<Rss className="size-6" />} title="No rules yet">
-                    Create a rule for each airing anime you follow, e.g. “SubsPlease · 1080p”.
+                    Create a rule for each airing show you follow, e.g. “1080p · WEB-DL”.
                 </EmptyState>
             )}
             <div className="grid gap-3 lg:grid-cols-2">
@@ -96,7 +96,7 @@ export default function AutoDownloaderPage() {
 
 function RuleCard({ rule, onEdit }: { rule: AutoRule; onEdit: () => void }) {
     const qc = useQueryClient()
-    const { data: media } = useQuery({ queryKey: ["entry-lite", rule.mediaId], queryFn: () => api.get<{ media: Media }>(`/api/anime/${rule.mediaId}`), staleTime: 3600_000 })
+    const { data: media } = useQuery({ queryKey: ["entry-lite", rule.mediaId], queryFn: () => api.get<{ media: Media }>(`/api/media/${rule.mediaId}`), staleTime: 3600_000 })
     const toggle = async (enabled: boolean) => {
         try {
             await api.post("/api/autodownloader/rules", { ...rule, enabled })
@@ -150,7 +150,7 @@ function RuleDialog({ rule, onClose }: { rule: AutoRule; onClose: () => void }) 
     const { data: providers } = useQuery({ queryKey: ["torrent-providers"], queryFn: () => api.get<{ id: string; name: string }[]>("/api/torrents/providers") })
     const list = (s: string) => s.split(",").map(x => x.trim()).filter(Boolean)
     const save = async () => {
-        if (!r.mediaId) return toast.error("Pick an anime first")
+        if (!r.mediaId) return toast.error("Pick a show first")
         setBusy(true)
         try {
             await api.post("/api/autodownloader/rules", r)
@@ -181,16 +181,16 @@ function RuleDialog({ rule, onClose }: { rule: AutoRule; onClose: () => void }) 
             }
         >
             <div className="flex flex-col gap-5">
-                <Field label="Anime">
+                <Field label="Show">
                     <Button className="justify-start" onClick={() => setPick(true)}>
-                        {mediaTitle || "Choose an anime…"}
+                        {mediaTitle || "Choose a show…"}
                     </Button>
                 </Field>
-                <Field label="Comparison title" help="The title release groups use in torrent names (defaults to the romaji title).">
+                <Field label="Comparison title" help="The title release names use (defaults to the show's title).">
                     <Input value={r.title} onChange={e => setR({ ...r, title: e.target.value })} />
                 </Field>
                 <div className="grid grid-cols-2 gap-4">
-                    <Field label="Release groups" help="Comma separated, e.g. SubsPlease, Erai-raws">
+                    <Field label="Release groups" help="Comma separated, e.g. NTb, FLUX (empty: any)">
                         <Input defaultValue={r.releaseGroups.join(", ")} onChange={e => setR({ ...r, releaseGroups: list(e.target.value) })} />
                     </Field>
                     <Field label="Resolutions" help="e.g. 1080, 720">
@@ -207,21 +207,23 @@ function RuleDialog({ rule, onClose }: { rule: AutoRule; onClose: () => void }) 
                             value={r.episodeType}
                             onChange={v => setR({ ...r, episodeType: v as AutoRule["episodeType"] })}
                             options={[
-                                { value: "recent", label: "Only episodes after my progress" },
+                                { value: "recent", label: "Only episodes after the last I watched" },
                                 { value: "all", label: "Every missing episode" },
                             ]}
                         />
                     </Field>
                     <Field label="Provider">
-                        <Select value={r.provider || "nyaa"} onChange={v => setR({ ...r, provider: v })} options={(providers ?? []).map(p => ({ value: p.id, label: p.name }))} />
+                        <Select value={r.provider || ""} onChange={v => setR({ ...r, provider: v })} options={[{ value: "", label: "All sources" }, ...(providers ?? []).map(p => ({ value: p.id, label: p.name }))]} />
                     </Field>
                 </div>
             </div>
             <MediaPicker
                 open={pick}
                 onOpenChange={setPick}
+                type="TV"
+                heading="Choose a show"
                 onPick={m => {
-                    setR(x => ({ ...x, mediaId: m.id, title: x.title || m.title.romaji || title(m) }))
+                    setR(x => ({ ...x, mediaId: m.id, title: x.title || m.title.english || title(m) }))
                     setMediaTitle(title(m))
                 }}
             />

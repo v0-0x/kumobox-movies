@@ -1,9 +1,11 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query"
-import { BookmarkCheck, BookmarkPlus, BookmarkX } from "lucide-react"
+import { BookmarkCheck, BookmarkPlus, BookmarkX, Eye } from "lucide-react"
 import { toast } from "@/lib/toast"
 import { api } from "@/lib/api"
+import { MOVIE_EPISODE, mediaIsShow } from "@/lib/ids"
+import { invalidateList } from "@/lib/queries"
 import type { Media } from "@/lib/types"
-import { LIST_STATUS, LIST_STATUS_MANGA, title } from "@/lib/utils"
+import { LIST_STATUS, title } from "@/lib/utils"
 import { DropdownItem, DropdownLabel, DropdownSeparator } from "./ui"
 
 type Entry = Media["mediaListEntry"]
@@ -19,25 +21,22 @@ function cacheEntry(qc: QueryClient, mediaId: number, entry: Entry) {
     qc.setQueriesData({ queryKey: ["search"] }, (old: { media?: Media[] | null } | undefined) => (old?.media ? { ...old, media: old.media.map(fix) } : old))
 }
 
-// The right-click (or "⋯") menu of anime and manga cards (Discover, Search,
-// Manga): puts one on your Planning list, or takes it off it again.
+// The right-click (or "⋯") menu of movie and show cards (Discover, Search,
+// Home): puts one on your watchlist, marks a movie watched, or takes it off
+// the list again.
 export function ListCardMenu({ media }: { media: Media }) {
     const qc = useQueryClient()
     const entry = media.mediaListEntry
-    const refresh = () => {
-        qc.invalidateQueries({ queryKey: ["collection"] })
-        qc.invalidateQueries({ queryKey: ["entry", media.id] })
-        qc.invalidateQueries({ queryKey: ["list"] })
-    }
+    const show = mediaIsShow(media)
     const save = async (body: Saved) => {
-        await api.post(`/api/anime/${media.id}/entry`, body)
+        await api.post(`/api/media/${media.id}/entry`, body)
         cacheEntry(qc, media.id, { id: entry?.id ?? 0, progress: 0, score: 0, repeat: 0, ...body })
-        refresh()
+        invalidateList(qc, media.id)
     }
     const remove = async () => {
-        await api.del(`/api/anime/${media.id}/entry`)
+        await api.del(`/api/media/${media.id}/entry`)
         cacheEntry(qc, media.id, null)
-        refresh()
+        invalidateList(qc, media.id)
     }
     // Back to how it was before: off the list, or as it was on it.
     const restore = () =>
@@ -46,7 +45,18 @@ export function ListCardMenu({ media }: { media: Media }) {
     const plan = async () => {
         try {
             await save({ status: "PLANNING" })
-            toast.success(`${title(media)} is on your Planning list`, { action: { label: "Undo", onClick: restore } })
+            toast.success(`${title(media)} is on your watchlist`, { action: { label: "Undo", onClick: restore } })
+        } catch (e: any) {
+            toast.error(e.message)
+        }
+    }
+    // Like playing it to the end: it's logged in the diary too.
+    const watched = async () => {
+        try {
+            await api.post(`/api/media/${media.id}/episode`, { episode: MOVIE_EPISODE, watched: true })
+            cacheEntry(qc, media.id, { id: entry?.id ?? 0, progress: MOVIE_EPISODE, score: entry?.score ?? 0, repeat: entry?.repeat ?? 0, status: "COMPLETED" })
+            invalidateList(qc, media.id)
+            toast.success(`Marked ${title(media)} as watched`, { action: { label: "Undo", onClick: restore } })
         } catch (e: any) {
             toast.error(e.message)
         }
@@ -63,10 +73,15 @@ export function ListCardMenu({ media }: { media: Media }) {
     const planned = entry?.status === "PLANNING"
     return (
         <>
-            <DropdownLabel>{entry ? `On your list: ${(media.type === "MANGA" ? LIST_STATUS_MANGA : LIST_STATUS)[entry.status] ?? entry.status}` : "Not on your list"}</DropdownLabel>
+            <DropdownLabel>{entry ? `On your list: ${LIST_STATUS[entry.status] ?? entry.status}` : "Not on your list"}</DropdownLabel>
             <DropdownItem icon={planned ? <BookmarkCheck /> : <BookmarkPlus />} disabled={planned} onSelect={plan}>
-                {planned ? "In Planning" : entry ? "Move to Planning" : "Add to Planning"}
+                {planned ? "On your watchlist" : entry ? "Move to watchlist" : "Add to watchlist"}
             </DropdownItem>
+            {!show && entry?.status !== "COMPLETED" && (
+                <DropdownItem icon={<Eye />} onSelect={watched}>
+                    Mark as watched
+                </DropdownItem>
+            )}
             {entry && (
                 <>
                     <DropdownSeparator />

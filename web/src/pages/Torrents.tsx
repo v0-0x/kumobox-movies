@@ -106,7 +106,7 @@ export default function TorrentsPage() {
 
             {(!clientName || clientName === "none") && (
                 <EmptyState icon={<Magnet className="size-6" />} title="Connect a torrent client" action={<Link to="/settings?tab=torrent-client"><Button variant="primary">Open settings</Button></Link>}>
-                    KumoBox works with qBittorrent (Web UI) and Transmission to download anime straight into your library.
+                    KumoBox works with qBittorrent (Web UI) and Transmission to download movies and shows straight into your library.
                 </EmptyState>
             )}
             {clientName && clientName !== "none" && !clientStatus?.connected && clientStatus?.error && (

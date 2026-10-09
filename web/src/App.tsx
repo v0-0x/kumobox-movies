@@ -7,6 +7,7 @@ import { NowPlaying, ScanIndicator } from "./components/NowPlaying"
 import { PlayerOverlay } from "./components/player/Player"
 import { QuickSearch } from "./components/QuickSearch"
 import { KumoBoxLogo, Sidebar } from "./components/Sidebar"
+import { TmdbNotice } from "./components/TmdbNotice"
 import { Button, Input, Spinner, TooltipProvider } from "./components/ui"
 import { api, onPasswordRequired } from "./lib/api"
 import { connectEvents, setNavigate } from "./lib/events"
@@ -24,12 +25,8 @@ const DownloadsPage = lazy(() => import("./pages/Downloads"))
 const AutoDownloaderPage = lazy(() => import("./pages/AutoDownloader"))
 const LibraryPage = lazy(() => import("./pages/Library"))
 const LocalLibraryPage = lazy(() => import("./pages/LocalLibrary"))
-const AuthCallbackPage = lazy(() => import("./pages/AuthCallback"))
 const ExtensionsPage = lazy(() => import("./pages/Extensions"))
 const SettingsPage = lazy(() => import("./pages/Settings"))
-const MangaPage = lazy(() => import("./pages/Manga"))
-const MangaEntryPage = lazy(() => import("./pages/MangaEntry"))
-const MangaReaderPage = lazy(() => import("./pages/MangaReader"))
 const WebviewPage = lazy(() => import("./pages/Webview"))
 
 export default function App() {
@@ -74,6 +71,7 @@ export default function App() {
                 {/* The pages: a panel inset in the window, next to the sidebar. */}
                 <div className="min-w-0 flex-1 py-2 pr-2">
                     <main id="main-scroll" className="relative h-full overflow-x-hidden overflow-y-auto rounded-xl border border-line bg-bg">
+                        <TmdbNotice />
                         <Suspense
                             fallback={
                                 <div className="grid h-full place-items-center">
@@ -93,12 +91,8 @@ export default function App() {
                                 <Route path="/auto-downloader" element={<AutoDownloaderPage />} />
                                 <Route path="/library" element={<LibraryPage />} />
                                 <Route path="/local" element={<LocalLibraryPage />} />
-                                <Route path="/auth/callback" element={<AuthCallbackPage />} />
                                 <Route path="/extensions" element={<ExtensionsPage />} />
                                 <Route path="/settings" element={<SettingsPage />} />
-                                <Route path="/manga" element={<MangaPage />} />
-                                <Route path="/manga/entry" element={<MangaEntryPage />} />
-                                <Route path="/manga/read" element={<MangaReaderPage />} />
                                 <Route path="/webview" element={<WebviewPage />} />
                                 <Route path="*" element={<HomePage />} />
                             </Routes>

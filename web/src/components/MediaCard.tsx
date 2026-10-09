@@ -1,8 +1,9 @@
 import { ChevronLeft, ChevronRight, Ellipsis, HardDrive, Star } from "lucide-react"
 import { useRef, useState } from "react"
 import { Link } from "react-router-dom"
+import { airedEpisodes, episodeIndex, formatKey, mediaIsShow, totalEpisodes } from "@/lib/ids"
 import type { ListEntry, Media } from "@/lib/types"
-import { airedEpisodes, cn, cover, entryUrl, formatLabel, timeUntil, title, totalEpisodes } from "@/lib/utils"
+import { airsIn, cn, cover, entryUrl, formatLabel, starText, title, year } from "@/lib/utils"
 import { Dropdown, DropdownContent, DropdownTrigger, IconButton } from "./ui"
 
 type Props = {
@@ -26,16 +27,16 @@ const statusDot: Record<string, string> = {
 }
 
 export function MediaCard({ media, listEntry, localCount, downloaded, className, showProgress = true, menu }: Props) {
-    const total = media.type === "MANGA" ? media.chapters ?? 0 : totalEpisodes(media)
-    const progress = listEntry?.progress ?? 0
-    const aired = airedEpisodes(media)
+    const show = mediaIsShow(media)
+    const total = totalEpisodes(media)
+    // Progress is an episode key: "12 / 24" counts episodes.
+    const watched = listEntry ? episodeIndex(media, listEntry.progress ?? 0) : 0
     // "new" = aired episodes of an airing show the user hasn't watched yet
-    const behind =
-        media.type !== "MANGA" && media.status === "RELEASING" && listEntry && (listEntry.status === "CURRENT" || listEntry.status === "REPEATING")
-            ? Math.max(0, aired - progress)
-            : 0
-    const nextAir = media.nextAiringEpisode
-    const score = media.meanScore ?? media.averageScore
+    const behind = show && media.status === "RELEASING" && listEntry && (listEntry.status === "CURRENT" || listEntry.status === "REPEATING") ? Math.max(0, airedEpisodes(media) - watched) : 0
+    const nextAir = show ? media.nextAiringEpisode : null
+    const score = media.averageScore ?? media.meanScore
+    // The user's rating, Letterboxd-style, for movies and finished shows.
+    const stars = listEntry && (!show || listEntry.status === "COMPLETED") ? starText(listEntry.score) : ""
 
     const card = (
         <Link to={entryUrl(media)} className={cn("group/card focus-ring relative flex flex-col gap-2.5 rounded-lg outline-none", !menu && className)}>
@@ -57,7 +58,7 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
                     {!!localCount && localCount > 0 && (
                         <span className="flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white tabular-nums">
                             <HardDrive className="size-3" />
-                            {downloaded?.length ?? localCount}
+                            {show && (downloaded?.length ?? localCount)}
                         </span>
                     )}
                 </div>
@@ -69,18 +70,18 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
                         )}
                     >
                         <Star className="size-3 fill-amber-300 text-amber-300" />
-                        {score}%
+                        {(score / 10).toFixed(1)}
                     </span>
                 ) : null}
                 {nextAir && (
                     <span className="absolute bottom-2.5 left-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white">
-                        Ep {nextAir.episode} in {timeUntil(nextAir.timeUntilAiring)}
+                        {formatKey(nextAir.episode)} {airsIn(nextAir.airingAt)}
                     </span>
                 )}
 
-                {showProgress && listEntry && total > 0 && progress > 0 && progress < total && (
+                {showProgress && show && listEntry && total > 0 && watched > 0 && watched < total && (
                     <div className="absolute inset-x-0 bottom-0 h-[3px] bg-black/50">
-                        <div className="h-full bg-brand" style={{ width: `${Math.min(100, (progress / total) * 100)}%` }} />
+                        <div className="h-full bg-brand" style={{ width: `${Math.min(100, (watched / total) * 100)}%` }} />
                     </div>
                 )}
             </div>
@@ -90,13 +91,14 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
                     {listEntry && <span className={cn("size-1.5 shrink-0 rounded-full", statusDot[listEntry.status] ?? "bg-white/50")} />}
                     <span className="truncate">
                         {formatLabel(media.format)}
-                        {media.seasonYear ? ` · ${media.seasonYear}` : ""}
+                        {year(media) ? ` · ${year(media)}` : ""}
                     </span>
-                    {listEntry && total > 0 && (
+                    {show && listEntry && total > 0 && !stars && (
                         <span className="ml-auto shrink-0 tabular-nums">
-                            {progress}/{total}
+                            {watched}/{total}
                         </span>
                     )}
+                    {stars && <span className="ml-auto shrink-0 tracking-tight text-[#00e054]/85">{stars}</span>}
                 </div>
             </div>
         </Link>
@@ -113,7 +115,7 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
 // A card with a menu, opened with a "⋯" button (on hover, always shown on
 // touch screens, which can't hover) or by right-clicking the card, at the
 // pointer. Both are next to the card's link, not in it, so using them never
-// opens the anime.
+// opens the movie or show.
 function CardMenu({ menu, className, children }: { menu: React.ReactNode; className?: string; children: React.ReactNode }) {
     const [at, setAt] = useState<{ x: number; y: number } | null>(null) // in the card
     const focused = useRef<Element | null>(null)

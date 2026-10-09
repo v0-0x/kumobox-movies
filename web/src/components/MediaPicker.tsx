@@ -2,17 +2,19 @@ import { Search } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useCollection, useSearch } from "@/lib/queries"
 import type { Media } from "@/lib/types"
-import { cn, cover, formatLabel, title } from "@/lib/utils"
+import { cn, cover, mediaSummary, originalTitle, title } from "@/lib/utils"
 import { Dialog, ErrorState, Input, Spinner } from "./ui"
 
-// Search AniList (and the user's list) to pick an anime.
+// Search TMDB (and the user's list) to pick a movie or show. type limits
+// it to movies (MOVIE) or shows (TV).
 export function MediaPicker({
     open,
     onOpenChange,
     onPick,
     initialQuery = "",
-    heading = "Choose an anime",
+    heading = "Choose a movie or show",
     description,
+    type = "",
 }: {
     open: boolean
     onOpenChange: (v: boolean) => void
@@ -20,6 +22,7 @@ export function MediaPicker({
     initialQuery?: string
     heading?: string
     description?: React.ReactNode
+    type?: "" | "MOVIE" | "TV"
 }) {
     const [q, setQ] = useState(initialQuery)
     const [dq, setDq] = useState(initialQuery)
@@ -33,18 +36,19 @@ export function MediaPicker({
         const t = setTimeout(() => setDq(q), 300)
         return () => clearTimeout(t)
     }, [q])
-    const { data, isFetching, error, refetch } = useSearch({ search: dq, type: "ANIME", perPage: 20 }, open && dq.trim().length > 1)
+    const { data, isFetching, error, refetch } = useSearch({ search: dq, type, perPage: 20 }, open && dq.trim().length > 1)
     const { data: coll } = useCollection()
     const fromList = (coll?.lists ?? [])
         .flatMap(l => l.items)
-        .filter(i => dq.trim().length > 1 && [title(i.media), i.media.title.english ?? "", i.media.title.romaji ?? ""].some(t => t.toLowerCase().includes(dq.toLowerCase())))
+        .filter(i => !type || i.media.type === type)
+        .filter(i => dq.trim().length > 1 && [title(i.media), i.media.title.english ?? "", i.media.title.native ?? ""].some(t => t.toLowerCase().includes(dq.toLowerCase())))
         .map(i => i.media)
         .slice(0, 6)
     const results = [...fromList, ...(data?.media ?? []).filter(m => !fromList.some(f => f.id === m.id))]
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange} title={heading} description={description} className="w-[min(94vw,680px)]">
-            <Input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search AniList…" icon={<Search className="size-4" />} />
+            <Input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={type === "TV" ? "Search TV shows…" : type === "MOVIE" ? "Search movies…" : "Search movies and TV shows…"} icon={<Search className="size-4" />} />
             <div className="mt-4 flex min-h-40 flex-col gap-1">
                 {isFetching && results.length === 0 && (
                     <div className="grid h-40 place-items-center">
@@ -64,14 +68,14 @@ export function MediaPicker({
                         <div className="min-w-0 flex-1">
                             <p className="truncate font-semibold">{title(m)}</p>
                             <p className="truncate text-sm text-muted">
-                                {[formatLabel(m.format), m.seasonYear, m.episodes ? `${m.episodes} eps` : ""].filter(Boolean).join(" · ")}
-                                {m.title.english && m.title.english !== title(m) ? ` · ${m.title.english}` : ""}
+                                {mediaSummary(m)}
+                                {originalTitle(m) ? ` · ${originalTitle(m)}` : ""}
                             </p>
                         </div>
-                        {i < fromList.length && <span className={cn("rounded-md bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand-strong")}>In your list</span>}
+                        {i < fromList.length && <span className={cn("rounded-md bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand-strong")}>On your list</span>}
                     </button>
                 ))}
-                {!isFetching && dq.trim().length > 1 && error && <ErrorState compact title="Couldn't search AniList" error={error} onRetry={() => refetch()} />}
+                {!isFetching && dq.trim().length > 1 && error && <ErrorState compact title="Couldn't search TMDB" error={error} onRetry={() => refetch()} />}
                 {!isFetching && dq.trim().length > 1 && !error && results.length === 0 && <p className="py-10 text-center text-sm text-muted">No results</p>}
             </div>
         </Dialog>

@@ -4,7 +4,8 @@ import { Tooltip } from "./ui"
 
 type Props = {
     image?: string
-    number: number
+    // What the episode is called without a picture: "S01E05", "E5"…
+    label?: string
     title?: string
     subtitle?: React.ReactNode
     runtime?: number
@@ -21,7 +22,7 @@ type Props = {
     className?: string
 }
 
-export function EpisodeCard({ image, number, title, subtitle, runtime, watched, hasFile, progress, resumeAt, aired = true, blur, large, onClick, actions, onRemove, className }: Props) {
+export function EpisodeCard({ image, label, title, subtitle, runtime, watched, hasFile, progress, resumeAt, aired = true, blur, large, onClick, actions, onRemove, className }: Props) {
     return (
         <div
             role="button"
@@ -54,7 +55,7 @@ export function EpisodeCard({ image, number, title, subtitle, runtime, watched, 
                         )}
                     />
                 ) : (
-                    <div className="grid size-full place-items-center bg-surface-3 text-3xl font-semibold text-white/15 tabular-nums">{number}</div>
+                    <div className={cn("grid size-full place-items-center bg-surface-3 font-semibold text-white/15 tabular-nums", (label?.length ?? 0) > 4 ? "text-2xl" : "text-3xl")}>{label}</div>
                 )}
                 <div className="pointer-events-none absolute inset-0 rounded-lg ring-1 ring-white/[0.07] transition-[box-shadow] duration-300 ring-inset group-hover/ep:ring-white/20" />
                 {aired && (
@@ -117,7 +118,7 @@ export function EpisodeCard({ image, number, title, subtitle, runtime, watched, 
             <div className="flex items-start justify-between gap-3 px-0.5">
                 <div className="min-w-0">
                     {title && <p className={cn("truncate font-medium", large ? "text-[15px]" : "text-[13.5px]")}>{title}</p>}
-                    <p className={cn("mt-0.5 truncate text-muted", large ? "text-[13.5px]" : "text-xs")}>{subtitle ?? `Episode ${number}`}</p>
+                    {(subtitle ?? label) && <p className={cn("mt-0.5 truncate text-muted", large ? "text-[13.5px]" : "text-xs")}>{subtitle ?? label}</p>}
                 </div>
                 {!!runtime && <span className="shrink-0 pt-0.5 text-xs text-subtle tabular-nums">{runtime}m</span>}
             </div>

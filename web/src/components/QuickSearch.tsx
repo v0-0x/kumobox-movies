@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useSearch } from "@/lib/queries"
 import { searchOpenStore, useStore } from "@/lib/store"
-import { cn, cover, entryUrl, formatLabel, title } from "@/lib/utils"
+import { cn, cover, entryUrl, mediaSummary, title } from "@/lib/utils"
 import { ErrorState, Spinner } from "./ui"
 
 function useDebounced<T>(v: T, ms = 300) {
@@ -19,7 +19,7 @@ function useDebounced<T>(v: T, ms = 300) {
 export function QuickSearch() {
     const open = useStore(searchOpenStore)
     const [q, setQ] = useState("")
-    const [type, setType] = useState<"ANIME" | "MANGA">("ANIME")
+    const [type, setType] = useState<"" | "MOVIE" | "TV">("")
     const [sel, setSel] = useState(0)
     const dq = useDebounced(q)
     const navigate = useNavigate()
@@ -76,14 +76,14 @@ export function QuickSearch() {
                                     else if (q.trim()) go(`/search?q=${encodeURIComponent(q)}`)
                                 }
                             }}
-                            placeholder={`Search ${type === "ANIME" ? "anime" : "manga"}…`}
+                            placeholder={type === "MOVIE" ? "Search movies…" : type === "TV" ? "Search TV shows…" : "Search movies and TV shows…"}
                             className="h-16 flex-1 bg-transparent text-lg outline-none placeholder:text-subtle"
                         />
                         {isFetching && <Spinner className="size-4" />}
                         <div className="flex rounded-lg border border-line p-0.5 text-xs">
-                            {(["ANIME", "MANGA"] as const).map(t => (
+                            {(["", "MOVIE", "TV"] as const).map(t => (
                                 <button key={t} onClick={() => setType(t)} className={cn("rounded-md px-2.5 py-1 font-semibold", type === t ? "bg-white/10 text-fg" : "text-muted")}>
-                                    {t === "ANIME" ? "Anime" : "Manga"}
+                                    {t === "MOVIE" ? "Movies" : t === "TV" ? "Shows" : "All"}
                                 </button>
                             ))}
                         </div>
@@ -100,22 +100,22 @@ export function QuickSearch() {
                                 <div className="min-w-0 flex-1">
                                     <p className="truncate font-semibold">{title(m)}</p>
                                     <p className="truncate text-sm text-muted">
-                                        {[formatLabel(m.format), m.seasonYear, m.episodes ? `${m.episodes} eps` : m.chapters ? `${m.chapters} ch` : ""].filter(Boolean).join(" · ")}
+                                        {mediaSummary(m)}
                                     </p>
                                 </div>
                                 {sel === i && <ArrowRight className="size-4 text-muted" />}
                             </button>
                         ))}
-                        {searching && !isFetching && error && <ErrorState compact title="Couldn't search AniList" error={error} onRetry={() => refetch()} />}
+                        {searching && !isFetching && error && <ErrorState compact title="Couldn't search TMDB" error={error} onRetry={() => refetch()} />}
                         {searching && !isFetching && !error && results.length === 0 && <p className="p-6 text-center text-sm text-muted">No results</p>}
                         {!searching && (
                             <p className="p-6 text-center text-sm text-subtle">
-                                Type to search AniList · <kbd className="rounded bg-white/10 px-1.5 py-0.5 text-xs">Ctrl K</kbd> to toggle
+                                Type to search TMDB · <kbd className="rounded bg-white/10 px-1.5 py-0.5 text-xs">Ctrl K</kbd> to toggle
                             </p>
                         )}
                     </div>
                     {q.trim() && (
-                        <button onClick={() => go(`/search?q=${encodeURIComponent(q)}&type=${type}`)} className="flex w-full items-center justify-between border-t border-line px-5 py-3 text-sm text-muted hover:bg-white/[0.04] hover:text-fg">
+                        <button onClick={() => go(`/search?q=${encodeURIComponent(q)}${type ? `&type=${type}` : ""}`)} className="flex w-full items-center justify-between border-t border-line px-5 py-3 text-sm text-muted hover:bg-white/[0.04] hover:text-fg">
                             Advanced search for “{q}” <ArrowRight className="size-4" />
                         </button>
                     )}

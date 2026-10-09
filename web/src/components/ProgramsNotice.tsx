@@ -6,7 +6,7 @@ import { useStatus } from "@/lib/queries"
 
 const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`)
 
-// On Windows and macOS, when the in-app player's ffmpeg or ani-cli is
+// On Windows and macOS, when the in-app player's ffmpeg is
 // missing: a button that installs what KumoBox uses. Hidden for good per set of
 // missing programs.
 export function ProgramsNotice() {
@@ -17,7 +17,7 @@ export function ProgramsNotice() {
     const missing = missingPrograms(status)
     const key = missing.join(",")
     const running = !!status?.setupRunning
-    if (!canInstallPrograms(status) || !(missing.includes("ffmpeg") || missing.includes("ani-cli")) || hidden === key) return null
+    if (!canInstallPrograms(status) || !missing.includes("ffmpeg") || hidden === key) return null
     return (
         <div className="flex flex-wrap items-center gap-4 rounded-xl border border-amber-500/25 bg-amber-500/10 px-5 py-4">
             <Wrench className="size-5 shrink-0 text-amber-300" />
