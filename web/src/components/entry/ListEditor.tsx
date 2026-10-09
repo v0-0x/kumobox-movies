@@ -1,6 +1,6 @@
 import { Check, ChevronDown, EyeOff, Heart, Minus, NotebookPen, Plus, Star, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
-import { episodeIndex, formatKey, lastEpisode, MOVIE_EPISODE, mediaIsShow, nextEpisode, totalEpisodes } from "@/lib/ids"
+import { episodeIndex, formatKey, lastEpisode, latestAired, MOVIE_EPISODE, mediaIsShow, nextEpisode, totalEpisodes } from "@/lib/ids"
 import { useDeleteEntry, useEpisodeMarker, useUpdateEntry } from "@/lib/queries"
 import type { EntryUpdate, FuzzyDate, ListEntry, Media } from "@/lib/types"
 import { cn, formatDate, fuzzyDate, LIST_STATUS, scoreToStars, starsToScore, today } from "@/lib/utils"
@@ -27,7 +27,10 @@ export function ListStatusButton({ media, entry }: { media: Media; entry: Entry 
         // playing it to the end: it's logged in the diary.
         if (status === "COMPLETED" && !show) return marker.mark(MOVIE_EPISODE, true)
         const body: EntryUpdate = { status }
-        if (status === "COMPLETED" && show && lastEpisode(media)) body.progress = lastEpisode(media)
+        // Watched up to the last episode that aired: those still to come
+        // stay unwatched (they're next once they air).
+        const last = latestAired(media) || lastEpisode(media)
+        if (status === "COMPLETED" && show && last) body.progress = last
         update.mutate(body)
     }
     return (
