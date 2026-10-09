@@ -76,15 +76,9 @@ type TorrentProvider struct {
 	ext *Loaded
 }
 
-// Extension ids that clash with the built-in providers get a suffix.
-func (p *TorrentProvider) ID() string {
-	switch id := p.ext.Manifest.ID; id {
-	case "nyaa", "animetosho":
-		return id + "-ext"
-	default:
-		return id
-	}
-}
+// ID is the extension's. The torrent manager adds a suffix to one that
+// clashes with a built-in source's.
+func (p *TorrentProvider) ID() string   { return p.ext.Manifest.ID }
 func (p *TorrentProvider) Name() string { return p.ext.Manifest.Name }
 
 type animeTorrent struct {
