@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
@@ -56,6 +57,10 @@ type MediaQuery struct {
 	// Query is free text the user typed: it replaces the searches made
 	// from the title and ids, and nothing is filtered out.
 	Query string `json:"query,omitempty"`
+	// Media is the catalog entry the query was made from, when there is
+	// one: extension providers get it whole (sources only use the fields
+	// above).
+	Media *catalog.Media `json:"-"`
 }
 
 // Source searches one site or indexer for torrents.
@@ -235,7 +240,7 @@ wait:
 		}
 	}
 	out := mergeResults(all)
-	sortResults(out, q.Resolution)
+	sortResults(out, q)
 	return out, errs
 }
 
@@ -513,21 +518,58 @@ func joinProviders(a, b string) string {
 
 // sortResults puts torrents with seeders first (a dead torrent of the right
 // resolution helps nobody; the Internet Archive's, whose seeders aren't
-// known, come after the others), then those of the wanted resolution, then
-// the best-seeded.
-func sortResults(results []*SearchResult, resolution string) {
+// known, come after the others), then those that are exactly what was asked
+// for (see fit), then those of the wanted resolution, then the best-seeded.
+func sortResults(results []*SearchResult, q MediaQuery) {
+	fits := make(map[*SearchResult]int, len(results))
+	for _, r := range results {
+		fits[r] = fit(r, q)
+	}
 	sort.SliceStable(results, func(i, j int) bool {
 		a, b := results[i], results[j]
 		if (a.Seeders > 0) != (b.Seeders > 0) {
 			return a.Seeders > 0
 		}
-		if resolution != "" {
-			if am, bm := a.Resolution == resolution, b.Resolution == resolution; am != bm {
+		if fa, fb := fits[a], fits[b]; fa != fb {
+			return fa < fb
+		}
+		if q.Resolution != "" {
+			if am, bm := a.Resolution == q.Resolution, b.Resolution == q.Resolution; am != bm {
 				return am
 			}
 		}
 		return a.Seeders > b.Seeders
 	})
+}
+
+// fit ranks how exactly a result is what was asked for, 0 being the best:
+// for an episode, the episode itself before a pack holding it; for a
+// season, that season's pack before packs of several seasons or of the
+// whole show. Movies and free-text searches all fit alike.
+func fit(r *SearchResult, q MediaQuery) int {
+	if q.Query != "" || q.Type != MediaTV {
+		return 0
+	}
+	f := checkName(r.Name)
+	switch {
+	case q.Episode > 0:
+		if f.singleEpisode() {
+			return 0
+		}
+		if f.Episode >= 0 {
+			return 1 // a range of episodes
+		}
+		if f.SeasonFrom == f.SeasonTo && f.SeasonFrom > 0 {
+			return 2 // the season's pack
+		}
+		return 3
+	case q.Season > 0:
+		if f.Pack && f.Episode < 0 && f.SeasonFrom == q.Season && f.SeasonTo == q.Season {
+			return 0
+		}
+		return 1
+	}
+	return 0
 }
 
 // newResult starts a result of a source.

@@ -207,10 +207,15 @@ export function Sidebar() {
                                 <DropdownItem icon={<Settings2 />} onSelect={() => navigate("/settings?tab=letterboxd")}>
                                     Import & export
                                 </DropdownItem>
-                                <DropdownSeparator />
-                                <DropdownItem icon={<Unplug />} danger onSelect={disconnect}>
-                                    Disconnect
-                                </DropdownItem>
+                                {/* The account is managed on the computer KumoBox runs on. */}
+                                {status?.client !== "lan" && (
+                                    <>
+                                        <DropdownSeparator />
+                                        <DropdownItem icon={<Unplug />} danger onSelect={disconnect}>
+                                            Disconnect
+                                        </DropdownItem>
+                                    </>
+                                )}
                             </>
                         ) : (
                             <DropdownItem icon={<Plug />} onSelect={() => setLetterboxdOpen(true)}>

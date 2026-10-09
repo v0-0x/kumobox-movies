@@ -1,28 +1,45 @@
-import { Loader2, Pause, Play, RotateCcw, RotateCw, Square } from "lucide-react"
+import { FastForward, Loader2, Pause, Play, RotateCcw, RotateCw, Square } from "lucide-react"
 import { Link } from "react-router-dom"
 import { api } from "@/lib/api"
 import { formatKey, isShow } from "@/lib/ids"
+import { useSettings } from "@/lib/queries"
+import { skipAt, skipName, skipOn } from "@/lib/skips"
 import { playbackStore, scanStore, useStore } from "@/lib/store"
 import { formatDuration } from "@/lib/utils"
 import { Progress } from "./ui"
 
-// Floating pill controlling the external mpv window.
+// Floating pill controlling the external mpv window: the movie or show,
+// the episode (S01E02 · Pilot), and a skip button in an intro, a recap or
+// the credits that mpv doesn't skip by itself.
 export function NowPlaying() {
     const s = useStore(playbackStore)
+    const settings = useSettings()
     if (!s || !s.active || s.player !== "mpv") return null
     const cmd = (c: string, value = 0) => api.post("/api/playback/command", { cmd: c, value }).catch(() => {})
     const pct = s.duration > 0 ? s.position / s.duration : 0
+    const name = s.mediaTitle || s.title
+    const episode = isShow(s.mediaId) && s.episode > 0 && !name.includes(formatKey(s.episode)) ? [formatKey(s.episode), s.episodeTitle].filter(Boolean).join(" · ") : ""
+    // mpv skips what the settings say, but credits at the very end without
+    // a next episode to play.
+    const skip = skipAt(s.skips ?? [], s.position)
+    const offerSkip = !!skip && (!skipOn(settings?.playback, skip.type) || skip.end >= s.duration - 1)
     return (
         <div className="fixed bottom-5 left-1/2 z-50 w-[min(92vw,560px)] -translate-x-1/2 rounded-xl border border-line-strong bg-surface-2 p-3 shadow-2xl shadow-black/50 rise-in">
             <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
-                    <p className="text-xs text-muted">
-                        Playing in mpv{isShow(s.mediaId) && s.episode > 0 && !s.title.includes(formatKey(s.episode)) ? ` · ${formatKey(s.episode)}` : ""}
-                    </p>
+                    <p className="truncate text-xs text-muted">Playing in mpv{episode ? ` · ${episode}` : ""}</p>
                     <Link to={`/entry?id=${s.mediaId}`} className="block truncate text-sm font-medium hover:underline">
-                        {s.title}
+                        {name}
                     </Link>
                 </div>
+                {offerSkip && skip && (
+                    <button
+                        className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-semibold text-neutral-950 transition-colors hover:bg-white/85"
+                        onClick={() => cmd("seek-to", skip.end)}
+                    >
+                        <FastForward className="size-3.5 fill-current" /> Skip {skipName(skip.type)}
+                    </button>
+                )}
                 <div className="flex items-center gap-1">
                     <button className="grid size-9 place-items-center rounded-full text-muted transition-colors hover:bg-white/10 hover:text-fg" onClick={() => cmd("seek", -10)} title="Back 10s">
                         <RotateCcw className="size-4" />

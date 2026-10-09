@@ -302,6 +302,15 @@ func TestFillEpisodes(t *testing.T) {
 		t.Errorf("extras %+v", v.Others)
 	}
 
+	// Without any season's details (TMDB not answering, seasons not
+	// fetched), the episodes and the next one are still keys, from the
+	// season list.
+	v = &EntryView{}
+	s.fillEpisodes(v, testShow(1396, "Breaking Bad", 7, 13), &catalog.ListEntry{Status: "CURRENT", Progress: 1007}, nil, nil)
+	if n := v.NextEpisode; n == nil || n.Key != 2001 || n.Number != 2001 || n.Season != 2 || n.Episode != 1 || len(v.Episodes) != 20 {
+		t.Errorf("next episode without details: %+v", n)
+	}
+
 	movie := testMovie(155, "The Dark Knight", 2008)
 	movie.Status = "FINISHED"
 	v = &EntryView{}

@@ -1,8 +1,9 @@
 import { keepPreviousData, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "@/lib/toast"
-import { api, qs } from "./api"
+import { api, download, qs } from "./api"
 import { formatKey, mediaIsShow } from "./ids"
 import type {
+    AutoItem,
     AutoRule,
     CollectionView,
     DiaryEntry,
@@ -14,6 +15,8 @@ import type {
     EpisodeView,
     ExtensionInfo,
     FolderInfo,
+    LetterboxdConnected,
+    LetterboxdImportResult,
     LetterboxdResult,
     LetterboxdStatus,
     LocalFile,
@@ -31,7 +34,8 @@ import type {
     Status,
     StreamEpisodes,
     Torrent,
-    TorrentResult,
+    TorrentProviderInfo,
+    TorrentSearchResponse,
     UpdateStatus,
 } from "./types"
 
@@ -51,6 +55,8 @@ export function useSaveSettings() {
         onSuccess: s => {
             qc.setQueryData<Status>(["status"], old => (old ? { ...old, settings: s } : old))
             qc.invalidateQueries({ queryKey: ["status"] })
+            // Torrent sources may have been turned on or off.
+            qc.invalidateQueries({ queryKey: ["torrent-providers"] })
             toast.success("Settings saved")
         },
         onError: (e: Error) => toast.error(e.message),
@@ -338,13 +344,28 @@ export function useTorrentList(enabled = true) {
     })
 }
 
+// A torrent search. episode is a key; batch asks for the pack of season, or
+// of the whole show when season is 0; query replaces the searches made
+// from the title; provider is a source id or "all".
+export type TorrentSearchBody = {
+    provider: string
+    mediaId?: number
+    query?: string
+    episode?: number
+    season?: number
+    batch?: boolean
+    resolution?: string
+}
+
 export function useTorrentSearch() {
     return useMutation({
-        // episode: a key; season: the season of a pack (batch).
-        mutationFn: (body: { provider: string; mediaId?: number; query?: string; episode?: number; season?: number; batch?: boolean; resolution?: string }) =>
-            api.post<TorrentResult[]>("/api/torrents/search", body),
-        onError: (e: Error) => toast.error(e.message),
+        mutationFn: (body: TorrentSearchBody) => api.post<TorrentSearchResponse>("/api/torrents/search", body),
     })
+}
+
+// The torrent search sources: indexers, public sites, extensions.
+export function useTorrentProviders() {
+    return useQuery({ queryKey: ["torrent-providers"], queryFn: () => api.get<TorrentProviderInfo[]>("/api/torrents/providers"), staleTime: 60_000 })
 }
 
 export function useExtensions() {
@@ -368,6 +389,22 @@ export function useAutoRules() {
     return useQuery({ queryKey: ["auto-rules"], queryFn: () => api.get<AutoRule[]>("/api/autodownloader/rules") })
 }
 
+// What the auto downloader grabbed, newest first.
+export function useAutoItems() {
+    return useQuery({ queryKey: ["auto-items"], queryFn: () => api.get<AutoItem[]>("/api/autodownloader/items") })
+}
+
+// The episodes (keys) a rule looks for now.
+export function useRuleWanted(id: number | undefined, enabled = true) {
+    return useQuery({
+        queryKey: ["auto-rules", id, "wanted"],
+        queryFn: () => api.get<{ episodes: number[] }>(`/api/autodownloader/rules/${id}/wanted`),
+        enabled: enabled && !!id,
+        retry: false,
+        staleTime: 60_000,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Letterboxd
 
@@ -386,11 +423,23 @@ export function useDiary(mediaId?: number, limit = 50, enabled = true) {
     })
 }
 
-// "3 added, 1 updated, 2 skipped".
+// What a sync or an import did: "3 added, 1 updated, 4 diary entries · 2
+// not found".
 export function resultSummary(r: LetterboxdResult) {
-    const parts = [r.added && `${r.added} added`, r.updated && `${r.updated} updated`, r.skipped && `${r.skipped} skipped`].filter(Boolean)
-    return parts.length ? parts.join(", ") : "Nothing new"
+    const parts = [r.added && `${r.added} added`, r.updated && `${r.updated} updated`, r.diary && `${r.diary} ${r.diary === 1 ? "diary entry" : "diary entries"}`].filter(Boolean)
+    const missing = r.unmatched?.length ? ` · ${r.unmatched.length} not found` : ""
+    return (parts.length ? parts.join(", ") : "Nothing new") + missing
 }
+
+// What a push did: "2 entries sent · 1 not on Letterboxd".
+export function pushSummary(r: LetterboxdResult) {
+    const sent = r.added ? `${r.added} ${r.added === 1 ? "entry" : "entries"} sent` : "Nothing sent"
+    return sent + (r.skipped ? ` · ${r.skipped} not on Letterboxd` : "")
+}
+
+// The diary entries a downloaded CSV has (its X-Diary-Ids), to mark them
+// sent once the file is imported on letterboxd.com.
+export type DiaryExport = { ids: number[]; count: number; all: boolean }
 
 // The Letterboxd actions; every one refreshes what it may have changed.
 export function useLetterboxd() {
@@ -401,21 +450,47 @@ export function useLetterboxd() {
     }
     const onError = (e: Error) => toast.error(e.message)
     return {
-        connect: useMutation({ mutationFn: (username: string) => api.post<LetterboxdStatus>("/api/letterboxd/connect", { username }), onSuccess: refresh, onError }),
-        disconnect: useMutation({ mutationFn: () => api.post("/api/letterboxd/disconnect"), onSuccess: refresh, onError }),
+        connect: useMutation({ mutationFn: (username: string) => api.post<LetterboxdConnected>("/api/letterboxd/connect", { username }), onSuccess: refresh, onError }),
+        disconnect: useMutation({ mutationFn: () => api.post<LetterboxdStatus>("/api/letterboxd/disconnect"), onSuccess: refresh, onError }),
         sync: useMutation({ mutationFn: () => api.post<LetterboxdResult>("/api/letterboxd/sync"), onSuccess: refresh, onError }),
-        importFile: useMutation({
-            mutationFn: (file: File) => {
+        // The export's ZIP, or some of its CSV files.
+        importFiles: useMutation({
+            mutationFn: (files: File[]) => {
                 const form = new FormData()
-                form.append("file", file)
-                return api.upload<LetterboxdResult>("/api/letterboxd/import", form)
+                for (const f of files) form.append("file", f)
+                return api.upload<LetterboxdImportResult>("/api/letterboxd/import", form)
             },
             onSuccess: refresh,
             onError,
         }),
-        markExported: useMutation({ mutationFn: () => api.post<{ marked: number }>("/api/letterboxd/mark-exported"), onSuccess: refresh, onError }),
+        // Downloads the CSV for letterboxd.com/import: the entries still to
+        // send, or all of them.
+        exportCsv: useMutation({
+            mutationFn: async (all: boolean): Promise<DiaryExport> => {
+                const h = await download(`/api/letterboxd/export.csv${qs({ all })}`)
+                const ids = (h.get("X-Diary-Ids") ?? "").split(",").filter(Boolean).map(Number)
+                return { ids, count: Number(h.get("X-Diary-Count") ?? ids.length), all }
+            },
+            onError,
+        }),
+        exportWatchlist: useMutation({
+            mutationFn: async () => Number((await download("/api/letterboxd/watchlist.csv")).get("X-Film-Count") ?? 0),
+            onError,
+        }),
+        // The CSV was imported: its entries (or, without ids, every entry
+        // still to send) are on Letterboxd now.
+        markExported: useMutation({
+            mutationFn: (ids?: number[]) => api.post<{ marked: number }>("/api/letterboxd/mark-exported", ids ? { ids } : {}),
+            onSuccess: refresh,
+            onError,
+        }),
         push: useMutation({ mutationFn: () => api.post<LetterboxdResult>("/api/letterboxd/push"), onSuccess: refresh, onError }),
-        apiLogin: useMutation({ mutationFn: (v: { username: string; password: string }) => api.post<LetterboxdStatus>("/api/letterboxd/api-login", v), onSuccess: refresh, onError }),
+        apiLogin: useMutation({
+            mutationFn: (v: { username: string; password: string }) => api.post<LetterboxdStatus>("/api/letterboxd/api-login", v),
+            onSuccess: refresh,
+            onError,
+        }),
+        apiLogout: useMutation({ mutationFn: () => api.del<LetterboxdStatus>("/api/letterboxd/api-login"), onSuccess: refresh, onError }),
         deleteDiary: useMutation({ mutationFn: (id: number) => api.del(`/api/letterboxd/diary/${id}`), onSuccess: refresh, onError }),
     }
 }

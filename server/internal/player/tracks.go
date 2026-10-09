@@ -130,48 +130,9 @@ func PickTrack(tracks []Track, typ, lang, title string, index int) (int, bool) {
 	return 0, false
 }
 
-// PickByLanguages picks the first track matching a comma separated list of
-// language codes (e.g. "jpn,ja").
-func PickByLanguages(tracks []Track, typ, langs string) (int, bool) {
-	for _, l := range strings.Split(langs, ",") {
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
-		}
-		if id, ok := PickTrack(tracks, typ, l, "", 0); ok {
-			return id, true
-		}
-	}
-	return 0, false
-}
-
 func isSigns(title string) bool {
 	t := strings.ToLower(title)
 	return strings.Contains(t, "sign") || strings.Contains(t, "song") || strings.Contains(t, "forced")
-}
-
-var langAliases = map[string]string{
-	"ja": "jpn", "jp": "jpn", "jpn": "jpn", "japanese": "jpn",
-	"en": "eng", "eng": "eng", "english": "eng", "en-us": "eng", "enus": "eng",
-	"es": "spa", "spa": "spa", "spanish": "spa", "es-la": "spa",
-	"fr": "fre", "fre": "fre", "fra": "fre", "french": "fre",
-	"de": "ger", "ger": "ger", "deu": "ger", "german": "ger",
-	"it": "ita", "ita": "ita", "italian": "ita",
-	"pt": "por", "por": "por", "portuguese": "por", "pt-br": "por",
-	"ru": "rus", "rus": "rus", "russian": "rus",
-	"zh": "chi", "chi": "chi", "zho": "chi", "chinese": "chi",
-	"ko": "kor", "kor": "kor", "korean": "kor",
-	"ar": "ara", "ara": "ara", "arabic": "ara",
-}
-
-func langMatch(a, b string) bool {
-	a, b = strings.ToLower(strings.TrimSpace(a)), strings.ToLower(strings.TrimSpace(b))
-	if a == b {
-		return a != ""
-	}
-	ca, okA := langAliases[a]
-	cb, okB := langAliases[b]
-	return okA && okB && ca == cb
 }
 
 // PrefsFromSelection builds a TrackPrefs from the currently selected tracks.

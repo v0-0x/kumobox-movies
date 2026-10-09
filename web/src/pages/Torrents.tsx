@@ -126,7 +126,11 @@ export default function TorrentsPage() {
                         ]}
                     />
                     {isLoading && <div className="card h-40 shimmer" />}
-                    {!isLoading && torrents.length === 0 && <EmptyState icon={<Magnet className="size-6" />} title="No torrents" />}
+                    {!isLoading && torrents.length === 0 && (
+                        <EmptyState icon={<Magnet className="size-6" />} title={filter === "all" ? "No torrents" : filter === "active" ? "Nothing downloading" : "Nothing finished yet"}>
+                            {filter === "all" && "Find torrents in the Torrents tab of a movie or show, or let the auto downloader keep your shows downloaded."}
+                        </EmptyState>
+                    )}
                     <div className="flex flex-col gap-3">
                         {torrents.map(t => (
                             <TorrentRow key={t.hash} t={t} onAction={a => act([t.hash], a)} canOpen={status?.client !== "lan"} />
@@ -169,6 +173,11 @@ function TorrentRow({ t, onAction, canOpen }: { t: Torrent; onAction: (a: string
                     </span>
                     {t.eta > 0 && t.progress < 1 && <span>ETA {timeUntil(t.eta)}</span>}
                     <span>Ratio {t.ratio.toFixed(2)}</span>
+                    {t.savePath && (
+                        <span className="max-w-full truncate" title={t.savePath}>
+                            {t.savePath}
+                        </span>
+                    )}
                 </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">

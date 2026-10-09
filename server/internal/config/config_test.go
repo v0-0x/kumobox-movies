@@ -38,6 +38,10 @@ func TestFirstLaunchSavesDefaults(t *testing.T) {
 	if got.TMDB.Language != "en-US" || got.TMDB.Region != "US" || got.TMDB.APIKey != "" {
 		t.Fatalf("TMDB defaults: %+v", got.TMDB)
 	}
+	// Original audio, subtitles for foreign languages, nothing skipped.
+	if p := got.Playback; p.PreferredAudioLang != "" || p.PreferredSubLang != "" || !p.SubtitlesForForeign || p.SkipIntro || p.SkipCredits {
+		t.Fatalf("playback defaults: %+v", p)
+	}
 }
 
 // Settings saved without some fields (by an older version, or edited by
@@ -51,6 +55,7 @@ func TestSavedSettingsKeepTheirValues(t *testing.T) {
 		"tmdb":          map[string]any{"apiKey": "  0123456789abcdef  ", "region": "fr"},
 		"letterboxd":    map[string]any{"username": "@dave/", "syncMinutes": 1},
 		"downloads":     map[string]any{"dir": "/mnt/big/Downloads", "downloader": "aria2c"},
+		"torrent":       map[string]any{"defaultProvider": "nyaa"}, // Kumo's
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +74,7 @@ func TestSavedSettingsKeepTheirValues(t *testing.T) {
 		{"download dir", got.Downloads.Dir, "/mnt/big/Downloads"},
 		{"downloader", got.Downloads.Downloader, "auto"},
 		{"provider", got.OnlineStream.DefaultProvider, "archive"},
+		{"torrent source", got.Torrent.DefaultProvider, "all"},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, c.got, c.want)

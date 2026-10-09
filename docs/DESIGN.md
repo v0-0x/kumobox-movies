@@ -74,6 +74,43 @@ and the UI asks for a key (first-run banner + Settings › Metadata).
 `KUMOBOX_TMDB_URL` / `KUMOBOX_TMDB_IMAGE_URL` override the API and image
 hosts (tests, offline demos).
 
+## Playback (`internal/player`)
+
+* **Skipping by chapters** (`chapters.go`): chapter names are classified
+  as `intro` (Intro, Opening, OP, Opening Credits, Title Sequence, Main
+  Titles), `recap` (Recap, Previously On), `credits` (Credits, End
+  Credits, Ending, ED, Outro) or `preview` (Preview, Next Episode, Next
+  Time); scenes after the credits are never skipped. Settings
+  `playback.skipIntro` covers intros and recaps, `playback.skipCredits`
+  credits and previews. Local files: ffprobe's chapters (`stream.Probe`,
+  cached per path, size and modification time) →
+  `GET /api/playback/skips?path=` and the `skips` of the in-app player's
+  `POST /api/playback/local`. mpv: the `chapter-list`/`chapter`
+  properties; entering a skipped chapter seeks past it (and the skipped
+  chapters right after it) with an OSD "Skipped intro". Credits that run
+  to the end of the file are only skipped when auto play next has a next
+  episode to play. Streams have no chapters.
+* **Tracks** (`choose.go`, `ChooseTracks`): the choice remembered for the
+  title (track prefs, by media id) wins; else audio in
+  `preferredAudioLang` when set, else the title's original language
+  (`Media.OriginalLanguage`, ISO 639-1, matched against 639-2/B, 639-2/T
+  and BCP 47 tags); subtitles with `playback.subtitlesForForeign`
+  (default) in `preferredSubLang` (English when unset) only when the audio
+  isn't in the user's languages (that one or `preferredAudioLang`),
+  without it whenever `preferredSubLang` is set; otherwise off, except
+  forced subtitles in the audio's language. The in-app player gets the
+  same choice for local files (`choice` of `POST /api/playback/local`).
+* **Episodes**: sessions, history and progress use episode keys; auto
+  play next (`app/playback.go`) is `Media.NextEpisode` across seasons,
+  from the next file (this computer's or a shared one) or, for a stream,
+  the same provider and version. Players title episodes
+  "Show — S01E02 · Episode title" and movies "Title (Year)".
+* **Discord** (`discord.Presence`): "Watching <title>", the episode
+  ("S01E02 · Episode title") or the year, the TMDB poster as the large
+  image (an https URL), the application's `kumobox` art asset as the
+  small one ("KumoBox"), and the time bar while playing. It needs a
+  Discord application id in Settings › Discord.
+
 ## HTTP API (renamed from Kumo's anime routes)
 
 | Kumo | KumoBox |
@@ -92,10 +129,22 @@ hosts (tests, offline demos).
 | — | `GET /api/catalog/genres` |
 | `POST /api/auth/anilist` | `POST /api/letterboxd/connect` `{username}` |
 | `POST /api/auth/logout` | `POST /api/letterboxd/disconnect` |
-| — | `POST /api/letterboxd/sync`, `POST /api/letterboxd/import` (multipart ZIP/CSV), `GET /api/letterboxd/export.csv`, `GET /api/letterboxd/status`, `GET /api/letterboxd/diary`, `POST /api/letterboxd/api-login` |
+| — | `POST /api/letterboxd/sync`, `POST /api/letterboxd/import` (multipart ZIP/CSV), `GET /api/letterboxd/export.csv` + `POST /api/letterboxd/mark-exported`, `GET /api/letterboxd/watchlist.csv`, `GET /api/letterboxd/status`, `GET /api/letterboxd/diary`, `DELETE /api/letterboxd/diary/{id}`, `POST /api/letterboxd/push`, `POST`/`DELETE /api/letterboxd/api-login` |
 | `/api/onlinestream/*` | `/api/providers/*` (providers, sources, play, download, stremio install/uninstall, nuvio repos) |
 | `/api/anicli/status` | removed |
 | `/api/manga/*` | removed |
+
+The Letterboxd routes are in `api/letterboxd.go`. Devices on the LAN read
+the status and the diary, sync, export and send; connecting or
+disconnecting the account, importing files and the API sign-in are done on
+this computer. The account is only changed by connect/disconnect (or an API
+sign-in with none connected), never by `PUT /api/settings`. A movie that
+becomes Watched (played to the end, marked watched, or put on the Watched
+list: `App.UpdateEntry`) is logged in the diary once a day
+(`app/letterboxd.go`), and a rating given afterwards goes to that entry
+while it isn't on Letterboxd yet; shows aren't logged, nor what another
+KumoBox on the account finished. Events: `letterboxd-status` (with the
+status), `diary-updated`, `collection-updated`.
 
 ## Conventions
 

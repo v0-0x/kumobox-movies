@@ -39,7 +39,6 @@ func newLibraryServer(t *testing.T) *Server {
 	s := newTestServer(t)
 	cfg := s.app.Settings.Get()
 	cfg.TMDB.APIKey = libraryTestKey
-	cfg.Library.Dir = t.TempDir()
 	if _, err := s.app.Settings.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +62,7 @@ func saveFiles(t *testing.T, s *Server, root string, names ...string) []string {
 
 func TestLibraryMatchByHand(t *testing.T) {
 	s := newLibraryServer(t)
-	root := s.app.Settings.Get().Library.Dir
+	root := t.TempDir() // files only in the index: no scan touches them
 	const local = "127.0.0.1:5000"
 	post := func(path string, body any) *httptest.ResponseRecorder {
 		raw, _ := json.Marshal(body)
