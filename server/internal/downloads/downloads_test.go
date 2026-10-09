@@ -233,7 +233,7 @@ printf 'video' > "$last"
 		t.Fatalf("downloaded file = %q, %v", b, err)
 	}
 	if names := dirEntries(t, filepath.Dir(want)); len(names) != 1 {
-		t.Fatalf("anime folder holds %v, want only the video", names)
+		t.Fatalf("title folder holds %v, want only the video", names)
 	}
 	if f, err := m.files.Get(want); err != nil || f.MediaID != 1 || f.Episode != 1 {
 		t.Fatalf("library entry = %+v, %v", f, err)
@@ -292,7 +292,7 @@ printf 'fragment' > "$out.part-Frag1"
 			t.Fatalf("status = %s (%s), want completed", got.Status, got.Error)
 		}
 		if names := dirEntries(t, filepath.Join(lib, "Chatty")); strings.Join(names, ",") != "Chatty.mp4" {
-			t.Fatalf("anime folder holds %v, want only the video", names)
+			t.Fatalf("title folder holds %v, want only the video", names)
 		}
 		var sawProgress bool
 		for _, ev := range rec.downloadEvents() {
@@ -556,8 +556,8 @@ func TestLineWriter(t *testing.T) {
 	}
 }
 
-// Episodes go into a folder per anime: the one that already holds its
-// episodes, else a new one named after the anime — never loose in the
+// Downloads go into a folder per movie or show: the one that already holds
+// its files, else a new one named after it — never loose in the
 // library folder.
 func TestDownloadFolder(t *testing.T) {
 	m, lib := newTestManager(t, nil)
@@ -569,7 +569,7 @@ func TestDownloadFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if filepath.Dir(dir) != lib {
-		t.Fatalf("new anime: %q, want a folder inside %q", dir, lib)
+		t.Fatalf("new title: %q, want a folder inside %q", dir, lib)
 	}
 
 	// The user's own folder for it is reused.
