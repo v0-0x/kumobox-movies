@@ -19,16 +19,26 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/history"
 )
 
-// PlayRequest describes something to play.
+// PlayRequest describes something to play. Episode is an episode key (see
+// catalog/ids.go: S01E02 is 1002, a movie's is 1).
 type PlayRequest struct {
-	MediaID  int               `json:"mediaId"`
-	Episode  int               `json:"episode"`
-	Title    string            `json:"title"`
-	Source   string            `json:"source"` // local | anicli | stream | torrent
-	Target   string            `json:"target"` // file path or URL
-	Headers  map[string]string `json:"headers,omitempty"`
-	Referrer string            `json:"referrer,omitempty"`
-	SubFiles []string          `json:"subFiles,omitempty"`
+	MediaID int `json:"mediaId"`
+	Episode int `json:"episode"`
+	// Title is the window's: "Show — S01E02 · Pilot", "Movie (2010)".
+	Title string `json:"title"`
+	// MediaTitle is the movie's or show's title, EpisodeTitle the
+	// episode's ("" for a movie, or when unknown).
+	MediaTitle   string            `json:"mediaTitle,omitempty"`
+	EpisodeTitle string            `json:"episodeTitle,omitempty"`
+	Source       string            `json:"source"` // local | stream | torrent
+	Target       string            `json:"target"` // file path or URL
+	Headers      map[string]string `json:"headers,omitempty"`
+	Referrer     string            `json:"referrer,omitempty"`
+	SubFiles     []string          `json:"subFiles,omitempty"`
+	// Provider is the streaming provider a stream comes from, Dub whether
+	// it's the dubbed version: the next episode comes from the same.
+	Provider string `json:"provider,omitempty"`
+	Dub      bool   `json:"dub,omitempty"`
 	// Explicit start position; nil means "resume from history".
 	Start *float64 `json:"start,omitempty"`
 }
@@ -38,31 +48,41 @@ type PlayRequest struct {
 // The Manager only hands out copies (see snapshot); the live session is
 // owned by the Manager and guarded by its mu.
 type Session struct {
-	ID              string         `json:"id"`
-	MediaID         int            `json:"mediaId"`
-	Episode         int            `json:"episode"`
-	Title           string         `json:"title"`
-	Source          string         `json:"source"`
-	Player          string         `json:"player"`
-	Target          string         `json:"target"`
-	Position        float64        `json:"position"`
-	Duration        float64        `json:"duration"`
-	Paused          bool           `json:"paused"`
-	Active          bool           `json:"active"`
-	ProgressUpdated bool           `json:"progressUpdated"`
-	Tracks          []Track        `json:"tracks"`
-	Skips           []SkipInterval `json:"skips"`
-	StartedAt       int64          `json:"startedAt"`
+	ID              string  `json:"id"`
+	MediaID         int     `json:"mediaId"`
+	Episode         int     `json:"episode"` // key
+	Title           string  `json:"title"`
+	MediaTitle      string  `json:"mediaTitle,omitempty"`
+	EpisodeTitle    string  `json:"episodeTitle,omitempty"`
+	Source          string  `json:"source"`
+	Provider        string  `json:"provider,omitempty"`
+	Dub             bool    `json:"dub,omitempty"`
+	Player          string  `json:"player"`
+	Target          string  `json:"target"`
+	Position        float64 `json:"position"`
+	Duration        float64 `json:"duration"`
+	Paused          bool    `json:"paused"`
+	Active          bool    `json:"active"`
+	ProgressUpdated bool    `json:"progressUpdated"`
+	Tracks          []Track `json:"tracks"`
+	// Skips are the parts the file's chapters name as an intro, a recap,
+	// the credits or a preview (see ChapterSkips).
+	Skips     []SkipInterval `json:"skips"`
+	StartedAt int64          `json:"startedAt"`
 
 	finished bool // mpv reached the end of the file
 	stopping bool // we asked mpv to quit (Stop, or something else is starting)
 	watching bool // playback got going, the list status was checked (startWatching)
 	lastSave time.Time
 	lastEmit time.Time
-	skipped  map[string]bool
-	// skipsAsked: the AniSkip times were asked for (once the length is known).
-	skipsAsked bool
-	loopDone   chan struct{} // closed once the event loop has saved everything
+	// The file's chapters as mpv lists them, and the one playing (-1:
+	// none).
+	chapters []Chapter
+	chapter  int
+	// skipped are the Skips (by start) already skipped, or that won't be:
+	// each is skipped once a session, going back to one plays it.
+	skipped  map[float64]bool
+	loopDone chan struct{} // closed once the event loop has saved everything
 }
 
 // snapshot returns a copy of s that shares nothing mutable with it, safe to
@@ -71,12 +91,17 @@ func (s *Session) snapshot() *Session {
 	c := *s
 	c.Tracks = slices.Clone(s.Tracks)
 	c.Skips = slices.Clone(s.Skips)
+	c.chapters = slices.Clone(s.chapters)
 	c.skipped, c.loopDone = nil, nil
 	return &c
 }
 
 // NextResolver finds what to play after a session ended (auto play next).
 type NextResolver func(ctx context.Context, s *Session) (*PlayRequest, error)
+
+// HasNext reports, quickly (no network), whether there's a next episode to
+// play after a session: one aired, with a file for a file.
+type HasNext func(s *Session) bool
 
 // ProgressHook is called after the list progress was updated because an
 // episode crossed the completion threshold.
@@ -105,7 +130,10 @@ type Manager struct {
 	db       *db.DB
 
 	NextResolver NextResolver
-	OnProgress   []ProgressHook
+	// HasNext decides whether credits at the end of a file are skipped
+	// with auto play next (nil: when NextResolver is set).
+	HasNext    HasNext
+	OnProgress []ProgressHook
 	// OnWatching hooks are called after a title was put on the "watching"
 	// list because one of its episodes started playing.
 	OnWatching []func(mediaID int)
@@ -145,7 +173,6 @@ type Manager struct {
 
 	// Replaced in tests.
 	launch      func(mpvPath string, opts LaunchOptions) (*Mpv, error)
-	skipTimes   func(ctx context.Context, mediaID, episode int, length float64) []SkipInterval
 	trackGuard  time.Duration
 	trackSettle time.Duration
 }
@@ -153,13 +180,11 @@ type Manager struct {
 type episodeKey struct{ mediaID, episode int }
 
 func NewManager(s *config.Store, h *history.Store, d *db.DB, p *catalog.Platform, hub *events.Hub) *Manager {
-	m := &Manager{
+	return &Manager{
 		settings: s, history: h, Tracks: NewTrackStore(d), platform: p, hub: hub, db: d,
 		builtinStarted: map[episodeKey]bool{}, builtinSent: map[episodeKey]bool{},
 		launch: LaunchMpv, trackGuard: defaultTrackGuard, trackSettle: defaultTrackSettle,
 	}
-	m.skipTimes = m.aniSkipTimes
-	return m
 }
 
 // Status returns a copy of the current session (nil if nothing plays).
@@ -250,9 +275,13 @@ func (m *Manager) playLocked(req PlayRequest) (*Session, error) {
 		Referrer:   req.Referrer,
 		SubFiles:   req.SubFiles,
 		AudioLang:  cfg.Playback.PreferredAudioLang,
-		SubLang:    cfg.Playback.PreferredSubLang,
 		Fullscreen: cfg.Mpv.Fullscreen,
 		ExtraArgs:  strings.Fields(cfg.Mpv.ExtraArgs),
+	}
+	// mpv's own pick until the file is loaded and ChooseTracks decides:
+	// subtitles for foreign audio only can't be told to mpv.
+	if !cfg.Playback.SubtitlesForForeign {
+		opts.SubLang = cfg.Playback.PreferredSubLang
 	}
 	mpv, err := m.launch(cfg.Mpv.Path, opts)
 	if err != nil {
@@ -260,8 +289,9 @@ func (m *Manager) playLocked(req PlayRequest) (*Session, error) {
 	}
 	s := &Session{
 		ID: uuid.NewString(), MediaID: req.MediaID, Episode: req.Episode, Title: req.Title,
-		Source: req.Source, Player: "mpv", Target: req.Target, Position: start, Active: true,
-		StartedAt: time.Now().Unix(), skipped: map[string]bool{}, loopDone: make(chan struct{}),
+		MediaTitle: req.MediaTitle, EpisodeTitle: req.EpisodeTitle, Source: req.Source, Provider: req.Provider, Dub: req.Dub,
+		Player: "mpv", Target: req.Target, Position: start, Active: true, chapter: -1,
+		StartedAt: time.Now().Unix(), skipped: map[float64]bool{}, loopDone: make(chan struct{}),
 	}
 	m.mu.Lock()
 	m.cur, m.mpv = s, mpv
@@ -273,28 +303,13 @@ func (m *Manager) playLocked(req PlayRequest) (*Session, error) {
 	return c, nil
 }
 
-// loadSkips fetches the session's AniSkip intervals, for an episode length
-// seconds long.
-func (m *Manager) loadSkips(s *Session, length float64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	skips := m.skipTimes(ctx, s.MediaID, s.Episode, length)
-	m.mu.Lock()
-	s.Skips = skips
-	m.mu.Unlock()
-}
-
-// aniSkipTimes looks up an episode's AniSkip intervals. AniSkip knows
-// anime by their MyAnimeList id, which TMDB titles don't have: none, until
-// skipping by chapter names replaces it.
-func (m *Manager) aniSkipTimes(ctx context.Context, mediaID, episode int, length float64) []SkipInterval {
-	return nil
-}
+// observed are the mpv properties a session follows.
+var observed = []string{"time-pos", "duration", "pause", "aid", "sid", "track-list", "chapter-list", "chapter"}
 
 // loop handles the session's mpv events until mpv exits.
 func (m *Manager) loop(s *Session, mpv *Mpv) {
 	defer close(s.loopDone)
-	for i, p := range []string{"time-pos", "duration", "pause", "aid", "sid", "track-list"} {
+	for i, p := range observed {
 		mpv.Observe(i+1, p)
 	}
 	w := &trackWatch{guard: m.trackGuard, settle: m.trackSettle}
@@ -347,9 +362,13 @@ func (m *Manager) handle(s *Session, mpv *Mpv, w *trackWatch, saveTracks *time.T
 
 func (m *Manager) onProperty(s *Session, mpv *Mpv, w *trackWatch, ev MpvEvent) {
 	var tracks []Track
-	if ev.Name == "track-list" {
+	var chapters []Chapter
+	switch ev.Name {
+	case "track-list":
 		tracks = parseTrackList(ev.Data)
 		w.setTracks(tracks)
+	case "chapter-list":
+		chapters = parseChapterList(ev.Data)
 	}
 	m.mu.Lock()
 	switch ev.Name {
@@ -357,20 +376,26 @@ func (m *Manager) onProperty(s *Session, mpv *Mpv, w *trackWatch, ev MpvEvent) {
 		var f float64
 		if decodeProp(ev.Data, &f) {
 			s.Position = f
-			m.maybeSkip(s, mpv)
 		}
 	case "duration":
 		var f float64
 		if decodeProp(ev.Data, &f) {
 			s.Duration = f
-			// AniSkip's times depend on the episode's length: ask once mpv
-			// knows it.
-			p := m.settings.Get().Playback
-			if f > 0 && !s.skipsAsked && (p.SkipIntroAniSkip || p.SkipOutroAniSkip) && s.MediaID > 0 && s.Episode > 0 {
-				s.skipsAsked = true
-				go m.loadSkips(s, f)
-			}
+			// The last chapter ends with the file.
+			s.Skips = ChapterSkips(s.chapters, s.Duration)
+			m.skipChapter(s, mpv)
 		}
+	case "chapter-list":
+		s.chapters = chapters
+		s.Skips = ChapterSkips(s.chapters, s.Duration)
+		m.skipChapter(s, mpv)
+	case "chapter":
+		n := -1
+		if !decodeProp(ev.Data, &n) {
+			n = -1
+		}
+		s.chapter = n
+		m.skipChapter(s, mpv)
 	case "pause":
 		var b bool
 		if decodeProp(ev.Data, &b) {
@@ -421,55 +446,21 @@ func (m *Manager) saveTrackChoice(s *Session, w *trackWatch, saveTracks *time.Ti
 	}
 }
 
-// applyTrackPrefs selects the remembered audio/subtitle tracks once the file
-// is loaded (track ids differ between files, so we match by language/title).
+// applyTrackPrefs selects the audio and subtitle tracks once the file is
+// loaded: the ones remembered for the title (track ids differ between files,
+// so they're matched by language and title), else the ones the settings
+// want (see ChooseTracks).
 func (m *Manager) applyTrackPrefs(s *Session, mpv *Mpv, w *trackWatch) {
 	tracks := mpv.Tracks()
-	cfg := m.settings.Get()
-	var prefs, saved *TrackPrefs
-	if s.MediaID > 0 {
-		saved = m.Tracks.Get(s.MediaID)
+	c := ChooseTracks(tracks, m.trackRules(s.MediaID, s.Source, s.Dub))
+	if c.HasAudio {
+		_ = mpv.Set("aid", c.Audio)
 	}
-	if cfg.Playback.RememberTracks {
-		prefs = saved
-	}
-	// The sub/dub choice for this title (or a "dub" default) picks the audio
-	// of dual-audio files, unless a track was picked by hand.
-	mode := ""
-	if saved != nil {
-		mode = saved.StreamMode
-	}
-	if mode == "" && cfg.OnlineStream.PreferDub {
-		mode = "dub"
-	}
-	handAudio := prefs != nil && (prefs.AudioLang != "" || prefs.AudioTitle != "" || prefs.AudioIndex > 0)
-	handSub := prefs != nil && (prefs.SubOff || prefs.SubLang != "" || prefs.SubTitle != "" || prefs.SubIndex > 0)
-	if mode != "" && s.Source == "local" && !handAudio {
-		if pick := PickByMode(tracks, mode); pick.HasAudio {
-			_ = mpv.Set("aid", pick.Audio)
-			if !handSub {
-				if pick.HasSub {
-					_ = mpv.Set("sid", pick.Sub)
-				} else if pick.SubOff {
-					_ = mpv.Set("sid", "no")
-				}
-			}
-			mpv.ShowText(map[string]string{"dub": "Dub: English audio", "sub": "Sub: original audio"}[mode], 2000)
-		}
-	}
-	if prefs != nil {
-		if prefs.AudioLang != "" || prefs.AudioTitle != "" || prefs.AudioIndex > 0 {
-			if id, ok := PickTrack(tracks, "audio", prefs.AudioLang, prefs.AudioTitle, prefs.AudioIndex); ok {
-				_ = mpv.Set("aid", id)
-			}
-		}
-		if prefs.SubOff {
-			_ = mpv.Set("sid", "no")
-		} else if prefs.SubLang != "" || prefs.SubTitle != "" || prefs.SubIndex > 0 {
-			if id, ok := PickTrack(tracks, "sub", prefs.SubLang, prefs.SubTitle, prefs.SubIndex); ok {
-				_ = mpv.Set("sid", id)
-			}
-		}
+	switch {
+	case c.HasSub:
+		_ = mpv.Set("sid", c.Sub)
+	case c.SubOff:
+		_ = mpv.Set("sid", "no")
 	}
 	m.mu.Lock()
 	s.Tracks = tracks
@@ -477,41 +468,98 @@ func (m *Manager) applyTrackPrefs(s *Session, mpv *Mpv, w *trackWatch) {
 	// The track changes caused by loading/applying are ignored for a moment
 	// so only user choices are remembered.
 	w.loaded(time.Now(), tracks)
-	if handAudio || handSub {
+	switch {
+	case c.Restored:
 		mpv.ShowText("Restored your audio & subtitle choice", 2000)
+	case c.Note != "":
+		mpv.ShowText(c.Note, 2000)
 	}
 }
 
-// maybeSkip skips the opening or the ending, as the settings say. Must be
-// called with m.mu held.
-func (m *Manager) maybeSkip(s *Session, mpv *Mpv) {
-	if len(s.Skips) == 0 {
+// trackRules are the rules choosing the tracks of a title (0: unknown)
+// played from source, the dubbed version of a stream with dub.
+func (m *Manager) trackRules(mediaID int, source string, dub bool) TrackRules {
+	cfg := m.settings.Get()
+	r := TrackRules{AudioLang: cfg.Playback.PreferredAudioLang, SubLang: cfg.Playback.PreferredSubLang, ForeignSubs: cfg.Playback.SubtitlesForForeign}
+	if mediaID <= 0 {
+		return r
+	}
+	saved := m.Tracks.Get(mediaID)
+	if cfg.Playback.RememberTracks {
+		r.Prefs = saved
+	}
+	r.OriginalLang = m.originalLanguage(mediaID)
+	switch {
+	case source == "stream":
+		// The provider's version: the dub, or else the original.
+		if dub {
+			r.Mode = "dub"
+		}
+	case saved != nil && saved.StreamMode != "":
+		r.Mode = saved.StreamMode // the version chosen for the title
+	case cfg.OnlineStream.PreferDub:
+		r.Mode = "dub"
+	}
+	return r
+}
+
+// originalLanguage is a title's original language as TMDB has it, "" when
+// unknown.
+func (m *Manager) originalLanguage(mediaID int) string {
+	if m.platform == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	media, err := m.platform.MediaLite(ctx, mediaID)
+	if err != nil || media == nil {
+		return ""
+	}
+	return media.OriginalLanguage
+}
+
+// ChooseTracks picks the tracks the in-app player opens a file of a title
+// with (tracks: the file's, ids as the player numbers them), like mpv's.
+func (m *Manager) ChooseTracks(mediaID int, source string, dub bool, tracks []Track) TrackChoice {
+	return ChooseTracks(tracks, m.trackRules(mediaID, source, dub))
+}
+
+// skipChapter skips the part of the video the playing chapter is in, when
+// its name says it's an intro, a recap, the credits or a preview that the
+// settings skip: to its end, and past the skipped parts right after it.
+// Parts going on to the end of the file are only skipped when the next
+// episode plays after it (auto play next). Must be called with m.mu held.
+func (m *Manager) skipChapter(s *Session, mpv *Mpv) {
+	if s.chapter < 0 || s.chapter >= len(s.chapters) || len(s.Skips) == 0 || s.Duration <= 0 || s.stopping {
 		return
 	}
 	p := m.settings.Get().Playback
-	for _, sk := range s.Skips {
-		what, on := skipSetting(p, sk.Type)
-		if on && !s.skipped[sk.Type] && s.Position >= sk.Start && s.Position < sk.End-1 {
-			s.skipped[sk.Type] = true
-			end := sk.End
-			go func() {
-				_ = mpv.Set("time-pos", end)
-				mpv.ShowText("Skipped "+what, 1500)
-			}()
+	if !p.SkipIntro && !p.SkipCredits {
+		return
+	}
+	from, to, ok := skipRun(s.Skips, s.chapters[s.chapter].Start, func(typ string) bool {
+		_, on := skipSetting(p, typ)
+		return on
+	})
+	if !ok || s.skipped[s.Skips[from].Start] {
+		return
+	}
+	for _, sk := range s.Skips[from : to+1] {
+		s.skipped[sk.Start] = true
+	}
+	end, what := s.Skips[to].End, skipNames(p, s.Skips[from:to+1])
+	trailing := end >= s.Duration-1
+	if trailing {
+		end = s.Duration
+	}
+	c := s.snapshot()
+	go func() {
+		if trailing && !(p.AutoPlayNext && m.NextResolver != nil && (m.HasNext == nil || m.HasNext(c))) {
+			return // the credits play: nothing comes after them
 		}
-	}
-}
-
-// skipSetting names an AniSkip interval type and says whether the settings
-// skip it. Recaps play (AniSkip calls the next episode's preview one too).
-func skipSetting(p config.PlaybackSettings, typ string) (what string, on bool) {
-	switch typ {
-	case "op", "mixed-op":
-		return "opening", p.SkipIntroAniSkip
-	case "ed", "mixed-ed":
-		return "ending", p.SkipOutroAniSkip
-	}
-	return "", false
+		_ = mpv.Set("time-pos", end)
+		mpv.ShowText("Skipped "+what, 1500)
+	}()
 }
 
 // tick decides whether to save the position, whether playback just got far
@@ -555,12 +603,21 @@ func (m *Manager) fireProgress(mediaID, episode int) {
 			return
 		}
 		if ok {
-			m.hub.Success(fmt.Sprintf("Progress updated — episode %d", episode))
+			m.hub.Success(progressMessage(mediaID, episode))
 			for _, h := range m.OnProgress {
 				go h(mediaID, episode)
 			}
 		}
 	}()
+}
+
+// progressMessage tells what moved the list on: an episode watched (by its
+// key), or a movie.
+func progressMessage(mediaID, episode int) string {
+	if catalog.IsShow(mediaID) {
+		return "Progress updated — " + catalog.FormatKey(episode)
+	}
+	return "Marked as watched"
 }
 
 // startWatching puts a title the user started an episode of on the

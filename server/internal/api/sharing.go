@@ -218,8 +218,7 @@ func (s *Server) localSubtitle(w http.ResponseWriter, r *http.Request) {
 }
 
 // playShared opens a shared file: in mpv, which plays it from the host, or
-// in the in-app player. Progress and history are this KumoBox's, with its
-// AniList account.
+// in the in-app player. Progress and history are this KumoBox's.
 func (s *Server) playShared(r *http.Request, body playLocalBody) (any, error) {
 	f, ok := s.app.Share.File(body.Path)
 	if !ok {
@@ -235,14 +234,15 @@ func (s *Server) playShared(r *http.Request, body playLocalBody) (any, error) {
 	if !isTrusted(r) {
 		playerName = "builtin"
 	}
-	title := s.episodeTitle(r.Context(), body.MediaID, body.Episode, f.Name)
+	t := s.app.PlayTitles(r.Context(), body.MediaID, body.Episode, f.Name)
 	if playerName == "mpv" {
 		target, headers, err := s.app.Share.MediaURL(body.Path)
 		if err != nil {
 			return nil, notFound(err.Error())
 		}
 		sess, err := s.app.Player.PlayMpv(player.PlayRequest{
-			MediaID: body.MediaID, Episode: body.Episode, Title: title, Source: "local", Target: target, Headers: headers, Start: body.Start,
+			MediaID: body.MediaID, Episode: body.Episode, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
+			Source: "local", Target: target, Headers: headers, Start: body.Start,
 		})
 		if err != nil {
 			return nil, err
@@ -254,5 +254,5 @@ func (s *Server) playShared(r *http.Request, body playLocalBody) (any, error) {
 		return nil, badRequest(strings.TrimSpace(f.HostName + ": " + err.Error()))
 	}
 	probe.Path = body.Path
-	return s.builtinPlay(body, probe, title), nil
+	return s.builtinPlay(body, probe, t), nil
 }

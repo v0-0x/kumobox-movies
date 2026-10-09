@@ -34,10 +34,11 @@
 
 **Watching**
 - **mpv** (desktop media player, controlled over IPC) or the **in-app player**.
-- The in-app player plays any file: direct play when the browser can, otherwise ffmpeg **remuxes or transcodes on the fly** (VA-API / NVENC / QSV supported). Embedded and external subtitles (ASS/SRT/VTT) and audio-track switching are supported.
-- **Resume exactly where you stopped**, in both players.
-- **Original-language audio** by default (or your preferred dub), subtitles in your language for foreign titles, forced subtitles honoured, and your track choice **remembered per title**.
-- **Skip intros, recaps and end credits** from the file's chapters, auto play the next episode (across seasons), "Continue watching" row, now-playing bar for mpv.
+- In-app player plays any file: direct play when the browser can, otherwise ffmpeg **remuxes or transcodes on the fly** (VA-API / NVENC / QSV supported). Embedded and external subtitles (ASS/SRT/VTT) and audio-track switching are supported.
+- **Resume exactly where you stopped**: the position is saved every few seconds, in both players.
+- **Plays the original language** (or your preferred dub) with its forced subtitles, and turns on subtitles in your language when the audio is foreign.
+- **Remembers your audio and subtitle track per movie or show.** Pick "French + English subtitles" once and every next episode opens with the same tracks, matched by language and title, so it works even when the track order changes.
+- Skips intros, recaps and end credits by the file's chapter names, auto play next across seasons, "Continue watching" row, now-playing bar for mpv.
 
 **Streaming providers**
 - **Internet Archive** built in: thousands of public-domain and Creative Commons films, streamed straight from archive.org.

@@ -21,24 +21,20 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "@/lib/toast"
 import { api, qs } from "@/lib/api"
-import { formatKey, mediaIsShow, nextEpisode } from "@/lib/ids"
+import { episodeIndex, formatKey, mediaIsShow, nextEpisode } from "@/lib/ids"
 import { prefersHls, randomId, videoCaps } from "@/lib/playback"
 import { useSettings } from "@/lib/queries"
+import { skipAt, skipName, skipOn, skipRun, isSkippable } from "@/lib/skips"
 import { playerStore, type PlayerRequest } from "@/lib/store"
-import type { EntryView, Probe, StreamSource, TrackPrefs } from "@/lib/types"
+import type { EntryView, EpisodeView, Probe, Settings, SkipInterval, StreamSource, TrackPrefs } from "@/lib/types"
 import { cn, formatDuration } from "@/lib/utils"
 import { parseVTT, type Cue } from "@/lib/vtt"
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger } from "../ui"
 
 type SubOption = { key: string; label: string; lang: string; title: string; index: number; url: string; bitmap?: boolean }
-type Skip = { type: string; start: number; end: number }
-// The intervals the player offers to skip, found by the server from the
-// file's chapter names: intros and recaps (Settings › Playback "Skip intros
-// and recaps"), end credits ("Skip end credits"). The older op/ed names
-// count too.
-const CREDITS = ["credits", "outro", "ed", "mixed-ed"]
-const SKIPPED = ["intro", "recap", "op", "mixed-op", ...CREDITS]
-const skipName = (type: string) => (CREDITS.includes(type) ? "credits" : type === "recap" ? "recap" : "intro")
+// What the server picked to open a file with (player.ChooseTracks): the
+// audio track's index (-1: the file's default) and the subtitles' key.
+type TrackChoice = { audio: number; sub: string; note?: string }
 
 const langNames: Record<string, string> = {
     jpn: "Japanese", ja: "Japanese", eng: "English", en: "English", spa: "Spanish", es: "Spanish", fre: "French", fra: "French", fr: "French",
@@ -46,12 +42,40 @@ const langNames: Record<string, string> = {
     chi: "Chinese", zho: "Chinese", zh: "Chinese", kor: "Korean", ko: "Korean", ara: "Arabic", ar: "Arabic", und: "Unknown",
 }
 const langName = (l?: string) => (l ? langNames[l.toLowerCase()] ?? l.toUpperCase() : "")
-const normLang = (l?: string) => {
-    const x = (l ?? "").toLowerCase()
-    const map: Record<string, string> = { ja: "jpn", jp: "jpn", en: "eng", es: "spa", fr: "fre", fra: "fre", de: "ger", deu: "ger", it: "ita", pt: "por", ru: "rus", zh: "chi", zho: "chi", ko: "kor", ar: "ara" }
-    return map[x] ?? x
+// Language codes and names, as the server compares them (player/lang.go):
+// "fre", "fra", "fr-FR" and "French" are all French. Streams name their
+// subtitles anyhow ("English", "en", "Português (Brasil)").
+const LANGS: Record<string, string> = {}
+for (const [code, ...aliases] of [
+    ["en", "eng", "english"],
+    ["fr", "fre", "fra", "french", "français", "francais"],
+    ["de", "ger", "deu", "german", "deutsch"],
+    ["es", "spa", "spanish", "español", "espanol", "castellano", "latino"],
+    ["it", "ita", "italian", "italiano"],
+    ["pt", "por", "portuguese", "português", "portugues"],
+    ["ja", "jpn", "jp", "japanese"],
+    ["ko", "kor", "korean"],
+    ["zh", "chi", "zho", "cmn", "yue", "cn", "chinese", "mandarin", "cantonese"],
+    ["ru", "rus", "russian"],
+    ["ar", "ara", "arabic"],
+    ["hi", "hin", "hindi"],
+    ["nl", "dut", "nld", "dutch"],
+    ["sv", "swe", "swedish"],
+    ["no", "nor", "nob", "nb", "norwegian"],
+    ["da", "dan", "danish"],
+    ["fi", "fin", "finnish"],
+    ["pl", "pol", "polish"],
+    ["tr", "tur", "turkish"],
+] as string[][])
+    for (const a of [code, ...aliases]) LANGS[a] = code
+const langOf = (l?: string) => {
+    const x = (l ?? "").trim().toLowerCase()
+    if (!x || x === "und" || x === "mul") return ""
+    if (LANGS[x]) return LANGS[x]
+    for (const part of x.split(/[^\p{L}]+/u)) if (LANGS[part]) return LANGS[part]
+    return x
 }
-const langIn = (lang: string, list: string) => list.split(",").map(s => normLang(s.trim())).filter(Boolean).includes(normLang(lang))
+const langIn = (lang: string, list: string) => !!langOf(lang) && list.split(",").some(l => langOf(l) === langOf(lang))
 
 export function PlayerOverlay() {
     const [req, setReq] = useState<PlayerRequest | null>(playerStore.get())
@@ -97,7 +121,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const [subs, setSubs] = useState<SubOption[]>([])
     const [subKey, setSubKey] = useState<string>("off")
     const [cues, setCues] = useState<Cue[]>([])
-    const [skips, setSkips] = useState<Skip[]>([])
+    const [skips, setSkips] = useState<SkipInterval[]>([])
 
     const [paused, setPaused] = useState(true)
     const [time, setTime] = useState(0) // absolute time
@@ -109,6 +133,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const [fullscreen, setFullscreen] = useState(false)
     const [controls, setControls] = useState(true)
     const [hoverTime, setHoverTime] = useState<{ x: number; t: number } | null>(null)
+    // The next episode: its file, or for a stream the episode to ask the
+    // provider for (as this one was asked for).
     const [nextEp, setNextEp] = useState<{ path?: string; episode: number } | null>(null)
 
     const startAt = useRef(0)
@@ -116,9 +142,12 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const ended = useRef(false)
     const skipped = useRef<Set<string>>(new Set())
     const prefsRef = useRef<TrackPrefs | null>(null)
+    const originalRef = useRef("") // the title's original language
 
     const mediaId = req.mediaId
-    const episode = req.episode
+    // The episode's key. A stream's request may number it as its provider
+    // does: the server says which key that is.
+    const [episode, setEpisode] = useState(req.episode)
     const source = req.kind === "local" ? "local" : "stream"
     // Safari and iPhone/iPad get converted files as HLS (see lib/playback).
     const hlsMode = useMemo(() => prefersHls(), [])
@@ -135,54 +164,32 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         ;(async () => {
             try {
                 setLoading(true)
+                let key = req.episode
                 if (req.kind === "local") {
-                    const res = await api.post<{ probe: Probe; title: string; resumeAt: number; tracks: TrackPrefs | null }>("/api/playback/local", {
-                        path: req.path,
-                        mediaId: req.mediaId,
-                        episode: req.episode,
-                        player: "builtin",
-                        start: req.start,
-                        caps,
-                    })
+                    const res = await api.post<{ probe: Probe; title: string; resumeAt: number; tracks: TrackPrefs | null; skips?: SkipInterval[]; choice?: TrackChoice }>(
+                        "/api/playback/local",
+                        {
+                            path: req.path,
+                            mediaId: req.mediaId,
+                            episode: req.episode,
+                            player: "builtin",
+                            start: req.start,
+                            caps,
+                        },
+                    )
                     if (cancelled) return
                     prefsRef.current = res.tracks
                     setTitle(res.title)
                     setProbe(res.probe)
                     setDuration(res.probe.duration)
-                    const audio = (res.probe.audio ?? []).map((a, i) => ({ index: i, lang: a.language, title: a.title }))
-                    let ai = res.probe.audio?.findIndex(a => a.default) ?? 0
-                    if (ai < 0) ai = 0
-                    const p = res.tracks
-                    // Original audio or dub, chosen for this title (or a "dub"
-                    // default), picks the audio of multi-audio files, unless a
-                    // track was picked by hand. The dub is in the preferred
-                    // audio language (English if none).
-                    const mode = p?.streamMode || (settings?.onlineStream.preferDub ? "dub" : "")
-                    const original = (await entryP)?.media.originalLanguage ?? ""
-                    const dubLang = settings?.playback.preferredAudioLang || "eng,en"
-                    const isDub = (a: { lang: string; title: string }) => (a.lang ? langIn(a.lang, dubLang) : isEnglishTrack(a.lang, a.title)) && !(original && langIn(a.lang, original))
-                    const isOriginal = (a: { lang: string }) => !!original && !!a.lang && langIn(a.lang, original)
-                    const handAudio = !!(settings?.playback.rememberTracks && p && (p.audioLang || p.audioTitle || p.audioIndex))
-                    const handSub = !!(settings?.playback.rememberTracks && p && (p.subOff || p.subLang || p.subTitle || p.subIndex))
-                    let modeAudio = false
-                    if (handAudio && p) {
-                        const m =
-                            audio.find(a => normLang(a.lang) === normLang(p.audioLang) && a.title === p.audioTitle) ??
-                            audio.find(a => p.audioTitle && a.title === p.audioTitle) ??
-                            audio.find(a => p.audioLang && normLang(a.lang) === normLang(p.audioLang)) ??
-                            (p.audioIndex ? audio[p.audioIndex - 1] : undefined)
-                        if (m) ai = m.index
-                    } else if (mode && audio.length > 1 && audio.some(a => (mode === "dub" ? isDub(a) : isOriginal(a)))) {
-                        const m = audio.find(a => (mode === "dub" ? isDub(a) : isOriginal(a)))
-                        if (m) {
-                            ai = m.index
-                            modeAudio = true
-                        }
-                    } else if (settings?.playback.preferredAudioLang) {
-                        const m = audio.find(a => langIn(a.lang, settings.playback.preferredAudioLang))
-                        if (m) ai = m.index
-                    }
+                    setSkips(res.skips ?? [])
+                    // The tracks to start with, as the server chose them: the
+                    // ones picked for the title before, else as the settings say.
+                    const audioCount = res.probe.audio?.length ?? 0
+                    let ai = res.choice && res.choice.audio >= 0 ? res.choice.audio : (res.probe.audio?.findIndex(a => a.default) ?? 0)
+                    if (ai < 0 || ai >= audioCount) ai = 0
                     setAudioIndex(ai)
+                    if (res.choice?.note) toast.info(res.choice.note)
                     const m = ai === 0 && res.probe.method === "direct" ? "direct" : res.probe.method === "direct" ? "remux" : res.probe.method
                     setMethod(m)
                     // Ignore saved positions past the end of this file.
@@ -209,40 +216,36 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                         })),
                     ]
                     setSubs(subOpts)
-                    if (modeAudio && !handSub && mode === "dub") {
-                        // With a dub only signs & songs (on-screen text), if there are any.
-                        const signs = subOpts.find(o => !o.bitmap && /sign|song|forced/i.test(o.title) && (!o.lang || langIn(o.lang, "eng,en")))
-                        setSubKey(signs ? signs.key : "off")
-                    } else if (modeAudio && !handSub && mode === "sub") {
-                        const full = subOpts.find(o => !o.bitmap && (langIn(o.lang, "eng,en") || /english/i.test(o.title)) && !/sign|song|forced/i.test(o.title))
-                        setSubKey(full ? full.key : pickSub(subOpts, null, settings?.playback.preferredSubLang ?? "", (res.probe.subtitles ?? []).find(s => s.default)?.typeIndex))
-                    } else {
-                        setSubKey(pickSub(subOpts, p, settings?.playback.preferredSubLang ?? "", (res.probe.subtitles ?? []).find(s => s.default)?.typeIndex))
-                    }
+                    const sub = res.choice?.sub ?? ""
+                    setSubKey(subOpts.some(o => o.key === sub && !o.bitmap) ? sub : "off")
                 } else {
-                    const res = await api.get<{ sources: StreamSource[]; resumeAt: number; tracks: TrackPrefs | null; title: string }>(
+                    const res = await api.get<{ sources: StreamSource[]; resumeAt: number; tracks: TrackPrefs | null; title: string; key?: number }>(
                         `/api/providers/sources${qs({ provider: req.provider, mediaId: req.mediaId, episode: req.episode, dub: req.dub, server: req.server })}`,
                     )
                     if (cancelled) return
                     prefsRef.current = res.tracks
+                    key = res.key || req.episode
+                    setEpisode(key)
                     const e = await entryP
-                    const name = e?.media.title.userPreferred || e?.media.title.english || res.title || "Stream"
-                    setTitle(`${name}${e && mediaIsShow(e.media) ? ` — ${formatKey(req.episode)}` : ""}${req.dub ? " (Dub)" : ""}`)
+                    originalRef.current = e?.media.originalLanguage ?? ""
+                    setTitle(`${playerTitle(e, key, res.title)}${req.dub ? " (Dub)" : ""}`)
                     const sorted = [...res.sources].sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality))
                     setSources(sorted)
                     setSourceIdx(0)
                     startAt.current = res.resumeAt || 0
                     applyStreamSubs(sorted[0])
                 }
-                // Next episode
+                // The next episode (across seasons): its file, or for a stream
+                // the one after, asked for as this one was (by key, or as the
+                // provider numbers them).
                 entryP
                     .then(e => {
                         if (cancelled || !e || !mediaIsShow(e.media)) return
-                        const key = nextEpisode(e.media, episode)
-                        const n = (e.episodes ?? []).find(x => x.number === key)
-                        if (!key || !n) return
-                        if (req.kind === "local") n.file && setNextEp({ path: n.file.path, episode: n.number })
-                        else if (n.aired) setNextEp({ episode: n.number })
+                        const next = nextEpisode(e.media, key)
+                        const n = (e.episodes ?? []).find(x => keyOf(x) === next)
+                        if (!next || !n) return
+                        if (req.kind === "local") n.file && setNextEp({ path: n.file.path, episode: next })
+                        else if (n.aired) setNextEp({ episode: req.episode === key ? next : episodeIndex(e.media, next) })
                     })
                     .catch(() => {})
             } catch (e: any) {
@@ -260,8 +263,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const applyStreamSubs = (src?: StreamSource) => {
         const opts: SubOption[] = (src?.subtitles ?? []).map((s, i) => ({ key: `s${i}`, label: s.language || `Subtitle ${i + 1}`, lang: s.language, title: s.language, index: i, url: s.url }))
         setSubs(opts)
-        const def = opts.find((_, i) => src?.subtitles[i].isDefault) ?? opts.find(o => /eng/i.test(o.lang))
-        setSubKey(pickSub(opts, prefsRef.current, settings?.playback.preferredSubLang ?? "", undefined, def?.key))
+        setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, req.kind === "stream" && req.dub))
     }
 
     // ------------------------------------------------------------ video src
@@ -566,6 +568,9 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     title,
                     source,
                     start: at,
+                    // mpv plays the next episode from the same provider.
+                    provider: req.provider,
+                    dub: req.dub,
                 })
             }
             v?.pause()
@@ -575,32 +580,29 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         }
     }
 
-    // Skips are worked out for one file (its chapters) and would land on
-    // random scenes in a longer or shorter one: ask for the ones that fit
-    // this one's length, once it's known.
-    const length = Number.isFinite(duration) ? Math.round(duration) : 0
-    useEffect(() => {
-        setSkips([])
-        if (length <= 0 || mediaId <= 0 || episode <= 0) return
-        let cancelled = false
-        api.get<Skip[]>(`/api/playback/skips${qs({ mediaId, episode, length })}`)
-            .then(s => !cancelled && setSkips(s ?? []))
-            .catch(() => {})
-        return () => {
-            cancelled = true
-        }
-    }, [mediaId, episode, length])
-    const skippable = skips.filter(s => SKIPPED.includes(s.type))
-    const currentSkip = skippable.find(s => time >= s.start && time < s.end - 1)
+    // The parts of the file its chapters name as an intro, a recap, the
+    // credits or a preview (from the server, with the file; streams have
+    // none). Each is skipped once a viewing, as the settings say: going back
+    // to one plays it.
+    const skippable = skips.filter(isSkippable)
+    const currentSkip = skipAt(skippable, time)
     const skipWhat = currentSkip && skipName(currentSkip.type)
-    const autoSkip = skipWhat === "credits" ? settings?.playback.skipOutroAniSkip : skipWhat ? settings?.playback.skipIntroAniSkip : false
+    const autoSkip = !!currentSkip && skipOn(settings?.playback, currentSkip.type)
     useEffect(() => {
-        if (!currentSkip || !autoSkip || skipped.current.has(currentSkip.type)) return
-        skipped.current.add(currentSkip.type)
-        seekTo(currentSkip.end)
-        toast.info(`Skipped ${skipWhat}`)
+        if (!currentSkip || !autoSkip) return
+        const id = `${currentSkip.type}@${currentSkip.start}`
+        if (skipped.current.has(id)) return
+        skipped.current.add(id)
+        // Past the parts right after it skipped too (credits, then the
+        // preview). Parts going on to the end are only skipped when the
+        // next episode plays then.
+        const run = skipRun(skippable, currentSkip, t => skipOn(settings?.playback, t))
+        const total = duration || videoRef.current?.duration || 0
+        if (total > 0 && run.end >= total - 1 && !(settings?.playback.autoPlayNext && nextEp)) return
+        seekTo(run.end)
+        toast.info(`Skipped ${run.names}`)
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentSkip?.type, autoSkip])
+    }, [currentSkip?.start, autoSkip])
 
     // -------------------------------------------------------------- keyboard
     // Keys go to the player, not to what had the focus on the page behind it:
@@ -838,7 +840,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/20 transition-all group-hover/seek:h-1.5">
                         <div className="absolute inset-y-0 left-0 bg-white/30" style={{ width: `${total ? Math.min(100, (buffered / total) * 100) : 0}%` }} />
                         {skippable.map(s => (
-                            <div key={s.type} className="absolute inset-y-0 bg-amber-300/50" style={{ left: `${(s.start / total) * 100}%`, width: `${((s.end - s.start) / total) * 100}%` }} />
+                            <div key={`${s.type}@${s.start}`} className="absolute inset-y-0 bg-amber-300/50" style={{ left: `${(s.start / total) * 100}%`, width: `${((s.end - s.start) / total) * 100}%` }} />
                         ))}
                         <div className="absolute inset-y-0 left-0 bg-brand" style={{ width: `${pct}%` }} />
                     </div>
@@ -1007,36 +1009,50 @@ function qualityRank(q: string) {
     return 0
 }
 
-// An English track, by language tag or title: multi-audio releases often
-// only name their tracks ("English 5.1").
-function isEnglishTrack(lang?: string, title?: string) {
-    const l = (lang ?? "").trim().toLowerCase()
-    const t = (title ?? "").toLowerCase()
-    if (t.includes("commentary")) return false
-    return l === "eng" || l === "en" || t.includes("english") || t.includes("dub") || /\beng\b/.test(t)
+// The key of an episode of the title page (the server sends key, season
+// and number; older views had the key as number).
+const keyOf = (e: EpisodeView) => (e as EpisodeView & { key?: number }).key ?? e.number
+
+// How the player titles what plays, like the server (app.PlayerTitle):
+// "Show — S01E02 · Pilot", "Movie (2010)".
+function playerTitle(e: EntryView | null, key: number, fallback: string) {
+    const m = e?.media
+    const name = m?.title.userPreferred || m?.title.english || fallback || "Stream"
+    if (!e || !m) return name
+    if (!mediaIsShow(m)) {
+        const year = m.startDate?.year ?? m.seasonYear
+        return year ? `${name} (${year})` : name
+    }
+    const ep = (e.episodes ?? []).find(x => keyOf(x) === key)
+    return `${name} — ${formatKey(key)}${ep?.title ? ` · ${ep.title}` : ""}`
 }
 
-function pickSub(opts: SubOption[], prefs: TrackPrefs | null, preferred: string, defaultIndex?: number, fallbackKey?: string): string {
+// The subtitles a stream opens with, by the server's rules for files
+// (player.ChooseTracks): the ones picked for the title before; else in the
+// preferred subtitle language (English if none) when the audio, the
+// original language or the dub's, isn't in a language of the user's (with
+// "subtitles for foreign audio" off: whenever a language is set); else
+// off, but forced subtitles.
+function streamSub(opts: SubOption[], prefs: TrackPrefs | null, p: Settings["playback"] | undefined, original: string, dub: boolean): string {
     if (prefs?.subOff) return "off"
     if (prefs && (prefs.subLang || prefs.subTitle || prefs.subIndex)) {
         const m =
-            opts.find(o => normLang(o.lang) === normLang(prefs.subLang) && o.title === prefs.subTitle) ??
+            opts.find(o => langOf(o.lang) === langOf(prefs.subLang) && o.title === prefs.subTitle) ??
             opts.find(o => prefs.subTitle && o.title === prefs.subTitle) ??
-            opts.find(o => prefs.subLang && normLang(o.lang) === normLang(prefs.subLang) && !/sign|song/i.test(o.title)) ??
+            opts.find(o => prefs.subLang && langIn(o.lang, prefs.subLang) && !forcedSub(o)) ??
             (prefs.subIndex ? opts.find(o => o.index === prefs.subIndex! - 1) : undefined)
         if (m && !m.bitmap) return m.key
     }
-    if (preferred) {
-        const full = opts.find(o => langIn(o.lang, preferred) && !/sign|song|forced/i.test(o.title) && !o.bitmap)
+    const subLang = p?.preferredSubLang || "eng,en"
+    const audio = dub ? langOf((p?.preferredAudioLang || "eng").split(",")[0]) : langOf(original)
+    const foreign = !!audio && !langIn(audio, subLang) && !(p?.preferredAudioLang && langIn(audio, p.preferredAudioLang))
+    const want = p?.subtitlesForForeign === false ? !!p.preferredSubLang : foreign
+    if (want) {
+        const full = opts.find(o => !o.bitmap && !forcedSub(o) && langIn(o.lang, subLang)) ?? opts.find(o => !o.bitmap && !forcedSub(o) && !langOf(o.lang))
         if (full) return full.key
-        const any = opts.find(o => langIn(o.lang, preferred) && !o.bitmap)
-        if (any) return any.key
     }
-    if (fallbackKey) return fallbackKey
-    if (defaultIndex !== undefined) {
-        const d = opts.find(o => o.index === defaultIndex && !o.bitmap)
-        if (d) return d.key
-    }
-    const first = opts.find(o => !o.bitmap)
-    return first ? first.key : "off"
+    const forced = opts.find(o => !o.bitmap && forcedSub(o) && (!langOf(o.lang) || !audio || langOf(o.lang) === audio))
+    return forced ? forced.key : "off"
 }
+
+const forcedSub = (o: SubOption) => /forced|signs?\b.*songs?/i.test(`${o.title} ${o.label}`)
