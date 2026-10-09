@@ -89,6 +89,15 @@ func (f *fakeCatalog) Collection(ctx context.Context, mediaType string, refresh 
 	coll := &catalog.Collection{}
 	for _, s := range catalog.Statuses {
 		if l := lists[s]; l != nil {
+			// In the platform's order (the last changed first), not the
+			// map's random one.
+			sort.Slice(l.Entries, func(i, j int) bool {
+				a, b := l.Entries[i], l.Entries[j]
+				if a.UpdatedAt != b.UpdatedAt {
+					return a.UpdatedAt > b.UpdatedAt
+				}
+				return a.MediaID < b.MediaID
+			})
 			coll.Lists = append(coll.Lists, l)
 		}
 	}

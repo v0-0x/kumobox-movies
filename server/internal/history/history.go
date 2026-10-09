@@ -13,7 +13,7 @@ type Entry struct {
 	Episode   int     `json:"episode"`
 	Position  float64 `json:"position"` // seconds
 	Duration  float64 `json:"duration"` // seconds
-	Source    string  `json:"source"`   // local | anicli | stream | torrent
+	Source    string  `json:"source"`   // local | stream | torrent
 	UpdatedAt int64   `json:"updatedAt"`
 }
 

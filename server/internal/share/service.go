@@ -47,6 +47,7 @@ type Library interface {
 // KumoBoxes on the same Letterboxd account keep in step (see syncHistory).
 type History interface {
 	Since(t int64, limit int) []*history.Entry
+	Get(mediaID, episode int) *history.Entry
 	Merge(e history.Entry) (bool, error)
 }
 
@@ -75,6 +76,8 @@ type Service struct {
 	pushMu    sync.Mutex
 	pending   map[[2]int]history.Entry
 	pushTimer *time.Timer
+	// mergeMu: one entry from the others merged at a time (see merge).
+	mergeMu sync.Mutex
 
 	mu      sync.Mutex
 	peers   map[string]*peer
@@ -692,9 +695,9 @@ func (s *Service) TakeHistory(entries []history.Entry) {
 	merged := 0
 	var finished []history.Entry
 	for _, e := range entries {
-		if ok, err := s.History.Merge(e); err == nil && ok {
+		if ok, done := s.merge(e); ok {
 			merged++
-			if e.Percent() >= finishedAt {
+			if done {
 				finished = append(finished, e)
 			}
 		}
@@ -707,6 +710,27 @@ func (s *Service) TakeHistory(entries []history.Entry) {
 
 // finishedAt is how far into an episode it counts as finished.
 const finishedAt = 0.85
+
+// merge takes an entry from another KumoBox when it's newer than this one's,
+// and reports whether it did, and whether it finished a viewing: the
+// episode wasn't finished here yet, or was by an earlier viewing (finished
+// longer ago than the episode lasts). The positions sent while the end
+// credits play are the same viewing: the list moves on once for it.
+func (s *Service) merge(e history.Entry) (merged, finished bool) {
+	s.mergeMu.Lock()
+	defer s.mergeMu.Unlock()
+	before := s.History.Get(e.MediaID, e.Episode)
+	if ok, err := s.History.Merge(e); err != nil || !ok {
+		return false, false
+	}
+	if e.Percent() < finishedAt {
+		return true, false
+	}
+	if before == nil || before.Percent() < finishedAt {
+		return true, true
+	}
+	return true, float64(e.UpdatedAt-before.UpdatedAt) > max(e.Duration, before.Duration)
+}
 
 // watchedElsewhere tells the app about episodes finished on another
 // KumoBox, if any.
@@ -738,9 +762,9 @@ func (s *Service) syncHistory(ctx context.Context, p *peer) {
 		if e == nil {
 			continue
 		}
-		if ok, err := s.History.Merge(*e); err == nil && ok {
+		if ok, done := s.merge(*e); ok {
 			merged++
-			if e.Percent() >= finishedAt {
+			if done {
 				finished = append(finished, *e)
 			}
 		}

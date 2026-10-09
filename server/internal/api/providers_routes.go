@@ -355,7 +355,7 @@ func (s *Server) providerDownload(r *http.Request) (any, error) {
 			return nil, badRequest(fmt.Sprintf("invalid episode %d", key))
 		}
 		it, err := s.app.Downloads.Enqueue(downloads.Item{
-			MediaID: media.ID, Episode: key, AnimeTitle: app.DownloadTitle(media), Image: media.CoverImage.Large,
+			MediaID: media.ID, Episode: key, Title: app.DownloadTitle(media), Image: media.CoverImage.Large,
 			Source: "stream", Provider: body.Provider, Quality: body.Quality,
 		})
 		if err != nil {

@@ -169,7 +169,14 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/extensions/install", h(s.installExtension))
 	m.HandleFunc("POST /api/extensions/{id}/enable", h(s.enableExtension))
 	m.HandleFunc("POST /api/extensions/{id}/config", h(s.configExtension))
-	m.HandleFunc("POST /api/extensions/{id}/grant", h(func(r *http.Request) (any, error) { return nil, s.app.Extensions.Grant(r.PathValue("id")) }))
+	m.HandleFunc("POST /api/extensions/{id}/grant", h(func(r *http.Request) (any, error) {
+		// A plugin's permissions (files it reads and writes, commands it
+		// runs) are accepted where plugins are installed: on this computer.
+		if !isTrusted(r) {
+			return nil, forbidden("a plugin's permissions can only be granted on this computer")
+		}
+		return nil, s.app.Extensions.Grant(r.PathValue("id"))
+	}))
 	m.HandleFunc("POST /api/extensions/{id}/update", h(func(r *http.Request) (any, error) { return s.app.Extensions.Update(r.Context(), r.PathValue("id")) }))
 	m.HandleFunc("DELETE /api/extensions/{id}", h(s.uninstallExtension))
 	m.HandleFunc("GET /api/extensions/{id}/logs", h(func(r *http.Request) (any, error) { return s.app.Extensions.Logs(r.PathValue("id")), nil }))

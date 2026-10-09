@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
+	"github.com/v0-0x/kumobox-movies/server/internal/history"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
@@ -225,6 +228,46 @@ func TestDiscovery(t *testing.T) {
 			t.Skipf("no multicast between them here (%d, %d peers)", len(sa.Peers), len(sb.Peers))
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// A viewing finished on another KumoBox moves the list on here once: the
+// positions it sends while the end credits play aren't new viewings (each
+// one counted a rewatch of a movie). Watched again, it counts again.
+func TestFinishedElsewhereOnceAViewing(t *testing.T) {
+	d := openDB(t)
+	s := newService(t, d)
+	s.History = history.NewStore(d)
+	finished := make(chan []history.Entry, 20)
+	s.OnWatchedElsewhere = func(f []history.Entry) { finished <- f }
+	start := time.Now().Add(-time.Hour).Unix()
+	at := func(pos float64, after int64) history.Entry {
+		return history.Entry{MediaID: 155, Episode: 1, Position: pos, Duration: 600, Source: "local", UpdatedAt: start + after}
+	}
+	for _, e := range []history.Entry{at(300, 0), at(520, 220), at(560, 260), at(600, 300)} {
+		s.TakeHistory([]history.Entry{e})
+	}
+	// Watched again, from the start.
+	s.TakeHistory([]history.Entry{at(30, 2000), at(590, 2600)})
+	// Watched again while this KumoBox was off: only the end came.
+	s.TakeHistory([]history.Entry{at(600, 3500)})
+
+	var got []int64
+	timeout := time.After(time.Second)
+	for {
+		select {
+		case f := <-finished:
+			for _, e := range f {
+				got = append(got, e.UpdatedAt-start)
+			}
+			continue
+		case <-timeout:
+		}
+		break
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	if want := []int64{220, 2600, 3500}; !slices.Equal(got, want) {
+		t.Fatalf("finished at %v, want %v", got, want)
 	}
 }
 

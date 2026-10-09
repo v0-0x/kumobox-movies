@@ -407,7 +407,7 @@ func TestProviderDownload(t *testing.T) {
 	var items []downloads.Item
 	decodeBody(t, do(s, "POST", "/api/providers/download", local, jsonBody(t, body), nil), &items)
 	if len(items) != 1 || items[0].Episode != 1 || items[0].Source != "stream" || items[0].Provider != "stremio:test.addon" || items[0].Quality != "1080p" ||
-		items[0].AnimeTitle != "The Dark Knight (2008)" || items[0].Mode != "" {
+		items[0].Title != "The Dark Knight (2008)" || items[0].Mode != "" {
 		t.Fatalf("queued: %+v", items)
 	}
 	// The link is found when the download starts.

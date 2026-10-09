@@ -40,27 +40,27 @@ const (
 )
 
 type Item struct {
-	ID         string            `json:"id"`
-	MediaID    int               `json:"mediaId"`
-	Episode    int               `json:"episode"`
-	AnimeTitle string            `json:"animeTitle"`
-	Image      string            `json:"image"`
-	Mode       string            `json:"mode"`   // sub | dub
-	Source     string            `json:"source"` // stream (a provider), or a resolver's name
-	Provider   string            `json:"provider"`
-	Status     string            `json:"status"`
-	Progress   float64           `json:"progress"` // 0-1
-	Speed      string            `json:"speed"`
-	ETA        string            `json:"eta"`
-	Error      string            `json:"error,omitempty"`
-	Output     string            `json:"output,omitempty"`
-	Quality    string            `json:"quality,omitempty"`
-	URL        string            `json:"url,omitempty"`
-	Referrer   string            `json:"referrer,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	SubURL     string            `json:"subUrl,omitempty"`
-	CreatedAt  int64             `json:"createdAt"`
-	UpdatedAt  int64             `json:"updatedAt"`
+	ID        string            `json:"id"`
+	MediaID   int               `json:"mediaId"`
+	Episode   int               `json:"episode"`
+	Title     string            `json:"title"`
+	Image     string            `json:"image"`
+	Mode      string            `json:"mode"`   // sub | dub
+	Source    string            `json:"source"` // stream (a provider), or a resolver's name
+	Provider  string            `json:"provider"`
+	Status    string            `json:"status"`
+	Progress  float64           `json:"progress"` // 0-1
+	Speed     string            `json:"speed"`
+	ETA       string            `json:"eta"`
+	Error     string            `json:"error,omitempty"`
+	Output    string            `json:"output,omitempty"`
+	Quality   string            `json:"quality,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Referrer  string            `json:"referrer,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	SubURL    string            `json:"subUrl,omitempty"`
+	CreatedAt int64             `json:"createdAt"`
+	UpdatedAt int64             `json:"updatedAt"`
 }
 
 // Resolved is what a resolver returns: a direct URL to fetch.
@@ -150,6 +150,14 @@ func (m *Manager) load() {
 		var it Item
 		if json.Unmarshal([]byte(raw), &it) != nil {
 			continue
+		}
+		if it.Title == "" {
+			// Saved by an earlier build, under Kumo's name for it.
+			var old struct {
+				Title string `json:"animeTitle"`
+			}
+			_ = json.Unmarshal([]byte(raw), &old)
+			it.Title = old.Title
 		}
 		if active(it.Status) {
 			it.Status, it.Progress, it.Speed, it.ETA = StatusQueued, 0, "", ""
@@ -439,7 +447,7 @@ func (m *Manager) process(r *run) error {
 		return ctx.Err()
 	}
 
-	title, year := it.AnimeTitle, 0
+	title, year := it.Title, 0
 	if m.Lookup != nil {
 		if media, err := m.Lookup(ctx, it.MediaID); err == nil && media != nil {
 			title, year = util.FirstNonEmpty(media.PreferredTitle(), title), media.Year()
@@ -546,9 +554,9 @@ func (m *Manager) download(r *run, cfg config.Settings, res *Resolved, out strin
 // episode (Show - S01E05).
 func label(it *Item) string {
 	if catalog.IsShow(it.MediaID) && it.Episode > 0 {
-		return it.AnimeTitle + " - " + catalog.FormatKey(it.Episode)
+		return it.Title + " - " + catalog.FormatKey(it.Episode)
 	}
-	return it.AnimeTitle
+	return it.Title
 }
 
 // titleWithYear is "Title (Year)", the way Plex, Jellyfin and the library

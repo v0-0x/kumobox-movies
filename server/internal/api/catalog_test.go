@@ -183,6 +183,18 @@ func TestMediaRoutes(t *testing.T) {
 	}
 }
 
+// A title or season TMDB doesn't have is a 404 (which the UI doesn't ask
+// for again), with TMDB's reason.
+func TestNotOnTMDB(t *testing.T) {
+	s := newCatalogServer(t)
+	local := "127.0.0.1:5000"
+	for _, path := range []string{"/api/media/99999999", "/api/media/" + strconv.Itoa(catalog.ShowID(1396)) + "/season/42"} {
+		if w := do(s, "GET", path, local, "", nil); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "TMDB") {
+			t.Errorf("%s: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
 // Devices on the LAN never see the API keys, and can't change them.
 func TestLANSettingsHideKeys(t *testing.T) {
 	s := newTestServer(t)
