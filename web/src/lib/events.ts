@@ -72,6 +72,8 @@ export function connectEvents(qc: QueryClient) {
             }
             case "settings-updated":
                 qc.invalidateQueries({ queryKey: ["status"] })
+                // The Internet Archive turned on or off, the default provider...
+                qc.invalidateQueries({ queryKey: ["providers"] })
                 break
             case "playback-status":
                 playbackStore.set(p)
@@ -101,7 +103,13 @@ export function connectEvents(qc: QueryClient) {
                 qc.invalidateQueries({ queryKey: ["extensions"] })
                 qc.invalidateQueries({ queryKey: ["marketplace"] })
                 qc.invalidateQueries({ queryKey: ["plugins-ui"] })
-                qc.invalidateQueries({ queryKey: ["os-providers"] })
+                qc.invalidateQueries({ queryKey: ["providers"] })
+                break
+            case "providers-updated":
+                qc.invalidateQueries({ queryKey: ["providers"] })
+                qc.invalidateQueries({ queryKey: ["stremio-addons"] })
+                qc.invalidateQueries({ queryKey: ["stremio-catalog"] })
+                qc.invalidateQueries({ queryKey: ["provider-streams"] })
                 break
             case "plugin-ui":
                 handlePluginEvent(p)

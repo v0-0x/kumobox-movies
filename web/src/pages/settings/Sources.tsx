@@ -3,7 +3,7 @@ import { Plus, X } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Button, Input, Select, Switch } from "@/components/ui"
 import { api } from "@/lib/api"
-import { useOnlineProviders, useStatus } from "@/lib/queries"
+import { useProviders, useStatus } from "@/lib/queries"
 import type { TorrentSource, TorrentSourceSettings, TorznabIndexer } from "@/lib/types"
 import { Ext, Group, ListInput, Password, PathInput, Row, type SectionProps, Stack } from "./parts"
 
@@ -12,7 +12,7 @@ const DEFAULT_STREMIO_CATALOG = "https://api.strem.io/addonscollection.json"
 // Where movies and episodes stream from, and where downloads of streams go.
 export function ProvidersSection({ draft, set }: SectionProps) {
     const { data: status } = useStatus()
-    const { data: providers } = useOnlineProviders()
+    const { data: providers } = useProviders()
     const p = draft.providers
     const dl = draft.downloads
     return (
@@ -21,15 +21,15 @@ export function ProvidersSection({ draft, set }: SectionProps) {
                 <Row label="Watch online" help="Stream movies and episodes from the providers below.">
                     <Switch checked={draft.onlineStream.enabled} onChange={v => set("onlineStream", { enabled: v })} />
                 </Row>
-                <Row label="Default provider" help="Used when you press Play on something that isn't in your library.">
+                <Row label="Default provider" help="All providers: every source is listed, ranked together. A provider: its sources come first, and Play (on something not in your library) plays its best link.">
                     <Select
                         className="w-56"
                         value={draft.onlineStream.defaultProvider}
                         onChange={v => set("onlineStream", { defaultProvider: v })}
-                        options={[{ value: "", label: "First available" }, ...(providers ?? []).map(x => ({ value: x.id, label: x.name }))]}
+                        options={[{ value: "", label: "All providers" }, ...(providers ?? []).filter(x => x.enabled).map(x => ({ value: x.id, label: x.name }))]}
                     />
                 </Row>
-                <Row label="Prefer dubbed versions" help="When a provider has a dub in your language as well as the original.">
+                <Row label="Prefer dubbed versions" help="For extensions that have titles dubbed as well as in their original version.">
                     <Switch checked={draft.onlineStream.preferDub} onChange={v => set("onlineStream", { preferDub: v })} />
                 </Row>
                 <Row label="Preferred quality" help="Sources are listed best first otherwise.">
@@ -65,7 +65,7 @@ export function ProvidersSection({ draft, set }: SectionProps) {
                     <ListInput value={p?.stremioCatalogs ?? []} onChange={v => set("providers", { stremioCatalogs: v })} placeholder={DEFAULT_STREMIO_CATALOG} addLabel="Add collection" />
                 </Stack>
                 <Row label="Manage addons">
-                    <Link to="/extensions">
+                    <Link to="/extensions?tab=stremio">
                         <Button size="sm" variant="subtle">
                             Providers & extensions
                         </Button>

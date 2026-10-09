@@ -26,12 +26,9 @@ export default function EntryPage() {
     const id = Number(params.get("id"))
     const { data: entry, isLoading, error } = useEntry(id)
     const { data: status } = useStatus()
-    // The episode "Find torrents" was picked for (a key), for the Torrents tab.
-    const [torrentEpisode, setTorrentEpisode] = useState<number | undefined>()
 
     useEffect(() => {
         document.getElementById("main-scroll")?.scrollTo({ top: 0 })
-        setTorrentEpisode(undefined)
     }, [id])
 
     if (isLoading) return <EntrySkeleton />
@@ -56,10 +53,12 @@ export default function EntryPage() {
     // Old links say "details"; a movie has no episodes tab.
     const raw = params.get("tab") === "details" ? "overview" : (params.get("tab") as Tab)
     const tab: Tab = tabs.some(t => t.value === raw) ? raw : show ? "episodes" : "overview"
-    const setTab = (t: Tab) =>
+    // episode: the one Watch online or Torrents opens on (a key).
+    const setTab = (t: Tab, episode?: number) =>
         setParams(
             p => {
                 p.set("tab", t)
+                if (episode) p.set("episode", String(episode))
                 return p
             },
             { replace: true },
@@ -70,27 +69,10 @@ export default function EntryPage() {
             <EntryHero entry={entry} onTab={setTab} />
             <div className="relative z-10 flex flex-col gap-8 px-6 md:px-8 xl:px-10">
                 <PluginSlot slot="before-anime-entry-episode-list" />
-                <Tabs
-                    variant="underline"
-                    value={tab}
-                    onChange={t => {
-                        setTorrentEpisode(undefined)
-                        setTab(t)
-                    }}
-                    tabs={tabs}
-                />
+                <Tabs variant="underline" value={tab} onChange={t => setTab(t)} tabs={tabs} />
                 {/* Keyed by media too: panels keep per-title state (search results, chosen provider). */}
                 <div key={`${entry.media.id}-${tab}`} className="fade-in">
-                    {tab === "episodes" && (
-                        <SeasonsPanel
-                            entry={entry}
-                            onStream={() => setTab("stream")}
-                            onTorrents={key => {
-                                setTorrentEpisode(key)
-                                setTab("torrents")
-                            }}
-                        />
-                    )}
+                    {tab === "episodes" && <SeasonsPanel entry={entry} onStream={k => setTab("stream", k)} onTorrents={k => setTab("torrents", k)} />}
                     {tab === "overview" &&
                         (show ? (
                             <DetailsPanel media={entry.media} />
@@ -106,7 +88,7 @@ export default function EntryPage() {
                             />
                         ))}
                     {tab === "stream" && <StreamPanel entry={entry} />}
-                    {tab === "torrents" && <TorrentPanel entry={entry} episode={torrentEpisode} />}
+                    {tab === "torrents" && <TorrentPanel entry={entry} episode={Number(params.get("episode")) || undefined} />}
                 </div>
                 <PluginSlot slot="after-anime-entry-episode-list" />
                 <PluginSlot slot="after-anime-episode-list" />

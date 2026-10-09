@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react"
-import type { PlaybackSession, PluginState } from "./types"
+import type { PlaybackSession, PluginState, ProviderStream } from "./types"
 
 export type Store<T> = {
     get: () => T
@@ -45,7 +45,9 @@ export const trayOpenStore = createStore<{ pluginId: string; trayId: string } | 
 // In-app player
 export type PlayerRequest =
     | { kind: "local"; path: string; mediaId: number; episode: number; start?: number }
-    | { kind: "stream"; provider: string; mediaId: number; episode: number; dub: boolean; server?: string }
+    // A provider's stream (streamId, or the stream itself when its id may be
+    // gone), or the best direct link of provider ("" for any).
+    | { kind: "stream"; mediaId: number; episode: number; provider?: string; streamId?: string; stream?: ProviderStream; start?: number }
 
 export const playerStore = createStore<PlayerRequest | null>(null)
 

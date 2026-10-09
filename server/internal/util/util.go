@@ -22,8 +22,8 @@ import (
 
 const UserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-// HTTP is the shared client for public services (AniList metadata, ani.zip,
-// AniSkip, indexers, extension downloads). It refuses to connect to this
+// HTTP is the shared client for public services (TMDB, Letterboxd,
+// providers, torrent sites, extension downloads). It refuses to connect to this
 // computer or the LAN, so URLs coming from extensions or LAN clients can't
 // be used to reach local services.
 var HTTP = &http.Client{

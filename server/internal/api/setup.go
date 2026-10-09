@@ -10,7 +10,7 @@ import (
 )
 
 // installPrograms opens the setup that installs the programs KumoBox uses on
-// this computer: on Windows with Scoop (Git, ani-cli, ffmpeg, mpv, yt-dlp...)
+// this computer: on Windows with Scoop (ffmpeg, mpv, yt-dlp)
 // in a PowerShell window, on macOS by downloads into KumoBox's folder, in
 // Terminal.
 func (s *Server) installPrograms(r *http.Request) (any, error) {

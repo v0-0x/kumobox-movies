@@ -7,24 +7,39 @@ videos or web pages to open. All enabled providers are asked at once, each
 within `providers.timeoutSeconds` (Settings › Providers), and the streams
 are listed best first: direct links before torrents, the preferred quality
 (`providers.preferredQuality`) first, then higher qualities, then the most
-seeded.
+seeded. With a default provider (`onlineStream.defaultProvider`, empty for
+none) its streams come first. Subtitles of Stremio subtitle addons come
+with the direct links. What the providers answered is kept five minutes.
 
-| Kind | What | Ids it needs |
-|---|---|---|
-| Internet Archive (built in) | public-domain and freely licensed films hosted by archive.org | title + year |
-| Stremio addons | any addon serving `stream` (or `subtitles`) for `movie`/`series` | IMDb id (or `tmdb:` for addons that only take it) |
-| Nuvio providers | JavaScript scrapers from Nuvio provider repositories, run in KumoBox's extension sandbox | TMDB id |
-| Extensions | KumoBox/Seanime-style marketplace extensions | as before |
+| Kind | Provider id | What | Ids it needs |
+|---|---|---|---|
+| Internet Archive (built in) | `archive` | public-domain and freely licensed films hosted by archive.org | title + year |
+| Stremio addons | `stremio:<addon id>` | any addon serving `stream` (or `subtitles`) for `movie`/`series` | IMDb id (or `tmdb:` for addons that only take it) |
+| Nuvio providers | `nuvio:<id>` | JavaScript scrapers from Nuvio provider repositories, run in KumoBox's extension sandbox | TMDB id |
+| Extensions | `ext:<extension id>` | KumoBox/Seanime-style `onlinestream-provider` extensions: searched by title (+ year), the best match kept (wrong match? pick it by hand in Watch online), episodes numbered from the show's first one | title |
+
+On a title's page, **Watch online** lists the streams of the movie, or of
+the episode picked (the next one to watch by default): play a direct link
+in the app or in mpv, download it into the library (its link is looked up
+again when the download starts, from the same provider in the closest
+quality: links expire), send a torrent to the torrent client (saved into
+the library), open a YouTube video or a web page in the browser.
 
 Code: `server/internal/providers` (common types, ranking, aggregation),
-`providers/archive`, `providers/stremio`, and `server/internal/extensions`
-(`nuvio*.go`) for Nuvio providers.
+`providers/archive`, `providers/stremio`, `server/internal/extensions`
+(`nuvio*.go`) for Nuvio providers, `server/internal/stream`
+(`onlinestream.go`: the service asking them; `extension.go`: extensions as
+providers), `server/internal/app/providers.go` (which providers, in which
+order) and `server/internal/api/providers_routes.go` (the HTTP API).
 
 ## Adding providers
 
+Providers are managed on the **Providers & extensions** page (devices on
+the LAN can use them, not install or remove them).
+
 ### Stremio addons
 
-Settings › Providers › Stremio addons:
+Providers & extensions › Stremio addons:
 
 * **Paste an addon URL.** Any of these work: the manifest URL
   (`https://torrentio.strem.fun/manifest.json`), the addon's base URL
@@ -57,15 +72,31 @@ timeout).
 
 ### Nuvio repositories
 
-Settings › Providers › Nuvio: paste a repository's manifest URL, for
-example
+Providers & extensions › Nuvio providers: paste a repository's manifest
+URL, for example
 `https://raw.githubusercontent.com/<user>/<repo>/refs/heads/main/manifest.json`
 (kept in `providers.nuvioRepos`). KumoBox lists the repository's
 providers; install the ones you want, or all those the repository enables
 by default. Installed providers are extensions of type `nuvio-provider`
-(id `nuvio.<provider id>`): they show up in Extensions, with their logs,
-can be disabled or removed there, and their updates come with the other
-extension updates (KumoBox compares the versions in the repository).
+(id `nuvio.<provider id>`): they're enabled, disabled, updated and removed
+there (or with the extension API), with their logs, and their updates come
+with the other extension updates (KumoBox compares the versions in the
+repository).
+
+## HTTP API
+
+| Route | What |
+|---|---|
+| `GET /api/providers` | every provider, in order: `[{id, name, kind, icon, types, enabled, extension}]` |
+| `GET /api/providers/streams?mediaId=&episode=&provider=&refresh=1` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
+| `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
+| `POST /api/providers/download` | `{mediaId, episodes: [keys], provider, quality}` → the queued downloads |
+| `GET /api/providers/search?provider=&q=`, `POST /api/providers/mapping` | an extension's titles, and picking one by hand `{provider, mediaId, id, title}` |
+| `GET/POST/DELETE /api/providers/stremio/addons` | installed addons; install `{url, allowLocal, allowAdult}` (409 `{error, code: "local" \| "adult" \| "configure" \| "unsupported", configureUrl}`); remove `?key=` (transport URL or `stremio:<id>`) |
+| `PUT /api/providers/stremio/addons/enabled`, `…/order` | `{key, enabled}`, `{keys}` |
+| `POST /api/providers/stremio/refresh`, `GET /api/providers/stremio/catalog?url=` | manifests downloaded again; an addon collection (the first of `providers.stremioCatalogs` by default) |
+| `GET /api/providers/nuvio/repo?url=`, `POST/DELETE /api/providers/nuvio/repos` | a repository with the installed and updatable providers marked; keeping or forgetting one |
+| `POST /api/providers/nuvio/install`, `…/install-all` | `{repo, id}`, `{repo}` (the repository is kept too) |
 
 ## Formats
 

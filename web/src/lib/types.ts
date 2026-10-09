@@ -296,9 +296,11 @@ export type HistoryEntry = {
 }
 
 // An episode as GET /api/media/{id} (and …/episodes) lists it, with what
-// the library and the watch history know. key is the episode key (see lib/ids.ts; number holds the same, for older
-// code), season and episode the season and the episode's number in it. A
-// file that isn't an episode (an extra, a movie's later part) has key 0.
+// the library and the watch history know. key is the episode key (see
+// lib/ids.ts; number holds the same: the server sends it so, and
+// lib/queries.ts makes sure of it), season and episode the season and the
+// episode's number in it. A file that isn't an episode (an extra, a movie's
+// later part) has key 0.
 export type EpisodeView = {
     key: number
     number: number
@@ -565,26 +567,135 @@ export type Probe = {
     reason: string
 }
 
+// A direct link as the in-app player gets it (POST /api/providers/play):
+// url goes through the proxy, originalUrl is the provider's link (for mpv).
 export type StreamSource = {
+    id?: string
     url: string
     originalUrl: string
     type: string
     quality: string
     label?: string
+    // server: the provider's name.
     server: string
-    subtitles: { url: string; language: string; isDefault: boolean; original: string }[]
+    provider?: string
+    subtitles: { url: string; language: string; label?: string; isDefault: boolean; original: string }[]
     headers: Record<string, string>
     referrer?: string
+    notWebReady?: boolean
 }
 
-export type OnlineProvider = { id: string; name: string; icon: string; supportsDub: boolean; servers: string[]; builtin: boolean }
+// ---------------------------------------------------------------------------
+// Streaming providers (server/internal/providers, docs/PROVIDERS.md)
 
-export type StreamEpisodes = {
+export type ProviderKind = "builtin" | "stremio" | "nuvio" | "extension"
+
+// GET /api/providers: every provider, in the order they're asked. Ids are
+// "archive", "stremio:<addon id>", "nuvio:<id>" and "ext:<extension id>".
+export type ProviderInfo = {
+    id: string
+    name: string
+    kind: ProviderKind
+    icon?: string
+    types: ("movie" | "tv")[]
+    enabled: boolean
+    // The extension id of Nuvio providers and extensions.
+    extension?: string
+}
+
+export type ProviderSubtitle = { url: string; language: string; label?: string }
+
+// One way to watch a movie or episode: a direct link (url), a torrent
+// (infoHash/magnet), a YouTube video or a web page (externalUrl).
+export type ProviderStream = {
+    id: string
+    kind: "direct" | "torrent" | "youtube" | "external"
     provider: string
-    mapping: { id: string; title: string; score: number; query?: string; index?: number } | null
-    episodes: { number: number; id: string; title: string }[] | null
-    dub: boolean
+    providerName: string
+    title: string
+    url?: string
+    type: string
+    quality: string
+    size?: number
+    headers?: Record<string, string>
+    subtitles?: ProviderSubtitle[]
+    infoHash?: string
+    fileIdx: number
+    magnet?: string
+    externalUrl?: string
+    youTubeId?: string
+    notWebReady?: boolean
+    filename?: string
+    seeders?: number
 }
+
+export type ProviderError = { provider: string; name: string; error: string }
+
+// The title an extension provider matched (it searches by title).
+export type ProviderMatch = { provider: string; name: string; id: string; title: string; score: number; manual: boolean }
+
+// GET /api/providers/streams
+export type StreamsResult = {
+    mediaId: number
+    episode: number
+    streams: ProviderStream[]
+    errors: ProviderError[]
+    subtitles: ProviderSubtitle[]
+    providers: string[]
+    matches?: ProviderMatch[]
+    fetchedAt: number
+}
+
+// POST /api/providers/play
+export type PlayResult =
+    | { action: "builtin"; sources: StreamSource[]; title: string; mediaTitle?: string; episodeTitle?: string; key?: number; resumeAt: number; tracks: TrackPrefs | null; provider: string }
+    | { action: "mpv"; provider: string }
+    | { action: "torrent"; savePath: string }
+    | { action: "external"; url: string }
+
+export type StremioManifest = {
+    id: string
+    version: string
+    name: string
+    description: string
+    logo?: string
+    background?: string
+    types: string[]
+    resources: (string | { name: string; types?: string[] })[]
+    behaviorHints?: { adult?: boolean; p2p?: boolean; configurable?: boolean; configurationRequired?: boolean }
+}
+
+export type StremioAddon = {
+    transportUrl: string
+    transportName?: string
+    manifest: StremioManifest
+    flags: { official?: boolean; protected?: boolean }
+    installed: boolean
+    enabled: boolean
+    position: number
+    local: boolean
+    supported: boolean
+}
+
+export type NuvioEntry = {
+    id: string
+    name: string
+    description: string
+    version: string
+    author: string
+    supportedTypes: string[]
+    enabled: boolean
+    logo: string
+    contentLanguage: string[] | null
+    formats: string[] | null
+    url: string
+    extensionId: string
+    installed: boolean
+    installedVersion?: string
+    hasUpdate: boolean
+}
+
+export type NuvioRepo = { url: string; name?: string; version?: string; providers: NuvioEntry[] }
 
 export type DownloadItem = {
     id: string
@@ -595,7 +706,9 @@ export type DownloadItem = {
     image: string
     mode: string
     source: string
+    // A streaming provider's id, and the quality picked.
     provider: string
+    quality?: string
     status: "queued" | "resolving" | "downloading" | "completed" | "failed" | "canceled"
     progress: number
     speed: string

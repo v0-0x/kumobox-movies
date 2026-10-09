@@ -147,9 +147,10 @@ func TestTorrentSearch(t *testing.T) {
 			t.Fatalf("%s: a movie source was asked: %v", tc.body, out.Errors)
 		}
 	}
-	// One source: filtered the same way (a name that says nothing stays).
+	// One source: filtered the same way (a name that says nothing stays,
+	// after the episode itself).
 	all.res = append(all.res, &torrent.SearchResult{Name: "Breaking.Bad.S02E06.720p.HDTV.x264-CTU", InfoHash: hash3, Seeders: 99})
-	if out := search(`{"mediaId":` + show + `,"episode":2005,"provider":"all-kinds"}`); len(out.Results) != 2 || out.Results[1].EpisodeNumber != 2005 || len(out.Errors) != 0 {
+	if out := search(`{"mediaId":` + show + `,"episode":2005,"provider":"all-kinds"}`); len(out.Results) != 2 || out.Results[0].EpisodeNumber != 2005 || len(out.Errors) != 0 {
 		t.Fatalf("one source: %+v", out.Results)
 	}
 

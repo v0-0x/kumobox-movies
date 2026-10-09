@@ -82,11 +82,11 @@ func (s *Server) peerRoutes() {
 	m.HandleFunc("GET /api/peer/whoami", h(func(r *http.Request) (any, error) { return s.app.Share.Whoami(), nil }))
 	m.HandleFunc("GET /api/peer/hello", h(func(r *http.Request) (any, error) { return s.app.Share.Hello(peerAllowed(r)), nil }))
 	m.HandleFunc("GET /api/peer/files", shared(h(func(r *http.Request) (any, error) { return s.app.Share.SharedFiles() })))
-	// The watch history, for a KumoBox it shares with on the same AniList
+	// The watch history, for a KumoBox it shares with on the same Letterboxd
 	// account: Continue watching goes on there where it stopped here.
 	m.HandleFunc("GET /api/peer/history", shared(h(func(r *http.Request) (any, error) {
 		if !peerOf(r).SameUser {
-			return nil, forbidden("not logged into the same AniList account")
+			return nil, forbidden("not connected to the same Letterboxd account")
 		}
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 		return s.app.Share.HistorySince(since), nil
@@ -94,7 +94,7 @@ func (s *Server) peerRoutes() {
 	// And where it's watching this KumoBox's files, as it happens.
 	m.HandleFunc("POST /api/peer/history", shared(h(func(r *http.Request) (any, error) {
 		if !peerOf(r).SameUser {
-			return nil, forbidden("not logged into the same AniList account")
+			return nil, forbidden("not connected to the same Letterboxd account")
 		}
 		var entries []history.Entry
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&entries); err != nil {

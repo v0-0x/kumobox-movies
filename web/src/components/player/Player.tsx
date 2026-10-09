@@ -26,7 +26,7 @@ import { prefersHls, randomId, videoCaps } from "@/lib/playback"
 import { useSettings } from "@/lib/queries"
 import { skipAt, skipName, skipOn, skipRun, isSkippable } from "@/lib/skips"
 import { playerStore, type PlayerRequest } from "@/lib/store"
-import type { EntryView, EpisodeView, Probe, Settings, SkipInterval, StreamSource, TrackPrefs } from "@/lib/types"
+import type { EntryView, EpisodeView, PlayResult, Probe, Settings, SkipInterval, StreamSource, TrackPrefs } from "@/lib/types"
 import { cn, formatDuration } from "@/lib/utils"
 import { parseVTT, type Cue } from "@/lib/vtt"
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger } from "../ui"
@@ -219,21 +219,29 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     const sub = res.choice?.sub ?? ""
                     setSubKey(subOpts.some(o => o.key === sub && !o.bitmap) ? sub : "off")
                 } else {
-                    const res = await api.get<{ sources: StreamSource[]; resumeAt: number; tracks: TrackPrefs | null; title: string; key?: number }>(
-                        `/api/providers/sources${qs({ provider: req.provider, mediaId: req.mediaId, episode: req.episode, dub: req.dub, server: req.server })}`,
-                    )
+                    // The stream picked (or the provider's best link), then
+                    // the other direct links to fall back on, in that order.
+                    const res = await api.post<PlayResult>("/api/providers/play", {
+                        mediaId: req.mediaId,
+                        episode: req.episode,
+                        streamId: req.streamId,
+                        stream: req.stream,
+                        provider: req.provider,
+                        player: "builtin",
+                        start: req.start,
+                    })
                     if (cancelled) return
+                    if (res.action !== "builtin") throw new Error("This source can't be played in the app")
                     prefsRef.current = res.tracks
                     key = res.key || req.episode
                     setEpisode(key)
                     const e = await entryP
                     originalRef.current = e?.media.originalLanguage ?? ""
-                    setTitle(`${playerTitle(e, key, res.title)}${req.dub ? " (Dub)" : ""}`)
-                    const sorted = [...res.sources].sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality))
-                    setSources(sorted)
+                    setTitle(res.title || playerTitle(e, key, ""))
+                    setSources(res.sources)
                     setSourceIdx(0)
                     startAt.current = res.resumeAt || 0
-                    applyStreamSubs(sorted[0])
+                    applyStreamSubs(res.sources[0])
                 }
                 // The next episode (across seasons): its file, or for a stream
                 // the one after, asked for as this one was (by key, or as the
@@ -261,9 +269,11 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     }, [])
 
     const applyStreamSubs = (src?: StreamSource) => {
-        const opts: SubOption[] = (src?.subtitles ?? []).map((s, i) => ({ key: `s${i}`, label: s.language || `Subtitle ${i + 1}`, lang: s.language, title: s.language, index: i, url: s.url }))
+        const opts: SubOption[] = (src?.subtitles ?? []).map((s, i) => ({ key: `s${i}`, label: s.label || s.language || `Subtitle ${i + 1}`, lang: s.language, title: s.language, index: i, url: s.url }))
         setSubs(opts)
-        setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, req.kind === "stream" && req.dub))
+        // Providers' streams are in the original version (a dub is another
+        // stream).
+        setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, false))
     }
 
     // ------------------------------------------------------------ video src
@@ -549,7 +559,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         if (!nextEp) return
         report(true)
         if (req.kind === "local" && nextEp.path) playerStore.set({ kind: "local", path: nextEp.path, mediaId, episode: nextEp.episode })
-        else if (req.kind === "stream") playerStore.set({ ...req, episode: nextEp.episode })
+        // The next episode: the best link of the provider playing this one.
+        else if (req.kind === "stream") playerStore.set({ kind: "stream", mediaId, episode: nextEp.episode, provider: sources[sourceIdx]?.provider ?? req.provider })
     }
     const openInMpv = async () => {
         const v = videoRef.current
@@ -569,8 +580,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     source,
                     start: at,
                     // mpv plays the next episode from the same provider.
-                    provider: req.provider,
-                    dub: req.dub,
+                    provider: src.provider ?? req.provider,
                 })
             }
             v?.pause()
@@ -1000,13 +1010,6 @@ function CtrlButton({ children, onClick, label }: { children: React.ReactNode; o
             {children}
         </button>
     )
-}
-
-function qualityRank(q: string) {
-    const m = /(\d{3,4})/.exec(q ?? "")
-    if (m) return Number(m[1])
-    if (/auto|default|best/i.test(q ?? "")) return 5000
-    return 0
 }
 
 // The key of an episode of the title page (the server sends key, season

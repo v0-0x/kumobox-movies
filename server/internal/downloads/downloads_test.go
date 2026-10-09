@@ -61,7 +61,7 @@ func writeScript(t *testing.T, dir, name, body string) string {
 
 func enqueue(t *testing.T, m *Manager, title string) *Item {
 	t.Helper()
-	it, err := m.Enqueue(Item{MediaID: 1, Episode: 1, AnimeTitle: title, Mode: "sub", Source: "stream", URL: testURL})
+	it, err := m.Enqueue(Item{MediaID: 1, Episode: 1, AnimeTitle: title, Source: "stream", URL: testURL})
 	if err != nil {
 		t.Fatal(err)
 	}

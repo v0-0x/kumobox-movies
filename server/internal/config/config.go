@@ -143,8 +143,9 @@ type DownloadSettings struct {
 
 type OnlineStreamSettings struct {
 	Enabled bool `json:"enabled"`
-	// DefaultProvider is the streaming provider a title page opens with:
-	// "archive" (the Internet Archive) or another provider's id.
+	// DefaultProvider is "" to list the streams of every provider ranked
+	// together, or a provider's id ("archive", "stremio:<addon id>",
+	// "nuvio:<id>", "ext:<extension id>") to list its streams first.
 	DefaultProvider string `json:"defaultProvider"`
 	// PreferDub picks dubbed (English) audio over the original language
 	// when a provider or a file has both.
@@ -252,7 +253,7 @@ func Defaults() Settings {
 			VaapiNode:   "/dev/dri/renderD128",
 		},
 		Downloads:    DownloadSettings{Downloader: "auto"},
-		OnlineStream: OnlineStreamSettings{Enabled: true, DefaultProvider: "archive"},
+		OnlineStream: OnlineStreamSettings{Enabled: true},
 		Torrent: TorrentSettings{
 			DefaultClient:       "qbittorrent",
 			DefaultProvider:     "all",
@@ -414,9 +415,6 @@ func sanitize(s Settings) Settings {
 	case "auto", "yt-dlp", "ffmpeg":
 	default:
 		s.Downloads.Downloader = "auto"
-	}
-	if s.OnlineStream.DefaultProvider == "" {
-		s.OnlineStream.DefaultProvider = d.OnlineStream.DefaultProvider
 	}
 	if s.Extensions.MarketplaceURL == "" {
 		s.Extensions.MarketplaceURL = DefaultMarketplaceURL

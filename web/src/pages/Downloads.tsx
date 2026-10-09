@@ -4,7 +4,7 @@ import { toast } from "@/lib/toast"
 import { Badge, Button, EmptyState, IconButton, Progress } from "@/components/ui"
 import { api } from "@/lib/api"
 import { formatKey, isShow } from "@/lib/ids"
-import { useDownloads, useStatus } from "@/lib/queries"
+import { useDownloads, useProviders, useStatus } from "@/lib/queries"
 import type { DownloadItem } from "@/lib/types"
 import { cn, img } from "@/lib/utils"
 
@@ -64,6 +64,9 @@ export default function DownloadsPage() {
 function Row({ item, onCancel, onRetry, onRemove }: { item: DownloadItem; onCancel?: () => void; onRetry?: () => void; onRemove?: () => void }) {
     const statusLabel = { queued: "Queued", resolving: "Resolving stream", downloading: "Downloading", completed: "Completed", failed: "Failed", canceled: "Canceled" }[item.status]
     const tone = { queued: "gray", resolving: "blue", downloading: "brand", completed: "green", failed: "red", canceled: "gray" }[item.status] as "gray"
+    // The streaming provider by name ("" when any provider would do).
+    const { data: providers } = useProviders()
+    const provider = item.provider ? (providers?.find(p => p.id === item.provider)?.name ?? item.provider) : ""
     return (
         <div className="card flex items-center gap-4 p-3 pr-4">
             <Link to={`/entry?id=${item.mediaId}`} className="shrink-0">
@@ -74,7 +77,8 @@ function Row({ item, onCancel, onRetry, onRemove }: { item: DownloadItem; onCanc
                     <p className="truncate font-semibold">{item.title || item.animeTitle}</p>
                     {isShow(item.mediaId) && item.episode > 0 && <Badge tone="brand">{formatKey(item.episode)}</Badge>}
                     {item.mode === "dub" && <Badge>Dub</Badge>}
-                    {item.provider && <Badge>{item.provider}</Badge>}
+                    {provider && <Badge>{provider}</Badge>}
+                    {item.quality && item.quality !== "best" && <Badge>{item.quality}</Badge>}
                 </div>
                 <div className="mt-2 flex items-center gap-3">
                     {item.status === "downloading" || item.status === "resolving" ? <Loader2 className="size-4 animate-spin text-brand" /> : item.status === "completed" ? <CheckCircle2 className="size-4 text-emerald-400" /> : item.status === "failed" ? <XCircle className="size-4 text-rose-400" /> : null}

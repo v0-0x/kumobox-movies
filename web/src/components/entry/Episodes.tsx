@@ -45,7 +45,9 @@ function seasonsOf(entry: EntryView, episodes: EpisodeView[]): Season[] {
 
 const seasonName = (s: Season) => (s.seasonNumber === 0 ? "Specials" : s.name && !/^season \d+$/i.test(s.name) ? s.name : `Season ${s.seasonNumber}`)
 
-export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView; onStream: () => void; onTorrents: (key?: number) => void }) {
+// onStream opens Watch online, onTorrents the Torrents tab (on an episode,
+// by key).
+export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView; onStream: (key?: number) => void; onTorrents: (key?: number) => void }) {
     const media = entry.media
     const { data: status } = useStatus()
     const { playLocal, watch, localPlayer, remote } = usePlay()
@@ -121,7 +123,7 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
                     <HardDrive className="size-4 text-subtle" />
                     <p className="mr-auto text-sm text-muted">No episodes in your library yet.</p>
                     {online && (
-                        <Button size="sm" variant="ghost" icon={<Tv className="size-4" />} onClick={onStream}>
+                        <Button size="sm" variant="ghost" icon={<Tv className="size-4" />} onClick={() => onStream()}>
                             Watch online
                         </Button>
                     )}
@@ -230,7 +232,7 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
                                                             </DropdownItem>
                                                         )}
                                                         {!r.file && online && (
-                                                            <DropdownItem icon={<Tv />} onSelect={onStream}>
+                                                            <DropdownItem icon={<Tv />} onSelect={() => onStream(r.key)}>
                                                                 Choose a stream…
                                                             </DropdownItem>
                                                         )}

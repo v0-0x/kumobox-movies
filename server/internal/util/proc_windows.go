@@ -26,7 +26,7 @@ const (
 // BindChildren puts KumoBox in a job object that ends every process in it when
 // it closes, which it does when KumoBox exits, also when it's killed (the
 // desktop app can't do anything else on Windows) or crashes: the ffmpeg,
-// ani-cli and mpv processes it started end with it. The handle stays open
+// yt-dlp and mpv processes it started end with it. The handle stays open
 // for as long as KumoBox runs. Detached programs (a torrent client, Explorer)
 // break away from the job.
 func BindChildren() error {
