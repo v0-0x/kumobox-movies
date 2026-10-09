@@ -44,7 +44,7 @@ export function connectEvents(qc: QueryClient) {
                 qc.invalidateQueries({ queryKey: ["sharing"] })
                 break
             case "history-updated":
-                // Watched on another KumoBox of the same account: Continue
+                // Watched on another KumoBox sharing its library: Continue
                 // watching and the episodes' positions.
                 qc.invalidateQueries({ queryKey: ["collection"] })
                 qc.invalidateQueries({ queryKey: ["entry"] })
@@ -53,10 +53,13 @@ export function connectEvents(qc: QueryClient) {
                 qc.invalidateQueries({ queryKey: ["collection"] })
                 qc.invalidateQueries({ queryKey: ["entry"] })
                 qc.invalidateQueries({ queryKey: ["list"] })
-                // Manga lists and the list entry on a manga's page; not the
-                // chapters or pages, which providers would send again.
-                qc.invalidateQueries({ queryKey: ["manga", "collection"] })
-                qc.invalidateQueries({ queryKey: ["manga", "media"] })
+                // A movie watched to the end is logged in the diary.
+                qc.invalidateQueries({ queryKey: ["letterboxd"] })
+                break
+            case "letterboxd-updated":
+                // A sync (automatic or from another device) ran.
+                qc.invalidateQueries({ queryKey: ["letterboxd"] })
+                qc.invalidateQueries({ queryKey: ["status"] })
                 break
             case "settings-updated":
                 qc.invalidateQueries({ queryKey: ["status"] })

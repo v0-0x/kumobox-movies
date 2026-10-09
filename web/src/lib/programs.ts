@@ -1,7 +1,7 @@
 // The programs KumoBox uses and the setup that installs them: on Windows
-// server/internal/winsetup (Scoop, Git, ani-cli, ffmpeg, mpv, yt-dlp… in a
-// PowerShell window), on macOS server/internal/macsetup (downloads into
-// KumoBox's folder, in Terminal).
+// server/internal/winsetup (Scoop, ffmpeg, mpv, yt-dlp… in a PowerShell
+// window), on macOS server/internal/macsetup (downloads into KumoBox's
+// folder, in Terminal).
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { useEffect } from "react"
 import { toast } from "@/lib/toast"
@@ -14,7 +14,6 @@ export function missingPrograms(status?: Status) {
     if (!f) return []
     const all: [string, boolean][] = [
         ["ffmpeg", f.ffmpeg],
-        ["ani-cli", f.aniCli],
         ["mpv", f.mpv],
         ["yt-dlp", f.ytDlp],
     ]

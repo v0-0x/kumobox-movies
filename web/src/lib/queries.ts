@@ -1,21 +1,30 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { keepPreviousData, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "@/lib/toast"
 import { api, qs } from "./api"
+import { formatKey, mediaIsShow } from "./ids"
 import type {
     AutoRule,
     CollectionView,
+    DiaryEntry,
+    Discover,
     DownloadItem,
+    EntryUpdate,
     EntryView,
+    EpisodesView,
+    EpisodeView,
     ExtensionInfo,
     FolderInfo,
-    ListEntry,
+    LetterboxdResult,
+    LetterboxdStatus,
     LocalFile,
-    MangaChapter,
     MarketEntry,
     Media,
+    MediaPage,
     OnlineProvider,
     PluginState,
+    RawCollection,
     ScheduleItem,
+    SeasonDetail,
     Settings,
     SharedLibrary,
     SharingStatus,
@@ -48,13 +57,22 @@ export function useSaveSettings() {
     })
 }
 
-// The list as AniList has it (at most a minute old), asked again when KumoBox's
-// window comes back to the front: what was watched on another device, on
-// the same account, shows up in Continue watching.
+// What changed when the list did: the library views, the raw list and the
+// Letterboxd diary and status (watching a movie logs it).
+export function invalidateList(qc: QueryClient, mediaId?: number) {
+    qc.invalidateQueries({ queryKey: mediaId ? ["entry", mediaId] : ["entry"] })
+    qc.invalidateQueries({ queryKey: ["collection"] })
+    qc.invalidateQueries({ queryKey: ["list"] })
+    qc.invalidateQueries({ queryKey: ["letterboxd"] })
+}
+
+// The list with what the library has, asked again when KumoBox's window
+// comes back to the front: what was watched on another KumoBox sharing its
+// library shows up in Continue watching.
 export function useCollection() {
     return useQuery({
         queryKey: ["collection"],
-        queryFn: () => api.get<CollectionView>("/api/anime/collection?fresh=1"),
+        queryFn: () => api.get<CollectionView>("/api/media/collection?fresh=1"),
         staleTime: 60_000,
         refetchOnWindowFocus: true,
     })
@@ -63,42 +81,68 @@ export function useCollection() {
 export function useEntry(id: number) {
     return useQuery({
         queryKey: ["entry", id],
-        queryFn: () => api.get<EntryView>(`/api/anime/${id}`),
+        queryFn: () => api.get<EntryView>(`/api/media/${id}`),
         enabled: id > 0,
         staleTime: 30_000,
     })
 }
 
+// A show's episodes with what the library and the watch history know
+// (files, watched, resume positions). The server may answer with the lists
+// (EpisodesView) or the bare episode array.
+export function useEpisodes(id: number, enabled = true) {
+    return useQuery({
+        queryKey: ["entry", id, "episodes"],
+        queryFn: async () => {
+            const res = await api.get<EpisodesView | EpisodeView[] | null>(`/api/media/${id}/episodes`)
+            return (Array.isArray(res) ? { episodes: res } : (res ?? { episodes: [] })) as EpisodesView
+        },
+        enabled: enabled && id > 0,
+        staleTime: 30_000,
+        retry: false,
+    })
+}
+
+// One season of a show, with its episodes' titles, stills and overviews.
+export function useSeason(id: number, season: number, enabled = true) {
+    return useQuery({
+        queryKey: ["season", id, season],
+        queryFn: () => api.get<SeasonDetail>(`/api/media/${id}/season/${season}`),
+        enabled: enabled && id > 0 && season >= 0,
+        staleTime: 30 * 60_000,
+    })
+}
+
+// Every genre TMDB has, movies' and shows'.
+export function useGenres() {
+    return useQuery({ queryKey: ["genres"], queryFn: () => api.get<string[] | null>("/api/catalog/genres"), staleTime: 24 * 3600_000 })
+}
+
 export function useUpdateEntry(mediaId: number) {
     const qc = useQueryClient()
     return useMutation({
-        mutationFn: (body: { status?: string; progress?: number; score?: number; repeat?: number }) => api.post(`/api/anime/${mediaId}/entry`, body),
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ["entry", mediaId] })
-            qc.invalidateQueries({ queryKey: ["collection"] })
-            qc.invalidateQueries({ queryKey: ["list"] })
-            qc.invalidateQueries({ queryKey: ["manga"] })
-        },
+        mutationFn: (body: EntryUpdate) => api.post(`/api/media/${mediaId}/entry`, body),
+        onSuccess: () => invalidateList(qc, mediaId),
         onError: (e: Error) => toast.error(e.message),
     })
 }
 
-// Marks single episodes as watched or unwatched. AniList only stores how far
-// you got, so marking episode 7 watched raises progress to 7 (1-6 count as
-// watched too) and unwatched lowers it to 6. The server works it out from the
-// current list entry: watched never lowers progress, unwatched never raises
-// it; the last episode completes the show and an earlier one reopens it.
-export function useEpisodeMarker(media: Media | undefined, _listEntry?: Pick<ListEntry, "status" | "progress" | "repeat"> | null) {
+// Marks single episodes (or a movie) as watched or unwatched. The list only
+// stores how far you got (the key of the last episode watched), so marking
+// S01E07 watched raises progress to it (everything before counts as watched
+// too) and unwatched lowers it to the episode before. The server works it
+// out from the current list entry: watched never lowers progress, unwatched
+// never raises it; the last episode completes the show and an earlier one
+// reopens it.
+export function useEpisodeMarker(media: Media | undefined) {
     const qc = useQueryClient()
     const m = useMutation({
-        mutationFn: (v: { episode: number; watched: boolean }) => api.post<{ changed: boolean; progress: number; status: string }>(`/api/anime/${media?.id ?? 0}/episode`, v),
+        mutationFn: (v: { episode: number; watched: boolean }) => api.post<{ changed: boolean; progress: number; status: string }>(`/api/media/${media?.id ?? 0}/episode`, v),
         onSuccess: (res, v) => {
-            qc.invalidateQueries({ queryKey: ["entry", media?.id] })
-            qc.invalidateQueries({ queryKey: ["collection"] })
-            qc.invalidateQueries({ queryKey: ["list"] })
-            const what = media?.format === "MOVIE" ? "Movie" : `Episode ${v.episode}`
+            invalidateList(qc, media?.id)
+            const what = mediaIsShow(media) ? formatKey(v.episode) : "Movie"
             if (!res.changed) toast.info(`${what} is already ${v.watched ? "watched" : "unwatched"}`)
-            else toast.success(`${what} marked as ${v.watched ? "watched" : "unwatched"}${res.status === "COMPLETED" ? " — completed!" : ""}`)
+            else toast.success(`${what} marked as ${v.watched ? "watched" : "unwatched"}${res.status === "COMPLETED" && mediaIsShow(media) ? " — show completed!" : ""}`)
         },
         onError: (e: Error) => toast.error(e.message),
     })
@@ -108,20 +152,20 @@ export function useEpisodeMarker(media: Media | undefined, _listEntry?: Pick<Lis
     return { mark, pending: m.isPending }
 }
 
-// The sub/dub choice remembered for an anime (server-side, so every device
-// and every way of starting an episode uses it).
+// Original audio or a dub, remembered per movie or show (server-side, so
+// every device and every way of starting an episode uses it).
 export type LanguageMode = { mode: "sub" | "dub"; saved: boolean }
 
 export function useLanguageMode(mediaId: number) {
     const qc = useQueryClient()
     const query = useQuery({
         queryKey: ["language", mediaId],
-        queryFn: () => api.get<LanguageMode>(`/api/anime/${mediaId}/language`),
+        queryFn: () => api.get<LanguageMode>(`/api/media/${mediaId}/language`),
         enabled: mediaId > 0,
         staleTime: 60_000,
     })
     const set = useMutation({
-        mutationFn: (mode: "sub" | "dub") => api.put<LanguageMode>(`/api/anime/${mediaId}/language`, { mode }),
+        mutationFn: (mode: "sub" | "dub") => api.put<LanguageMode>(`/api/media/${mediaId}/language`, { mode }),
         onMutate: mode => qc.setQueryData<LanguageMode>(["language", mediaId], { mode, saved: true }),
         onSettled: () => qc.invalidateQueries({ queryKey: ["language", mediaId] }),
         onError: (e: Error) => toast.error(e.message),
@@ -132,7 +176,7 @@ export function useLanguageMode(mediaId: number) {
 // For click handlers outside a component that has the hook.
 export async function fetchLanguageMode(mediaId: number, fallbackDub: boolean): Promise<boolean> {
     try {
-        return (await api.get<LanguageMode>(`/api/anime/${mediaId}/language`)).mode === "dub"
+        return (await api.get<LanguageMode>(`/api/media/${mediaId}/language`)).mode === "dub"
     } catch {
         return fallbackDub
     }
@@ -141,50 +185,51 @@ export async function fetchLanguageMode(mediaId: number, fallbackDub: boolean): 
 export function useDeleteEntry(mediaId: number) {
     const qc = useQueryClient()
     return useMutation({
-        mutationFn: () => api.del(`/api/anime/${mediaId}/entry`),
+        mutationFn: () => api.del(`/api/media/${mediaId}/entry`),
         onSuccess: () => {
             toast.success("Removed from your list")
-            qc.invalidateQueries({ queryKey: ["entry", mediaId] })
-            qc.invalidateQueries({ queryKey: ["collection"] })
-            qc.invalidateQueries({ queryKey: ["list"] })
+            invalidateList(qc, mediaId)
         },
         onError: (e: Error) => toast.error(e.message),
     })
 }
 
+// POST /api/catalog/search. type: MOVIE, TV or empty for both; sort one of
+// POPULARITY_DESC, SCORE_DESC, START_DATE_DESC, START_DATE, TITLE,
+// TRENDING_DESC; language the original language (ISO 639-1); minScore 0-100.
 export type SearchParams = {
     page?: number
     perPage?: number
     search?: string
     type?: string
     genres?: string[]
-    season?: string
     year?: number
-    formats?: string[]
     status?: string
     sort?: string[]
+    language?: string
+    minScore?: number
+    ids?: number[]
 }
 
 export function useSearch(params: SearchParams, enabled = true) {
     return useQuery({
         queryKey: ["search", params],
-        queryFn: () => api.post<{ pageInfo: { hasNextPage: boolean; total: number; currentPage: number }; media: Media[] | null }>("/api/anilist/search", params),
+        queryFn: () => api.post<MediaPage>("/api/catalog/search", params),
         enabled,
         placeholderData: keepPreviousData,
         staleTime: 5 * 60_000,
     })
 }
 
-type Discover = { trending: Media[]; thisSeason: Media[]; nextSeason: Media[]; popular: Media[]; topRated: Media[]; season: string; year: number; fetchedAt: number }
-
-export function useDiscover() {
+export function useDiscover(enabled = true) {
     return useQuery({
         queryKey: ["discover"],
-        queryFn: () => api.get<Discover>("/api/anilist/discover"),
+        queryFn: () => api.get<Discover>("/api/catalog/discover"),
+        enabled,
         staleTime: 10 * 60_000,
         // The server answers at once with the page it saved last, and fetches
         // a fresh one when that's over 30 minutes old: pick it up shortly
-        // (a few tries, in case AniList can't be reached).
+        // (a few tries, in case TMDB can't be reached).
         refetchInterval: q => {
             const d = q.state.data
             return d && Date.now() / 1000 - d.fetchedAt > 30 * 60 && q.state.dataUpdateCount < 4 ? 4000 : false
@@ -202,14 +247,22 @@ export function useSharedLibraries() {
     return useQuery({ queryKey: ["sharing", "libraries"], queryFn: () => api.get<SharedLibrary[]>("/api/sharing/libraries"), refetchInterval: 30_000 })
 }
 
-export function useSchedule(days = 7) {
-    return useQuery({ queryKey: ["schedule", days], queryFn: () => api.get<ScheduleItem[]>(`/api/anilist/schedule?days=${days}`), staleTime: 10 * 60_000 })
+// The episodes of the shows on the list airing between start and end (unix
+// seconds).
+export function useSchedule(start: number, end: number) {
+    return useQuery({
+        queryKey: ["schedule", start, end],
+        queryFn: () => api.get<ScheduleItem[] | null>(`/api/catalog/schedule${qs({ start, end })}`),
+        staleTime: 10 * 60_000,
+        placeholderData: keepPreviousData,
+    })
 }
 
-export function useRawList(type: "ANIME" | "MANGA") {
+// The list as it's stored (no library data). type: MOVIE, TV or "" for both.
+export function useRawList(type: "" | "MOVIE" | "TV" = "") {
     return useQuery({
         queryKey: ["list", type],
-        queryFn: () => api.get<{ lists: { name: string; status: string; isCustomList: boolean; entries: any[] }[] | null }>(`/api/anilist/list?type=${type}`),
+        queryFn: () => api.get<RawCollection>(`/api/catalog/list${qs({ type })}`),
         staleTime: 60_000,
     })
 }
@@ -240,27 +293,31 @@ export function useLibraryFiles() {
     return useQuery(libraryFilesQuery)
 }
 
+// ---------------------------------------------------------------------------
+// Streaming providers (Internet Archive, Stremio addons, Nuvio repositories,
+// extensions).
+
 export function useOnlineProviders() {
-    return useQuery({ queryKey: ["os-providers"], queryFn: () => api.get<OnlineProvider[]>("/api/onlinestream/providers"), staleTime: 5 * 60_000 })
+    return useQuery({ queryKey: ["os-providers"], queryFn: () => api.get<OnlineProvider[]>("/api/providers/providers"), staleTime: 5 * 60_000 })
 }
 
 // only: the version listed is the only one there is, not a choice to remember.
 export function useStreamEpisodes(provider: string, mediaId: number, dub: boolean, enabled = true, only = false) {
     return useQuery({
         queryKey: ["os-episodes", provider, mediaId, dub],
-        queryFn: () => api.get<StreamEpisodes>(`/api/onlinestream/episodes${qs({ provider, mediaId, dub, only: only ? 1 : undefined })}`),
+        queryFn: () => api.get<StreamEpisodes>(`/api/providers/episodes${qs({ provider, mediaId, dub, only: only ? 1 : undefined })}`),
         enabled: enabled && mediaId > 0 && !!provider,
         retry: false,
         staleTime: 10 * 60_000,
     })
 }
 
-// Whether the provider has the anime subtitled and dubbed (both while it's
+// Whether the provider has the original audio and a dub (both while it's
 // not known).
 export function useStreamModes(provider: string, mediaId: number, enabled = true) {
     return useQuery({
         queryKey: ["os-modes", provider, mediaId],
-        queryFn: () => api.get<{ sub: boolean; dub: boolean }>(`/api/onlinestream/modes${qs({ provider, mediaId })}`),
+        queryFn: () => api.get<{ sub: boolean; dub: boolean }>(`/api/providers/modes${qs({ provider, mediaId })}`),
         enabled: enabled && mediaId > 0 && !!provider,
         retry: false,
         staleTime: 30 * 60_000,
@@ -283,7 +340,8 @@ export function useTorrentList(enabled = true) {
 
 export function useTorrentSearch() {
     return useMutation({
-        mutationFn: (body: { provider: string; mediaId?: number; query?: string; episode?: number; batch?: boolean; resolution?: string }) =>
+        // episode: a key; season: the season of a pack (batch).
+        mutationFn: (body: { provider: string; mediaId?: number; query?: string; episode?: number; season?: number; batch?: boolean; resolution?: string }) =>
             api.post<TorrentResult[]>("/api/torrents/search", body),
         onError: (e: Error) => toast.error(e.message),
     })
@@ -310,17 +368,56 @@ export function useAutoRules() {
     return useQuery({ queryKey: ["auto-rules"], queryFn: () => api.get<AutoRule[]>("/api/autodownloader/rules") })
 }
 
-export function useMangaChapters(mediaId: number, provider: string) {
+// ---------------------------------------------------------------------------
+// Letterboxd
+
+export function useLetterboxdStatus(enabled = true) {
+    return useQuery({ queryKey: ["letterboxd", "status"], queryFn: () => api.get<LetterboxdStatus>("/api/letterboxd/status"), enabled, staleTime: 15_000 })
+}
+
+// The diary: every viewing logged here or imported from Letterboxd, the
+// newest first; of one movie with mediaId.
+export function useDiary(mediaId?: number, limit = 50, enabled = true) {
     return useQuery({
-        queryKey: ["manga", "chapters", mediaId, provider],
-        queryFn: () =>
-            api.get<{ provider: string; mapping: { id: string; title: string } | null; chapters: MangaChapter[] | null }>(
-                `/api/manga/${mediaId}/chapters${qs({ provider })}`,
-            ),
-        enabled: mediaId > 0,
-        retry: false,
-        staleTime: 10 * 60_000,
+        queryKey: ["letterboxd", "diary", mediaId ?? 0, limit],
+        queryFn: () => api.get<DiaryEntry[] | null>(`/api/letterboxd/diary${qs({ mediaId, limit })}`),
+        enabled,
+        staleTime: 30_000,
     })
+}
+
+// "3 added, 1 updated, 2 skipped".
+export function resultSummary(r: LetterboxdResult) {
+    const parts = [r.added && `${r.added} added`, r.updated && `${r.updated} updated`, r.skipped && `${r.skipped} skipped`].filter(Boolean)
+    return parts.length ? parts.join(", ") : "Nothing new"
+}
+
+// The Letterboxd actions; every one refreshes what it may have changed.
+export function useLetterboxd() {
+    const qc = useQueryClient()
+    const refresh = () => {
+        invalidateList(qc)
+        qc.invalidateQueries({ queryKey: ["status"] })
+    }
+    const onError = (e: Error) => toast.error(e.message)
+    return {
+        connect: useMutation({ mutationFn: (username: string) => api.post<LetterboxdStatus>("/api/letterboxd/connect", { username }), onSuccess: refresh, onError }),
+        disconnect: useMutation({ mutationFn: () => api.post("/api/letterboxd/disconnect"), onSuccess: refresh, onError }),
+        sync: useMutation({ mutationFn: () => api.post<LetterboxdResult>("/api/letterboxd/sync"), onSuccess: refresh, onError }),
+        importFile: useMutation({
+            mutationFn: (file: File) => {
+                const form = new FormData()
+                form.append("file", file)
+                return api.upload<LetterboxdResult>("/api/letterboxd/import", form)
+            },
+            onSuccess: refresh,
+            onError,
+        }),
+        markExported: useMutation({ mutationFn: () => api.post<{ marked: number }>("/api/letterboxd/mark-exported"), onSuccess: refresh, onError }),
+        push: useMutation({ mutationFn: () => api.post<LetterboxdResult>("/api/letterboxd/push"), onSuccess: refresh, onError }),
+        apiLogin: useMutation({ mutationFn: (v: { username: string; password: string }) => api.post<LetterboxdStatus>("/api/letterboxd/api-login", v), onSuccess: refresh, onError }),
+        deleteDiary: useMutation({ mutationFn: (id: number) => api.del(`/api/letterboxd/diary/${id}`), onSuccess: refresh, onError }),
+    }
 }
 
 // KumoBox's own updates. The "update-status" event keeps ["update"] current

@@ -18,10 +18,12 @@ export function onPasswordRequired(fn: Listener) {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    // FormData (file uploads) goes as multipart: the browser sets the type.
+    const form = body instanceof FormData
     const res = await fetch(path, {
         method,
-        headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        headers: body !== undefined && !form ? { "Content-Type": "application/json" } : undefined,
+        body: body === undefined ? undefined : form ? body : JSON.stringify(body),
         credentials: "same-origin",
     })
     const text = await res.text()
@@ -45,6 +47,8 @@ export const api = {
     put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),
     patch: <T>(path: string, body: unknown) => request<T>("PATCH", path, body),
     del: <T>(path: string) => request<T>("DELETE", path),
+    // A multipart upload (e.g. a Letterboxd export).
+    upload: <T>(path: string, form: FormData) => request<T>("POST", path, form),
 }
 
 export function qs(params: Record<string, string | number | boolean | undefined | null>) {
@@ -59,7 +63,6 @@ export function qs(params: Record<string, string | number | boolean | undefined 
 
 // Desktop (Electron) bridge, exposed by the preload script.
 export type DesktopBridge = {
-    anilistLogin: (url: string) => Promise<string | null>
     openExternal: (url: string) => void
     platform: string
     minimize?: () => void
