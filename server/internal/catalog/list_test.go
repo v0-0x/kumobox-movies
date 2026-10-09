@@ -355,6 +355,36 @@ func TestRefreshListMedia(t *testing.T) {
 	}
 }
 
+// After the metadata language (or region) changed, the list's copies are
+// due again, also those of titles that don't change any more: until then
+// they're kept, for the list to show at once and offline.
+func TestResetCacheRefreshesTheList(t *testing.T) {
+	f := newFakeTMDB(t, nil)
+	p := newTestPlatform(t, f)
+	ctx := context.Background()
+	movie := testMovie(155)
+	addLocal(t, p, movie, "COMPLETED", 1)
+	if _, err := p.db.Write(`UPDATE local_list SET media_updated = ?`, time.Now().Add(-time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	p.invalidate()
+
+	p.ResetCache()
+	if e := p.listEntry(movie.ID); e == nil || e.Media == nil || e.Media.Title.English != "Movie 155" {
+		t.Fatalf("the list's copy is gone: %+v", e)
+	}
+	c, err := p.CollectionWithin(ctx, "", 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.count("/movie/155") != 1 {
+		t.Fatalf("fetched %d times", f.count("/movie/155"))
+	}
+	if e := c.Find(movie.ID); e == nil || e.Media.Title.English != "The Dark Knight" {
+		t.Errorf("not refreshed: %+v", e)
+	}
+}
+
 func TestInvalidIDs(t *testing.T) {
 	p := newTestPlatform(t, nil)
 	if _, err := p.MediaLite(context.Background(), 0); !errors.Is(err, errInvalidID) {
