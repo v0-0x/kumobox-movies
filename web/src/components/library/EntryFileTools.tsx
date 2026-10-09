@@ -11,7 +11,7 @@ import { FolderPicker } from "./LibraryFolders"
 import { MatchDialog } from "./MatchDialog"
 
 // "Add files from your library": pick folders, then confirm the match (with
-// episode numbering) to this anime.
+// episode numbering) to this movie or show.
 export function AddFromLibraryDialog({ open, onOpenChange, media }: { open: boolean; onOpenChange: (v: boolean) => void; media: Media }) {
     const [files, setFiles] = useState<LocalFile[] | null>(null)
     return (
@@ -22,7 +22,7 @@ export function AddFromLibraryDialog({ open, onOpenChange, media }: { open: bool
                     if (!v) onOpenChange(false)
                 }}
                 title={`Add files to ${title(media)}`}
-                description="Pick the folders that hold this anime. Likely ones are listed first."
+                description="Pick the folders (or files) that hold it. Likely ones are listed first."
                 className="w-[min(94vw,720px)]"
             >
                 {open && <FolderPicker target={media} onPicked={setFiles} />}
@@ -42,7 +42,7 @@ export function AddFromLibraryDialog({ open, onOpenChange, media }: { open: bool
     )
 }
 
-// The files matched to an anime, for moving them elsewhere: this
+// The files matched to a movie or show, for moving them elsewhere: this
 // computer's, not those another KumoBox shares (it matches its own).
 export function entryFiles(entry: EntryView): LocalFile[] {
     const out = new Map<string, LocalFile>()
@@ -50,7 +50,7 @@ export function entryFiles(entry: EntryView): LocalFile[] {
     return [...out.values()]
 }
 
-// "Manage files" menu on an anime's Library tab.
+// "Manage files" menu of a movie's or show's files.
 export function EntryFilesMenu({ entry }: { entry: EntryView }) {
     const qc = useQueryClient()
     const navigate = useNavigate()
@@ -82,7 +82,7 @@ export function EntryFilesMenu({ entry }: { entry: EntryView }) {
                         Add files from library…
                     </DropdownItem>
                     <DropdownItem icon={<Link2 />} onSelect={() => setMoving(true)} disabled={files.length === 0}>
-                        Wrong anime? Match these files to another…
+                        Wrong title? Match these files to another…
                     </DropdownItem>
                     <DropdownItem icon={<Link2Off />} onSelect={unmatchAll} disabled={files.length === 0} danger>
                         Unmatch all files

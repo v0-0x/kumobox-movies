@@ -4,6 +4,7 @@ import { useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { toast } from "@/lib/toast"
 import { api } from "@/lib/api"
+import { formatKey, isShow, mediaRef } from "@/lib/ids"
 import { useCollection, useLibraryFiles, useLibraryFolders, useStatus } from "@/lib/queries"
 import type { FolderInfo, LocalFile, Media } from "@/lib/types"
 import { cn, cover, formatBytes, plural, title } from "@/lib/utils"
@@ -17,7 +18,7 @@ export type LibraryFolder = {
     size: number
     matches: { mediaId: number; count: number }[] // most files first
     unmatched: number
-    query: string // best guess of the anime title, for searching AniList
+    query: string // best guess of the title, for searching TMDB
     notIndexed: number // videos on disk that no scan has added yet
     problem?: string // why it has nothing to match (still downloading, unreadable…)
 }
@@ -85,7 +86,7 @@ function words(s: string) {
         .filter(w => w.length > 1)
 }
 
-// How much a folder looks like an anime title (0-1), to list likely folders first.
+// How much a folder looks like a title (0-1), to list likely folders first.
 function likeness(folder: LibraryFolder, media: Media) {
     const fw = new Set(words(`${folder.label} ${folder.query}`))
     let best = 0
@@ -128,7 +129,7 @@ function useIndexFolders() {
 }
 
 // Library tools › Folders: every folder with what it's matched to, and
-// buttons to match it (or some of its files) to another anime by hand.
+// buttons to match it (or some of its files) to another movie or show by hand.
 export function LibraryFolders() {
     const { data: status } = useStatus()
     const { data: files, isLoading } = useLibraryFiles()
@@ -190,10 +191,10 @@ export function LibraryFolders() {
     return (
         <div className="flex flex-col gap-4">
             <p className="text-sm text-muted">
-                Wrong or missing match? Use <b>Match…</b> to pick the right anime. Manual matches are locked, so later scans keep them.
+                Wrong or missing match? Use <b>Match…</b> to pick the right movie or show. Manual matches are locked, so later scans keep them.
             </p>
             <div className="w-full max-w-md">
-                <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter folders or anime…" icon={<Search className="size-4" />} />
+                <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter folders or titles…" icon={<Search className="size-4" />} />
             </div>
             {diskError && <p className="text-sm text-amber-300">Couldn't look through your library folders: {(diskError as Error).message}</p>}
             <div className="flex flex-col gap-2">
@@ -280,7 +281,7 @@ function FolderRow({
                     ) : primary || f.matches.length === 1 ? (
                         <Link to={`/entry?id=${f.matches[0].mediaId}`} className="flex min-w-0 items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-white/[0.05]">
                             {primary && <img src={cover(primary)} alt="" className="h-9 w-6 rounded object-cover" />}
-                            <span className="max-w-64 truncate text-sm text-fg/85">{primary ? title(primary) : `AniList #${f.matches[0].mediaId}`}</span>
+                            <span className="max-w-64 truncate text-sm text-fg/85">{primary ? title(primary) : mediaRef(f.matches[0].mediaId)}</span>
                         </Link>
                     ) : (
                         <div className="flex flex-wrap gap-1.5">
@@ -371,7 +372,7 @@ function FolderRow({
                                 </span>
                                 <span className="hidden max-w-56 truncate text-xs text-subtle sm:inline">{x.mediaId > 0 ? title(m) || `#${x.mediaId}` : "Unmatched"}</span>
                                 <Tooltip content={x.locked ? "Matched by hand — scans keep it" : "Matched automatically"}>
-                                    <span className="w-20 shrink-0 text-right text-xs font-semibold tabular-nums">{x.kind === "nc" ? "OP/ED" : x.kind === "special" ? "Special" : x.episode ? `Ep ${x.episode}` : "—"}</span>
+                                    <span className="w-20 shrink-0 text-right text-xs font-semibold tabular-nums">{x.kind === "nc" ? "Bonus" : x.kind === "special" ? "Extra" : !x.episode ? "—" : isShow(x.mediaId) ? formatKey(x.episode) : "Movie"}</span>
                                 </Tooltip>
                             </label>
                         )
@@ -404,8 +405,8 @@ function ProblemRow({ folder: f, trusted }: { folder: LibraryFolder; trusted: bo
     )
 }
 
-// Picks library folders (or files) to match to a given anime, likeliest
-// first. Used from an anime's page when its files weren't found. Folders a
+// Picks library folders (or files) to match to a given movie or show,
+// likeliest first. Used from its page when its files weren't found. Folders a
 // scan hasn't reached yet are added when picked; ones with nothing to match
 // say why.
 export function FolderPicker({ target, onPicked }: { target: Media; onPicked: (files: LocalFile[]) => void }) {

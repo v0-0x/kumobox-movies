@@ -4,61 +4,93 @@ import { Link } from "react-router-dom"
 import { ListCardMenu } from "@/components/ListCardMenu"
 import { Carousel, MediaCard, MediaCardSkeleton } from "@/components/MediaCard"
 import { PluginSlot } from "@/components/plugins/PluginSlot"
-import { Button, EmptyState, ErrorState, SectionHeader, Skeleton } from "@/components/ui"
-import { useDiscover } from "@/lib/queries"
-import type { Media } from "@/lib/types"
-import { banner, cleanDescription, cn, formatLabel, GENRES, SEASONS, seasonLabel, title } from "@/lib/utils"
+import { Button, EmptyState, ErrorState, SectionHeader, Skeleton, Tabs } from "@/components/ui"
+import { usePersisted } from "@/lib/hooks"
+import { useDiscover, useGenres, useStatus } from "@/lib/queries"
+import type { Discover, Media } from "@/lib/types"
+import { banner, cleanDescription, cn, formatLabel, title, year } from "@/lib/utils"
 
-// The season after the given one: Fall 2026 -> Winter 2027.
-function seasonAfter(season: string, year: number) {
-    const i = SEASONS.indexOf(season)
-    return i === SEASONS.length - 1 ? { season: SEASONS[0], year: year + 1 } : { season: SEASONS[i + 1], year }
-}
+type Kind = "" | "MOVIE" | "TV"
+type Row = { key: Exclude<keyof Discover, "fetchedAt">; title: string; subtitle?: string; more: string; kind: Kind }
 
-const seasonSearch = (season?: string, year?: number) => (season && year ? `/search?season=${season}&year=${year}&sort=POPULARITY_DESC` : "/search?sort=POPULARITY_DESC")
+const ROWS: Row[] = [
+    { key: "trending", title: "Trending this week", more: "/search?sort=TRENDING_DESC", kind: "" },
+    { key: "nowPlaying", title: "Now in theaters", more: "/search?type=MOVIE&status=RELEASING&sort=POPULARITY_DESC", kind: "MOVIE" },
+    { key: "onTheAir", title: "On the air", subtitle: "Shows with new episodes this week", more: "/search?type=TV&status=RELEASING&sort=POPULARITY_DESC", kind: "TV" },
+    { key: "upcoming", title: "Coming soon", more: "/search?type=MOVIE&status=NOT_YET_RELEASED&sort=POPULARITY_DESC", kind: "MOVIE" },
+    { key: "popularMovies", title: "Popular movies", more: "/search?type=MOVIE&sort=POPULARITY_DESC", kind: "MOVIE" },
+    { key: "popularShows", title: "Popular shows", more: "/search?type=TV&sort=POPULARITY_DESC", kind: "TV" },
+    { key: "topRatedMovies", title: "Top rated movies", more: "/search?type=MOVIE&sort=SCORE_DESC", kind: "MOVIE" },
+    { key: "topRatedShows", title: "Top rated shows", more: "/search?type=TV&sort=SCORE_DESC", kind: "TV" },
+]
 
 export default function DiscoverPage() {
-    const { data, isLoading, error, refetch, isFetching } = useDiscover()
-    const featured = (data?.trending ?? []).filter(m => m.bannerImage).slice(0, 6)
+    const { data: status } = useStatus()
+    const tmdb = status?.tmdbConfigured !== false
+    const { data, isLoading, error, refetch, isFetching } = useDiscover(tmdb)
+    const { data: genres } = useGenres()
+    const [kind, setKind] = usePersisted<Kind>("kumobox-discover-kind", "")
+    const items = (k: Row["key"]) => (data?.[k] ?? []).filter(m => !kind || m.type === kind)
+    const featured = items("trending")
+        .filter(m => m.bannerImage)
+        .slice(0, 6)
     const [i, setI] = useState(0)
     useEffect(() => {
+        setI(0)
         if (featured.length < 2) return
         const t = setInterval(() => setI(x => (x + 1) % featured.length), 9000)
         return () => clearInterval(t)
-    }, [featured.length])
+    }, [featured.length, kind])
 
+    if (!tmdb)
+        return (
+            <div className="p-10">
+                <EmptyState icon={<Compass className="size-6" />} title="Discover needs TMDB" action={<Link to="/settings?tab=metadata"><Button variant="primary">Set up TMDB</Button></Link>}>
+                    Add a free TMDB API key to browse trending, popular and upcoming movies and shows.
+                </EmptyState>
+            </div>
+        )
     if (error)
         return (
             <div className="p-10">
-                <ErrorState title="Couldn't reach AniList" error={error} retrying={isFetching} onRetry={() => refetch()} />
+                <ErrorState title="Couldn't reach TMDB" error={error} retrying={isFetching} onRetry={() => refetch()} />
             </div>
         )
 
-    const next = data ? seasonAfter(data.season, data.year) : undefined
-    const rows: { key: keyof NonNullable<typeof data>; title: string; subtitle?: string; more: string }[] = [
-        { key: "trending", title: "Trending now", more: "/search?sort=TRENDING_DESC" },
-        { key: "thisSeason", title: `Popular this season`, subtitle: data ? seasonLabel(data.season, data.year) : "", more: seasonSearch(data?.season, data?.year) },
-        { key: "nextSeason", title: "Upcoming next season", subtitle: next ? seasonLabel(next.season, next.year) : "", more: seasonSearch(next?.season, next?.year) },
-        { key: "popular", title: "All-time popular", more: "/search?sort=POPULARITY_DESC" },
-        { key: "topRated", title: "Top rated", more: "/search?sort=SCORE_DESC" },
-    ]
-    // AniList can come back with nothing at all (it couldn't be reached and
+    const rows = ROWS.filter(r => !kind || !r.kind || r.kind === kind)
+    // TMDB can come back with nothing at all (it couldn't be reached and
     // nothing is cached): skip empty rows instead of showing bare headers.
-    const shown = isLoading ? rows : rows.filter(r => ((data?.[r.key] as Media[] | undefined) ?? []).length > 0)
-    const hero = isLoading || !!featured[i]
+    const shown = isLoading ? rows : rows.filter(r => items(r.key).length > 0)
+    const current = featured[Math.min(i, featured.length - 1)]
+    const hero = isLoading || !!current
 
     return (
         <div className="min-h-full pb-24">
-            {isLoading ? <Skeleton className="h-[440px] rounded-none" /> : featured[i] && <Featured media={featured[i]} index={i} count={featured.length} onIndex={setI} />}
+            {isLoading ? <Skeleton className="h-[440px] rounded-none" /> : current && <Featured media={current} index={i} count={featured.length} onIndex={setI} />}
             {/* Without a hero banner there is nothing to overlap. */}
             <div className={cn("relative z-10 flex flex-col gap-10 px-6 md:px-8 xl:px-10", hero ? "-mt-14" : "pt-8")}>
                 <PluginSlot slot="after-discover-screen-header" />
-                <div className="no-scrollbar flex gap-2 overflow-x-auto">
-                    {GENRES.map(g => (
-                        <Link key={g} to={`/search?genre=${encodeURIComponent(g)}`} className="flex h-8 shrink-0 items-center rounded-full bg-white/[0.06] px-3.5 text-[13px] font-medium text-fg/80 transition-colors hover:bg-white/[0.1] hover:text-fg">
-                            {g}
-                        </Link>
-                    ))}
+                <div className="flex flex-wrap items-center gap-4">
+                    <Tabs
+                        value={kind}
+                        onChange={setKind}
+                        tabs={[
+                            { value: "", label: "All" },
+                            { value: "MOVIE", label: "Movies" },
+                            { value: "TV", label: "Shows" },
+                        ]}
+                    />
+                    <div className="no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto">
+                        {(genres ?? []).map(g => (
+                            <Link
+                                key={g}
+                                to={`/search?genre=${encodeURIComponent(g)}${kind ? `&type=${kind}` : ""}`}
+                                className="flex h-8 shrink-0 items-center rounded-full bg-white/[0.06] px-3.5 text-[13px] font-medium text-fg/80 transition-colors hover:bg-white/[0.1] hover:text-fg"
+                            >
+                                {g}
+                            </Link>
+                        ))}
+                    </div>
                 </div>
                 {shown.length === 0 && (
                     <EmptyState
@@ -70,7 +102,7 @@ export default function DiscoverPage() {
                             </Button>
                         }
                     >
-                        AniList didn't return any anime. Check your internet connection and try again.
+                        TMDB didn't return anything. Check your internet connection and your API key, then try again.
                     </EmptyState>
                 )}
                 {shown.map(r => (
@@ -93,7 +125,11 @@ export default function DiscoverPage() {
                                 ))}
                             </div>
                         ) : (
-                            <Carousel>{((data?.[r.key] as Media[]) ?? []).map(m => <MediaCard key={m.id} media={m} listEntry={m.mediaListEntry} menu={<ListCardMenu media={m} />} />)}</Carousel>
+                            <Carousel>
+                                {items(r.key).map(m => (
+                                    <MediaCard key={m.id} media={m} listEntry={m.mediaListEntry} menu={<ListCardMenu media={m} />} />
+                                ))}
+                            </Carousel>
                         )}
                     </section>
                 ))}
@@ -104,6 +140,8 @@ export default function DiscoverPage() {
 
 function Featured({ media, index, count, onIndex }: { media: Media; index: number; count: number; onIndex: (i: number) => void }) {
     const desc = cleanDescription(media.description)
+    const score = media.averageScore ?? media.meanScore
+    const facts = [formatLabel(media.format), year(media) || "", media.genres?.slice(0, 3).join(", ") ?? ""].filter(Boolean)
     return (
         <div className="relative h-[440px] overflow-hidden">
             <img key={media.id} src={banner(media)} alt="" className="absolute inset-0 size-full object-cover fade-in" />
@@ -113,19 +151,20 @@ function Featured({ media, index, count, onIndex }: { media: Media; index: numbe
                 <p className="text-sm font-medium text-white/65">Trending #{index + 1}</p>
                 <h1 className="mt-1.5 text-4xl leading-[1.1] font-semibold tracking-tight text-white md:text-[2.75rem]">{title(media)}</h1>
                 <div className="mt-3 flex flex-wrap items-center gap-x-2 text-sm text-white/75">
-                    {media.meanScore && (
+                    {!!score && (
                         <>
                             <span className="flex items-center gap-1 font-medium text-white">
-                                <Star className="size-3.5 fill-amber-300 text-amber-300" /> {media.meanScore}%
+                                <Star className="size-3.5 fill-amber-300 text-amber-300" /> {(score / 10).toFixed(1)}
                             </span>
                             <span className="text-white/30">·</span>
                         </>
                     )}
-                    <span>{formatLabel(media.format)}</span>
-                    <span className="text-white/30">·</span>
-                    <span>{seasonLabel(media.season, media.seasonYear)}</span>
-                    {!!media.genres?.length && <span className="text-white/30">·</span>}
-                    <span className="text-white/55">{media.genres?.slice(0, 3).join(", ")}</span>
+                    {facts.map((f, k) => (
+                        <span key={k} className="flex items-center gap-2">
+                            {k > 0 && <span className="text-white/30">·</span>}
+                            <span className={k === facts.length - 1 && k > 1 ? "text-white/55" : undefined}>{f}</span>
+                        </span>
+                    ))}
                 </div>
                 {desc && <p className="mt-3 line-clamp-2 max-w-xl text-[15px] leading-relaxed text-white/65">{desc}</p>}
                 <div className="mt-5 flex gap-2.5">
@@ -134,7 +173,7 @@ function Featured({ media, index, count, onIndex }: { media: Media; index: numbe
                             Watch now
                         </Button>
                     </Link>
-                    <Link to={`/entry?id=${media.id}&tab=details`}>
+                    <Link to={`/entry?id=${media.id}&tab=overview`}>
                         <Button variant="ghost" size="lg" className="glass text-white hover:bg-black/70 hover:text-white" icon={<Info className="size-4" />}>
                             Details
                         </Button>

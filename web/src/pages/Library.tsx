@@ -7,6 +7,7 @@ import { LibraryFolders } from "@/components/library/LibraryFolders"
 import { MediaPicker } from "@/components/MediaPicker"
 import { Badge, Button, EmptyState, IconButton, Input, Select, Tabs } from "@/components/ui"
 import { api } from "@/lib/api"
+import { episodeKey, formatKey, isShow, mediaRef, splitKey } from "@/lib/ids"
 import { useCollection, useLibraryFiles, useScan, useUnmatched } from "@/lib/queries"
 import { scanStore, useStore } from "@/lib/store"
 import type { LocalFile } from "@/lib/types"
@@ -28,7 +29,7 @@ export default function LibraryPage() {
             <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
                 <div>
                     <h1 className="text-[1.75rem] font-semibold tracking-tight">Library tools</h1>
-                    <p className="mt-1 text-muted">Fix matches, episode numbers and ignored files.</p>
+                    <p className="mt-1 text-muted">Fix matches, season and episode numbers, and ignored files.</p>
                 </div>
                 <div className="flex gap-2">
                     <Button icon={<FolderSync className="size-4" />} loading={scanning} onClick={() => scan.mutate(false)}>
@@ -90,7 +91,7 @@ function Unmatched() {
     if (!data?.length)
         return (
             <EmptyState icon={<Link2 className="size-6" />} title="Everything is matched">
-                All video files in your library are linked to an anime.
+                All video files in your library are linked to a movie or show.
             </EmptyState>
         )
     return (
@@ -131,8 +132,8 @@ function Unmatched() {
                                     />
                                     <FileVideo className="size-4 shrink-0 text-subtle" />
                                     <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                                    {f.parsed.episode >= 0 && <Badge>Ep {f.parsed.episode}</Badge>}
-                                    {f.parsed.season > 0 && <Badge>S{f.parsed.season}</Badge>}
+                                    {f.parsed.episode > 0 && <Badge>{f.parsed.season > 0 ? formatKey(episodeKey(f.parsed.season, f.parsed.episode)) : `E${String(f.parsed.episode).padStart(2, "0")}`}</Badge>}
+                                    {f.parsed.year > 0 && <Badge>{f.parsed.year}</Badge>}
                                     {f.parsed.releaseGroup && <Badge tone="brand">{f.parsed.releaseGroup}</Badge>}
                                     <span className="w-20 text-right text-xs text-subtle">{formatBytes(f.size)}</span>
                                 </label>
@@ -146,7 +147,7 @@ function Unmatched() {
                 onOpenChange={v => !v && setPicking(null)}
                 initialQuery={picking?.title ?? ""}
                 heading="Match files"
-                description={picking ? `${picking.paths.length} file(s) will be linked to the anime you choose.` : undefined}
+                description={picking ? `${picking.paths.length} file(s) will be linked to the movie or show you choose.` : undefined}
                 onPick={m => picking && match(m.id, picking.paths)}
             />
         </div>
@@ -188,16 +189,16 @@ function AllFiles() {
     return (
         <div className="flex flex-col gap-4">
             <div className="flex gap-3">
-                <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter by file or anime…" icon={<Search className="size-4" />} />
+                <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter by file or title…" icon={<Search className="size-4" />} />
                 <Select
                     className="w-44"
                     value={kind}
                     onChange={setKind}
                     options={[
                         { value: "all", label: "All kinds" },
-                        { value: "main", label: "Episodes" },
-                        { value: "special", label: "Specials" },
-                        { value: "nc", label: "OP / ED" },
+                        { value: "main", label: "Movies & episodes" },
+                        { value: "special", label: "Extras" },
+                        { value: "nc", label: "Bonus" },
                     ]}
                 />
             </div>
@@ -211,7 +212,7 @@ function AllFiles() {
                             </p>
                             {f.mediaId > 0 ? (
                                 <Link to={`/entry?id=${f.mediaId}`} className="text-xs text-brand-strong hover:underline">
-                                    {titles.get(f.mediaId) ?? `AniList #${f.mediaId}`}
+                                    {titles.get(f.mediaId) ?? mediaRef(f.mediaId)}
                                 </Link>
                             ) : (
                                 <span className="text-xs text-amber-300">Unmatched</span>
@@ -223,19 +224,11 @@ function AllFiles() {
                             </span>
                         )}
                         <select value={f.kind} onChange={e => patch(f, { kind: e.target.value })} className="h-8 rounded-lg border border-line bg-surface-2 px-2 text-xs">
-                            <option value="main">Episode</option>
-                            <option value="special">Special</option>
-                            <option value="nc">OP/ED</option>
+                            <option value="main">{isShow(f.mediaId) ? "Episode" : "Movie"}</option>
+                            <option value="special">Extra</option>
+                            <option value="nc">Bonus</option>
                         </select>
-                        <div className="flex items-center gap-1.5">
-                            <span className="text-xs text-subtle">Ep</span>
-                            <input
-                                type="number"
-                                defaultValue={f.episode}
-                                onBlur={e => Number(e.target.value) !== f.episode && patch(f, { episode: Number(e.target.value) })}
-                                className="h-8 w-16 rounded-lg border border-line bg-surface-2 px-2 text-xs"
-                            />
-                        </div>
+                        {isShow(f.mediaId) && <KeyInput value={f.episode} onChange={k => patch(f, { episode: k })} />}
                         {f.mediaId > 0 && (
                             <IconButton size="sm" label="Unmatch" onClick={() => unmatch(f)}>
                                 <Link2Off className="size-4" />
@@ -244,6 +237,24 @@ function AllFiles() {
                     </div>
                 ))}
             </div>
+        </div>
+    )
+}
+
+// A show's season and episode, saved as the episode key when either changes.
+function KeyInput({ value, onChange }: { value: number; onChange: (key: number) => void }) {
+    const [s, e] = splitKey(value)
+    const commit = (season: number, episode: number) => {
+        const key = episodeKey(Math.max(0, season), Math.max(0, episode))
+        if (key !== value) onChange(key)
+    }
+    const cls = "h-8 w-14 rounded-lg border border-line bg-surface-2 px-2 text-xs"
+    return (
+        <div key={value} className="flex items-center gap-1.5">
+            <span className="text-xs text-subtle">S</span>
+            <input type="number" min={0} defaultValue={s} aria-label="Season" onBlur={ev => commit(Number(ev.target.value), e)} className={cls} />
+            <span className="text-xs text-subtle">E</span>
+            <input type="number" min={0} defaultValue={e} aria-label="Episode" onBlur={ev => commit(s, Number(ev.target.value))} className={cls} />
         </div>
     )
 }

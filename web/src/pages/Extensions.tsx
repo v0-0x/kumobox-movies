@@ -2,7 +2,6 @@ import { useQueryClient } from "@tanstack/react-query"
 import {
     AlertTriangle,
     ArrowUpCircle,
-    BookOpen,
     CheckCircle2,
     Download,
     ExternalLink,
@@ -33,7 +32,6 @@ const TYPES: Record<string, { label: string; icon: React.ReactNode }> = {
     plugin: { label: "Plugin", icon: <Puzzle className="size-3.5" /> },
     "onlinestream-provider": { label: "Online streaming", icon: <Tv className="size-3.5" /> },
     "anime-torrent-provider": { label: "Torrent", icon: <Magnet className="size-3.5" /> },
-    "manga-provider": { label: "Manga", icon: <BookOpen className="size-3.5" /> },
     "custom-source": { label: "Custom source", icon: <Globe className="size-3.5" /> },
 }
 
@@ -46,8 +44,8 @@ export default function ExtensionsPage() {
         <div className="min-h-full px-6 pt-8 pb-24 md:px-8 xl:px-10">
             <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
                 <div>
-                    <h1 className="text-[1.75rem] font-semibold tracking-tight">Extensions</h1>
-                    <p className="mt-1 max-w-2xl text-muted">Streaming, torrent and manga providers plus plugins, from the extension marketplace.</p>
+                    <h1 className="text-[1.75rem] font-semibold tracking-tight">Providers & extensions</h1>
+                    <p className="mt-1 max-w-2xl text-muted">Streaming and torrent providers plus plugins, from the extension marketplace. Streaming sources (Internet Archive, Stremio addons, Nuvio repositories) are in Settings › Providers.</p>
                 </div>
                 <Button icon={<Link2 className="size-4" />} onClick={() => setManualOpen(true)}>
                     Install from URL
@@ -330,7 +328,7 @@ function GrantDialog({ open, onOpenChange, ext, onDone }: { open: boolean; onOpe
                     </div>
                 )}
                 <p className="text-xs text-subtle">
-                    KumoBox never gives plugins access to your files, terminal or local network. {scopes.includes("anilist-token") && "This plugin can read your AniList token to make requests on your behalf."}
+                    KumoBox never gives plugins access to your files, terminal or local network. {scopes.includes("anilist-token") && "This plugin asks for an account token KumoBox doesn't have: those features won't work."}
                 </p>
             </div>
         </Dialog>

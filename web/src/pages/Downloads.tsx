@@ -3,6 +3,7 @@ import { Link } from "react-router-dom"
 import { toast } from "@/lib/toast"
 import { Badge, Button, EmptyState, IconButton, Progress } from "@/components/ui"
 import { api } from "@/lib/api"
+import { formatKey, isShow } from "@/lib/ids"
 import { useDownloads, useStatus } from "@/lib/queries"
 import type { DownloadItem } from "@/lib/types"
 import { cn, img } from "@/lib/utils"
@@ -21,8 +22,8 @@ export default function DownloadsPage() {
                 <div>
                     <h1 className="text-[1.75rem] font-semibold tracking-tight">Downloads</h1>
                     <p className="mt-1 text-muted">
-                        Episodes downloaded with ani-cli or streaming extensions, saved to{" "}
-                        <span className="font-medium text-fg">{status?.settings.aniCli.downloadDir || status?.settings.library.dir || "your library"}</span>.
+                        Movies and episodes downloaded from streaming providers, saved to{" "}
+                        <span className="font-medium text-fg">{status?.settings.downloads?.dir || status?.settings.library.dir || "your library"}</span>.
                     </p>
                 </div>
                 {done.length > 0 && (
@@ -33,7 +34,7 @@ export default function DownloadsPage() {
             </div>
             {!isLoading && items.length === 0 && (
                 <EmptyState icon={<Download className="size-6" />} title="No downloads yet">
-                    Open an anime, go to <b>Watch online</b> and hit the download button on any episode.
+                    Open a movie or show, go to <b>Watch online</b> and hit the download button.
                 </EmptyState>
             )}
             {active.length > 0 && (
@@ -70,10 +71,10 @@ function Row({ item, onCancel, onRetry, onRemove }: { item: DownloadItem; onCanc
             </Link>
             <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                    <p className="truncate font-semibold">{item.animeTitle}</p>
-                    <Badge tone="brand">Ep {item.episode}</Badge>
-                    <Badge className="uppercase">{item.mode}</Badge>
-                    <Badge>{item.source === "anicli" ? "ani-cli" : item.provider}</Badge>
+                    <p className="truncate font-semibold">{item.title || item.animeTitle}</p>
+                    {isShow(item.mediaId) && item.episode > 0 && <Badge tone="brand">{formatKey(item.episode)}</Badge>}
+                    {item.mode === "dub" && <Badge>Dub</Badge>}
+                    {item.provider && <Badge>{item.provider}</Badge>}
                 </div>
                 <div className="mt-2 flex items-center gap-3">
                     {item.status === "downloading" || item.status === "resolving" ? <Loader2 className="size-4 animate-spin text-brand" /> : item.status === "completed" ? <CheckCircle2 className="size-4 text-emerald-400" /> : item.status === "failed" ? <XCircle className="size-4 text-rose-400" /> : null}
