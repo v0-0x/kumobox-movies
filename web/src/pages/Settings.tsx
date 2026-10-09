@@ -42,7 +42,7 @@ import type { Settings, SharingPeer, Status } from "@/lib/types"
 import { cn, copyText, formatBytes, HOME_SECTIONS, relativeTime } from "@/lib/utils"
 import { LetterboxdSection } from "./settings/Letterboxd"
 import { MetadataSection } from "./settings/Metadata"
-import { Collapsible, Detect, Group, LinesInput, Password, PathInput, Row, type SectionProps, Stack } from "./settings/parts"
+import { Collapsible, Detect, Group, LanOnly, LinesInput, Password, PathInput, Row, type SectionProps, Stack, useLan } from "./settings/parts"
 import { ProvidersSection, TorrentSourcesSection } from "./settings/Sources"
 
 type SectionId =
@@ -346,8 +346,8 @@ function AppSection({ draft, set }: SectionProps) {
                 </Row>
                 {draft.server.allowLan && <LanAddresses status={status} />}
                 {draft.server.allowLan && (
-                    <Stack label="Network password" help="Asked once per device on your network. This computer never needs it.">
-                        <Password value={draft.server.password} onChange={v => set("server", { password: v })} placeholder="Leave empty for no password" />
+                    <Stack label="Network password" help={lan ? "Set on the computer KumoBox runs on." : "Asked once per device on your network. This computer never needs it."}>
+                        <Password value={draft.server.password} disabled={lan} onChange={v => set("server", { password: v })} placeholder={lan ? "" : "Leave empty for no password"} />
                     </Stack>
                 )}
                 <Row label="Port" help="Restart-free: KumoBox moves to the new port when you save.">
@@ -715,29 +715,39 @@ function SharingGroup({ draft, set }: SectionProps) {
 
 function LibrarySection({ draft, set }: SectionProps) {
     const extra = draft.library.extraDirs ?? []
+    const lan = useLan()
     return (
         <>
             <Group title="Local library">
                 <Stack label="Library directory" help="Where your movies and shows are, e.g. Movie (2010)/Movie (2010).mkv or Show/Season 01/Show S01E02.mkv.">
-                    <PathInput value={draft.library.dir} onChange={v => set("library", { dir: v })} placeholder="/mnt/media/Movies" />
+                    <PathInput value={draft.library.dir} disabled={lan} onChange={v => set("library", { dir: v })} placeholder="/mnt/media/Movies" />
                 </Stack>
                 <Stack label="Additional library directories" help="Include additional directory paths if your library is spread across multiple locations.">
                     <div className="flex flex-col gap-2">
                         {extra.map((d, i) => (
                             <div key={i} className="flex items-center gap-2">
                                 <div className="flex-1">
-                                    <PathInput value={d} onChange={v => set("library", { extraDirs: extra.map((x, j) => (j === i ? v : x)) })} />
+                                    <PathInput value={d} disabled={lan} onChange={v => set("library", { extraDirs: extra.map((x, j) => (j === i ? v : x)) })} />
                                 </div>
-                                <button onClick={() => set("library", { extraDirs: extra.filter((_, j) => j !== i) })} className="grid size-10 place-items-center rounded-xl text-muted hover:bg-white/[0.06] hover:text-rose-300">
-                                    <X className="size-4" />
-                                </button>
+                                {!lan && (
+                                    <button
+                                        onClick={() => set("library", { extraDirs: extra.filter((_, j) => j !== i) })}
+                                        className="grid size-10 place-items-center rounded-xl text-muted hover:bg-white/[0.06] hover:text-rose-300"
+                                        aria-label="Remove directory"
+                                    >
+                                        <X className="size-4" />
+                                    </button>
+                                )}
                             </div>
                         ))}
-                        <button onClick={() => set("library", { extraDirs: [...extra, ""] })} className="grid size-9 place-items-center rounded-full bg-white/[0.07] text-fg hover:bg-white/[0.12]" aria-label="Add directory">
-                            <Plus className="size-4" />
-                        </button>
+                        {!lan && (
+                            <button onClick={() => set("library", { extraDirs: [...extra, ""] })} className="grid size-9 place-items-center rounded-full bg-white/[0.07] text-fg hover:bg-white/[0.12]" aria-label="Add directory">
+                                <Plus className="size-4" />
+                            </button>
+                        )}
                     </div>
                 </Stack>
+                {lan && <LanOnly />}
             </Group>
             <Group title="Scanning">
                 <Row label="Automatically refresh library" help="Watch the folders and pick up new or removed files on their own">
@@ -859,6 +869,7 @@ function PlaybackSection({ draft, set }: SectionProps) {
 
 function MpvSection({ draft, set }: SectionProps) {
     const { data: status } = useStatus()
+    const lan = status?.client === "lan"
     return (
         <Group title="mpv">
             <Row label="Status">
@@ -868,11 +879,12 @@ function MpvSection({ draft, set }: SectionProps) {
                 label="Executable"
                 help={`Name or full path, e.g. mpv or ${exampleMpvPath(status?.platform)} (install with: ${installHint(status?.platform, "mpv")})`}
             >
-                <Input value={draft.mpv.path} onChange={e => set("mpv", { path: e.target.value })} icon={<Terminal className="size-4" />} />
+                <Input value={draft.mpv.path} disabled={lan} onChange={e => set("mpv", { path: e.target.value })} icon={<Terminal className="size-4" />} />
             </Stack>
             <Stack label="Extra arguments" help="Passed to every mpv launch, e.g. --profile=gpu-hq --hwdec=auto">
-                <Input value={draft.mpv.extraArgs} onChange={e => set("mpv", { extraArgs: e.target.value })} />
+                <Input value={draft.mpv.extraArgs} disabled={lan} onChange={e => set("mpv", { extraArgs: e.target.value })} />
             </Stack>
+            {lan && <LanOnly />}
             <Row label="Start in fullscreen">
                 <Switch checked={draft.mpv.fullscreen} onChange={v => set("mpv", { fullscreen: v })} />
             </Row>
@@ -882,6 +894,7 @@ function MpvSection({ draft, set }: SectionProps) {
 
 function TranscodeSection({ draft, set }: SectionProps) {
     const { data: status } = useStatus()
+    const lan = status?.client === "lan"
     const t = draft.transcode
     return (
         <>
@@ -919,7 +932,7 @@ function TranscodeSection({ draft, set }: SectionProps) {
                 </Row>
                 {t.hwAccel === "vaapi" && (
                     <Stack label="VA-API device">
-                        <Input value={t.vaapiNode} onChange={e => set("transcode", { vaapiNode: e.target.value })} />
+                        <Input value={t.vaapiNode} disabled={lan} onChange={e => set("transcode", { vaapiNode: e.target.value })} />
                     </Stack>
                 )}
                 <Row label="x264 preset" help="Faster presets use less CPU">
@@ -928,61 +941,66 @@ function TranscodeSection({ draft, set }: SectionProps) {
             </Group>
             <Group title="Paths">
                 <Stack label="ffmpeg">
-                    <Input value={t.ffmpegPath} onChange={e => set("transcode", { ffmpegPath: e.target.value })} />
+                    <Input value={t.ffmpegPath} disabled={lan} onChange={e => set("transcode", { ffmpegPath: e.target.value })} />
                 </Stack>
                 <Stack label="ffprobe">
-                    <Input value={t.ffprobePath} onChange={e => set("transcode", { ffprobePath: e.target.value })} />
+                    <Input value={t.ffprobePath} disabled={lan} onChange={e => set("transcode", { ffprobePath: e.target.value })} />
                 </Stack>
+                {lan && <LanOnly />}
             </Group>
         </>
     )
 }
 
-function ClientFields({ value, onChange, showTags }: { value: Settings["qbittorrent"]; onChange: (v: Partial<Settings["qbittorrent"]>) => void; showTags?: boolean }) {
+// disabled: on a device of the network, which may not change the logins
+// (it doesn't see the passwords) nor where the client is.
+function ClientFields({ value, onChange, showTags, disabled }: { value: Settings["qbittorrent"]; onChange: (v: Partial<Settings["qbittorrent"]>) => void; showTags?: boolean; disabled?: boolean }) {
     return (
         <div className="flex flex-col gap-4 p-4">
+            {disabled && <p className="text-xs text-amber-200/80">Changed on the computer KumoBox runs on.</p>}
             <label className="flex flex-col gap-1.5">
                 <span className="text-sm font-medium">Host</span>
-                <Input value={value.host} onChange={e => onChange({ host: e.target.value })} />
+                <Input value={value.host} disabled={disabled} onChange={e => onChange({ host: e.target.value })} />
             </label>
             <div className="grid gap-4 md:grid-cols-3">
                 <label className="flex flex-col gap-1.5">
                     <span className="text-sm font-medium">Username</span>
-                    <Input value={value.username} onChange={e => onChange({ username: e.target.value })} />
+                    <Input value={value.username} disabled={disabled} onChange={e => onChange({ username: e.target.value })} />
                 </label>
                 <label className="flex flex-col gap-1.5">
                     <span className="text-sm font-medium">Password</span>
-                    <Password value={value.password} onChange={v => onChange({ password: v })} />
+                    <Password value={value.password} disabled={disabled} onChange={v => onChange({ password: v })} />
                 </label>
                 <label className="flex flex-col gap-1.5">
                     <span className="text-sm font-medium">Port</span>
-                    <Input type="number" value={value.port} onChange={e => onChange({ port: Number(e.target.value) })} />
+                    <Input type="number" value={value.port} disabled={disabled} onChange={e => onChange({ port: Number(e.target.value) })} />
                 </label>
             </div>
             <label className="flex flex-col gap-1.5">
                 <span className="text-sm font-medium">Executable</span>
-                <Input value={value.executable} onChange={e => onChange({ executable: e.target.value })} placeholder="/usr/bin/qbittorrent" />
+                <Input value={value.executable} disabled={disabled} onChange={e => onChange({ executable: e.target.value })} placeholder="/usr/bin/qbittorrent" />
             </label>
             <label className="flex flex-col gap-1.5">
                 <span className="text-sm font-medium">Tags</span>
-                <Input value={value.tags} onChange={e => onChange({ tags: e.target.value })} />
+                <Input value={value.tags} disabled={disabled} onChange={e => onChange({ tags: e.target.value })} />
                 <span className="text-xs text-subtle">Comma separated tags to apply to downloaded torrents. e.g. kumobox,movies</span>
             </label>
             {showTags && (
                 <label className="flex flex-col gap-1.5">
                     <span className="text-sm font-medium">Category</span>
-                    <Input value={value.category} onChange={e => onChange({ category: e.target.value })} />
+                    <Input value={value.category} disabled={disabled} onChange={e => onChange({ category: e.target.value })} />
                     <span className="text-xs text-subtle">Category to apply to downloaded torrents.</span>
                 </label>
             )}
             <label className="flex items-center gap-3 text-sm">
-                <Switch checked={value.useHttps} onChange={v => onChange({ useHttps: v })} /> Use HTTPS
+                <Switch checked={value.useHttps} disabled={disabled} onChange={v => onChange({ useHttps: v })} /> Use HTTPS
             </label>
         </div>
     )
 }
 
 function TorrentClientSection({ draft, set }: SectionProps) {
+    const lan = useLan()
     const [open, setOpen] = useState<string>(draft.torrent.defaultClient === "transmission" ? "transmission" : "qbittorrent")
     const [testing, setTesting] = useState(false)
     const save = useSaveSettings()
@@ -1020,7 +1038,7 @@ function TorrentClientSection({ draft, set }: SectionProps) {
                             </span>
                             <ChevronDown className={cn("size-5 text-muted transition-transform", open === c && "rotate-180")} />
                         </button>
-                        {open === c && <ClientFields value={draft[c]} onChange={v => set(c, v)} showTags={c === "qbittorrent"} />}
+                        {open === c && <ClientFields value={draft[c]} onChange={v => set(c, v)} showTags={c === "qbittorrent"} disabled={lan} />}
                     </div>
                 ))}
             </div>

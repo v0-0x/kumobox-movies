@@ -2,7 +2,7 @@
 // mark as an intro, a recap, the end credits or a preview of the next
 // episode (server/internal/player/chapters.go). Intros and recaps follow
 // Settings › Playback "Skip intros and recaps", credits and previews "Skip
-// end credits". AniSkip's older names (op, ed...) count too.
+// end credits". Kumo's older names (op, ed...) count too.
 import type { Settings, SkipInterval } from "./types"
 
 const CREDITS = ["credits", "preview", "outro", "ed", "mixed-ed"]

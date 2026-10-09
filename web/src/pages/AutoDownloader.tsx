@@ -6,8 +6,8 @@ import { toast } from "@/lib/toast"
 import { MediaPicker } from "@/components/MediaPicker"
 import { Badge, Button, Dialog, EmptyState, Field, IconButton, Input, Select, Switch } from "@/components/ui"
 import { api } from "@/lib/api"
-import { formatKey, mediaIsShow, seasonEpisodeCount, splitKey } from "@/lib/ids"
-import { useAutoItems, useAutoRules, useCollection, useRuleWanted, useSaveSettings, useStatus } from "@/lib/queries"
+import { formatKey, mediaIsShow, mediaRef, seasonEpisodeCount, splitKey } from "@/lib/ids"
+import { fetchEntry, useAutoItems, useAutoRules, useCollection, useRuleWanted, useSaveSettings, useStatus } from "@/lib/queries"
 import type { AutoItem, AutoRule, AutoRunReport, Media } from "@/lib/types"
 import { cn, cover, entryUrl, relativeTime, title } from "@/lib/utils"
 import { PathInput } from "./settings/parts"
@@ -48,12 +48,13 @@ function useListShows() {
     }, [data])
 }
 
-// A show by id: from the list, else its page.
+// A show by id: from the list, else its page (the title page's own query,
+// which this shares).
 function useShow(id: number, list: Media[]) {
     const inList = list.find(m => m.id === id)
     const { data } = useQuery({
         queryKey: ["entry", id],
-        queryFn: () => api.get<{ media: Media }>(`/api/media/${id}`),
+        queryFn: () => fetchEntry(id),
         enabled: id > 0 && !inList,
         staleTime: 3600_000,
         retry: false,
@@ -214,7 +215,7 @@ function RuleCard({ rule, shows, onEdit }: { rule: AutoRule; shows: Media[]; onE
             toast.error(e.message)
         }
     }
-    const name = media ? title(media) : rule.title || `Show ${rule.mediaId}`
+    const name = media ? title(media) : rule.title || mediaRef(rule.mediaId)
     return (
         <div className={cn("card flex gap-4 p-3 pr-4", !rule.enabled && "opacity-70")}>
             <Link to={entryUrl({ id: rule.mediaId })} className="shrink-0">
@@ -295,7 +296,7 @@ function History({ items, titles }: { items: AutoItem[]; titles: Map<number, str
                         <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                                 <Link to={entryUrl({ id: it.mediaId })} className="truncate font-medium hover:underline">
-                                    {titles.get(it.mediaId) ?? `Show ${it.mediaId}`}
+                                    {titles.get(it.mediaId) ?? mediaRef(it.mediaId)}
                                 </Link>
                                 <Badge tone={it.pack ? "blue" : "brand"}>{it.pack ? `Season ${splitKey(it.episode)[0]} pack` : formatKey(it.episode)}</Badge>
                             </div>
@@ -350,7 +351,7 @@ function RuleDialog({ rule, shows, canPickFolder, onClose }: { rule: AutoRule; s
     const media = picked?.id === r.mediaId ? picked : listed
     const options = useMemo(() => {
         const out = shows.map(m => ({ value: String(m.id), label: title(m) }))
-        if (r.mediaId && !out.some(o => o.value === String(r.mediaId))) out.unshift({ value: String(r.mediaId), label: media ? title(media) : r.title || `Show ${r.mediaId}` })
+        if (r.mediaId && !out.some(o => o.value === String(r.mediaId))) out.unshift({ value: String(r.mediaId), label: media ? title(media) : r.title || mediaRef(r.mediaId) })
         return [{ value: "0", label: shows.length ? "Choose a show…" : "No shows on your list yet" }, ...out]
     }, [shows, r.mediaId, r.title, media])
     const seasons = (media?.seasons ?? []).filter(s => s.seasonNumber > 0).sort((a, b) => a.seasonNumber - b.seasonNumber)

@@ -162,7 +162,8 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
                     <div className="min-w-0 flex-1">
                         <h3 className="text-lg font-semibold tracking-tight">{detail?.name || seasonName(current)}</h3>
                         <p className="mt-0.5 text-[13px] text-subtle">
-                            {[current.airDate ? new Date(current.airDate).getFullYear() : "", plural(current.episodeCount || rows.length, "episode"), season > 0 && rows.length ? `${watchedHere} watched` : ""]
+                            {/* The year as written: a date parsed as UTC can be the year before in the Americas. */}
+                            {[current.airDate?.slice(0, 4) ?? "", plural(current.episodeCount || rows.length, "episode"), season > 0 && rows.length ? `${watchedHere} watched` : ""]
                                 .filter(Boolean)
                                 .join(" · ")}
                         </p>
@@ -213,7 +214,8 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
                                     actions={
                                         r.aired && (
                                             <div className="flex gap-1">
-                                                <WatchedToggle watched={r.watched} disabled={marker.pending} onToggle={() => marker.mark(r.key, !r.watched)} />
+                                                {/* The list's progress leaves specials out: they can't be marked. */}
+                                                {season > 0 && <WatchedToggle watched={r.watched} disabled={marker.pending} onToggle={() => marker.mark(r.key, !r.watched)} />}
                                                 <Dropdown>
                                                     <DropdownTrigger asChild>
                                                         <button onClick={ev => ev.stopPropagation()} className="grid size-7 place-items-center rounded-md bg-black/70 text-white transition-colors hover:bg-black/85" aria-label="More">
@@ -290,12 +292,14 @@ function Extras({ entry, extras }: { entry: EntryView; extras: EpisodeView[] }) 
             <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-x-5 gap-y-6">
                 {extras.map(x => (
                     <EpisodeCard
-                        key={x.file!.path}
+                        // A file holding two specials is listed for each.
+                        key={`${x.file!.path}#${episodeKeyOf(x)}`}
                         image={x.image || banner(media) || cover(media)}
                         title={x.title || x.file!.name}
                         subtitle={extraLabel(x)}
                         hasFile
-                        onClick={() => playLocal(x.file!.path, media.id, 0)}
+                        // A numbered special plays as itself (its resume position).
+                        onClick={() => playLocal(x.file!.path, media.id, x.kind === "special" ? episodeKeyOf(x) : 0)}
                     />
                 ))}
             </div>

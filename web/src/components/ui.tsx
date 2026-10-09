@@ -368,7 +368,9 @@ export function Dialog({
                         "fixed top-1/2 left-1/2 z-50 flex max-h-[88vh] w-[min(92vw,560px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-line-strong bg-surface-1 shadow-2xl shadow-black/50 outline-none [animation:pop-in_0.16s_var(--ease)_both]",
                         className,
                     )}
-                    aria-describedby={undefined}
+                    // Without a description there is nothing to describe the
+                    // dialog with (and Radix would warn); with one, Radix links it.
+                    {...(description ? {} : { "aria-describedby": undefined })}
                 >
                     {(title || description) && (
                         <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-3">
@@ -376,7 +378,7 @@ export function Dialog({
                                 {title && <DialogPrimitive.Title className="text-base font-semibold">{title}</DialogPrimitive.Title>}
                                 {description && <DialogPrimitive.Description className="mt-0.5 text-sm text-muted">{description}</DialogPrimitive.Description>}
                             </div>
-                            <DialogPrimitive.Close className="focus-ring -mt-1 -mr-2 grid size-8 place-items-center rounded-md text-muted transition-colors hover:bg-white/[0.06] hover:text-fg">
+                            <DialogPrimitive.Close aria-label="Close" className="focus-ring -mt-1 -mr-2 grid size-8 place-items-center rounded-md text-muted transition-colors hover:bg-white/[0.06] hover:text-fg">
                                 <X className="size-4" />
                             </DialogPrimitive.Close>
                         </div>

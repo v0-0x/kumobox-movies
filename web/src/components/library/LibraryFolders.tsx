@@ -289,7 +289,7 @@ function FolderRow({
                             {f.matches.map(m => (
                                 <Link key={m.mediaId} to={`/entry?id=${m.mediaId}`}>
                                     <Badge tone="blue">
-                                        {title(media.get(m.mediaId)) || `#${m.mediaId}`} · {m.count}
+                                        {title(media.get(m.mediaId)) || mediaRef(m.mediaId)} · {m.count}
                                     </Badge>
                                 </Link>
                             ))}
@@ -371,7 +371,7 @@ function FolderRow({
                                 <span className="min-w-0 flex-1 truncate text-fg/85" title={x.path}>
                                     {x.name}
                                 </span>
-                                <span className="hidden max-w-56 truncate text-xs text-subtle sm:inline">{x.mediaId > 0 ? title(m) || `#${x.mediaId}` : "Unmatched"}</span>
+                                <span className="hidden max-w-56 truncate text-xs text-subtle sm:inline">{x.mediaId > 0 ? title(m) || mediaRef(x.mediaId) : "Unmatched"}</span>
                                 <Tooltip content={x.locked ? "Matched by hand — scans keep it" : "Matched automatically"}>
                                     <span className="w-24 shrink-0 text-right text-xs font-semibold tabular-nums">{x.mediaId > 0 ? fileLabel(x) : "—"}</span>
                                 </Tooltip>
@@ -484,7 +484,7 @@ export function FolderPicker({ target, onPicked }: { target: Media; onPicked: (f
                                         ? (f.problem ?? "Nothing in it can be played")
                                         : f.files.length === 0
                                           ? `${plural(f.notIndexed, "video")} · not scanned yet`
-                                          : `${plural(f.files.length, "file")} · ${f.matches.length === 0 ? "unmatched" : f.matches.map(m => title(media.get(m.mediaId)) || `#${m.mediaId}`).join(", ")}`}
+                                          : `${plural(f.files.length, "file")} · ${f.matches.length === 0 ? "unmatched" : f.matches.map(m => title(media.get(m.mediaId)) || mediaRef(m.mediaId)).join(", ")}`}
                                 </span>
                             </span>
                             {ok && f.files.length > 0 && f.notIndexed > 0 && <Badge tone="blue">{f.notIndexed} new</Badge>}

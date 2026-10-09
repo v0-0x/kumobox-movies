@@ -45,7 +45,7 @@ type Item struct {
 	ID        string            `json:"id"`
 	MediaID   int               `json:"mediaId"`
 	Episode   int               `json:"episode"`
-	Title     string            `json:"title"` // the movie's ("Title (Year)") or the show's
+	Title     string            `json:"title"`
 	Image     string            `json:"image"`
 	Mode      string            `json:"mode"`   // sub | dub
 	Source    string            `json:"source"` // stream (a provider), or a resolver's name
@@ -176,7 +176,7 @@ func (m *Manager) load() {
 			continue
 		}
 		if it.Title == "" {
-			// Saved by an older version, which called it animeTitle.
+			// Saved by an earlier build, under Kumo's name for it.
 			var old struct {
 				Title string `json:"animeTitle"`
 			}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
@@ -230,7 +231,7 @@ func Defaults() Settings {
 			AutoRefresh:      true,
 			RefreshOnStartup: true,
 			MatchThreshold:   0.5,
-			IgnorePatterns:   []string{"*sample*", "*.part", "*NCOP*", "*NCED*"},
+			IgnorePatterns:   defaultIgnorePatterns(),
 			MatchOutsideList: true,
 		},
 		Playback: PlaybackSettings{
@@ -360,16 +361,40 @@ func (s *Store) OnChange(fn func(old, new Settings)) {
 	s.mu.Unlock()
 }
 
+// defaultIgnorePatterns are the names the library scanner skips at first:
+// samples, unfinished downloads, and the folders NAS boxes (Synology's
+// thumbnails and recycle bin) and Windows (a drive's recycle bin) keep
+// copies of videos in. Trailers and other extras are kept: the release
+// parser tells them from the movie.
+func defaultIgnorePatterns() []string {
+	return []string{"*sample*", "*.part", "@eaDir", "#recycle", "$RECYCLE.BIN"}
+}
+
 // schemaVersion is the current settings version; add a step to migrate when
 // changing a default that existing installs should pick up too.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // migrate updates settings saved by an older version, and reports whether
-// it changed them. KumoBox starts at version 1: there is nothing to migrate
-// yet.
+// it changed them.
 func migrate(s *Settings) bool {
 	if s.SchemaVersion >= schemaVersion {
 		return false
+	}
+	if s.SchemaVersion < 2 {
+		// Version 2 drops Kumo's anime ignore patterns ("*NCED*" also hid
+		// "Silenced" and "Enhanced" editions) and adds the new defaults.
+		var kept []string
+		for _, p := range s.Library.IgnorePatterns {
+			if !strings.EqualFold(p, "*NCOP*") && !strings.EqualFold(p, "*NCED*") {
+				kept = append(kept, p)
+			}
+		}
+		for _, p := range defaultIgnorePatterns() {
+			if !slices.ContainsFunc(kept, func(k string) bool { return strings.EqualFold(k, p) }) {
+				kept = append(kept, p)
+			}
+		}
+		s.Library.IgnorePatterns = kept
 	}
 	s.SchemaVersion = schemaVersion
 	return true

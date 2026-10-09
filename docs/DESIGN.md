@@ -145,7 +145,10 @@ becomes Watched (played to the end, marked watched, or put on the Watched
 list: `App.UpdateEntry`) is logged in the diary once a day
 (`app/letterboxd.go`), and a rating given afterwards goes to that entry
 while it isn't on Letterboxd yet; shows aren't logged, nor what another
-KumoBox on the account finished. Events: `letterboxd-status` (with the
+KumoBox on the account finished. A diary entry Letterboxd has (imported,
+or sent) that the user deletes is remembered (`diary_deleted`): syncing
+doesn't import it again, by its id or as the same film the same day.
+Events: `letterboxd-status` (with the
 status), `diary-updated`, `collection-updated`.
 
 ## Conventions

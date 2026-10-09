@@ -408,10 +408,15 @@ func (p *Platform) Season(ctx context.Context, id, season int) (*SeasonDetail, e
 // ---------------------------------------------------------------------------
 
 // ResetCache forgets the TMDB data saved, but the list's own copies: titles
-// are then fetched again, e.g. in another language.
+// are then fetched again, e.g. in another language. The list's copies are
+// kept (the list shows at once, also offline) but due again, finished
+// titles too, which would otherwise wait a month.
 func (p *Platform) ResetCache() {
 	for _, prefix := range []string{"media:", "media-lite:", "season:", "search:", "schedule:", "discover", "tmdb-"} {
 		p.db.DeleteCachePrefix(prefix)
 	}
 	p.client.forgetGenres()
+	if _, err := p.db.Write(`UPDATE local_list SET media_updated = 0`); err == nil {
+		p.invalidate()
+	}
 }

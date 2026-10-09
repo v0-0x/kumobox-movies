@@ -114,7 +114,7 @@ func TestLibrarySharing(t *testing.T) {
 	}
 
 	// Watching on the guest is the guest's: its history (and its list,
-	// AniList or local), never the host's.
+	// Letterboxd or not), never the host's.
 	if w := do(guest, "POST", "/api/playback/progress", local, `{"mediaId":21,"episode":1,"position":300,"duration":1420,"source":"local"}`, nil); w.Code != http.StatusOK {
 		t.Fatalf("progress: %d %s", w.Code, w.Body)
 	}
@@ -260,7 +260,7 @@ func TestSharingSettingsOnlyFromThisComputer(t *testing.T) {
 	}
 }
 
-// Two KumoBoxes on the same AniList account keep their watch history in step:
+// Two KumoBoxes on the same Letterboxd account keep their watch history in step:
 // where an episode was stopped on one, it goes on on the other. Not with
 // another account, nor with a KumoBox that doesn't share with this one.
 func TestHistoryFollowsTheAccount(t *testing.T) {
@@ -307,7 +307,7 @@ func TestHistoryFollowsTheAccount(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Another AniList account on the guest: newer positions stay home.
+	// Another Letterboxd account on the guest: newer positions stay home.
 	user(guest, 43)
 	if err := host.app.History.Save(history.Entry{MediaID: 21, Episode: 4, Position: 300, Duration: 1420, Source: "local"}); err != nil {
 		t.Fatal(err)
@@ -317,13 +317,13 @@ func TestHistoryFollowsTheAccount(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 	if e := guest.app.History.Get(21, 4); e != nil {
-		t.Errorf("history went to another AniList account: %+v", e)
+		t.Errorf("history went to another Letterboxd account: %+v", e)
 	}
 	if err := guest.app.History.Save(history.Entry{MediaID: 21, Episode: 6, Position: 200, Duration: 1420, Source: "local"}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(3 * time.Second)
 	if e := host.app.History.Get(21, 6); e != nil {
-		t.Errorf("a position went to another AniList account: %+v", e)
+		t.Errorf("a position went to another Letterboxd account: %+v", e)
 	}
 }

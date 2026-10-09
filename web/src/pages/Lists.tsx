@@ -107,6 +107,7 @@ export default function ListsPage() {
                     <Tooltip content={liked ? "Show everything" : "Only what you liked"}>
                         <button
                             onClick={() => setLiked(l => !l)}
+                            aria-label="Only what you liked"
                             aria-pressed={liked}
                             className={cn("grid size-9 place-items-center rounded-lg border border-line transition-colors", liked ? "bg-[#ff8000]/15 text-[#ff8000]" : "text-muted hover:text-fg")}
                         >

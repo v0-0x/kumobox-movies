@@ -230,7 +230,8 @@ function AllFiles() {
                             {isShow(f.mediaId) && <option value="special">Special</option>}
                             <option value="extra">Extra</option>
                         </select>
-                        {isShow(f.mediaId) && <KeyInput value={f.episode} onChange={k => patch(f, { episode: k })} />}
+                        {/* An extra is no episode (a number would change nothing): its kind first. */}
+                        {isShow(f.mediaId) && f.kind !== "extra" && <KeyInput value={f.episode} onChange={k => patch(f, { episode: k })} />}
                         {f.mediaId > 0 && (
                             <IconButton size="sm" label="Unmatch" onClick={() => unmatch(f)}>
                                 <Link2Off className="size-4" />

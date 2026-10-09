@@ -48,16 +48,35 @@ export function Stack({ label, help, children }: { label: React.ReactNode; help?
     )
 }
 
-export function Password({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+export function Password({ value, onChange, placeholder, disabled }: { value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean }) {
     const [show, setShow] = useState(false)
     return (
         <div className="relative">
-            <Input type={show ? "text" : "password"} value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)} className="pr-10" />
-            <button type="button" onClick={() => setShow(s => !s)} className="absolute top-1/2 right-3 -translate-y-1/2 text-subtle hover:text-fg">
+            <Input type={show ? "text" : "password"} value={value} placeholder={placeholder} disabled={disabled} onChange={e => onChange(e.target.value)} className="pr-10" />
+            <button
+                type="button"
+                onClick={() => setShow(s => !s)}
+                aria-label={show ? "Hide" : "Show"}
+                className="absolute top-1/2 right-3 -translate-y-1/2 text-subtle hover:text-fg"
+            >
                 {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
             </button>
         </div>
     )
+}
+
+// Whether this page is open on another device of the network: settings
+// about this computer's programs, folders, accounts and network are kept as
+// they are when it saves (the server's saveSettings), so their fields are
+// disabled.
+export function useLan() {
+    const { data: status } = useStatus()
+    return status?.client === "lan"
+}
+
+// Said under those fields on a device of the network.
+export function LanOnly() {
+    return <p className="px-4 py-3 text-xs text-amber-200/80">Changed on the computer KumoBox runs on.</p>
 }
 
 export function Collapsible({ title, children }: { title: string; children: React.ReactNode }) {
@@ -133,16 +152,16 @@ export function DirPicker({ open, onOpenChange, onPick, start }: { open: boolean
     )
 }
 
-export function PathInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+export function PathInput({ value, onChange, placeholder, disabled }: { value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean }) {
     const [open, setOpen] = useState(false)
     const { data: status } = useStatus()
     return (
         <div className="flex items-center gap-2">
             <div className="relative flex-1">
-                <Input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} icon={<Folder className="size-4 text-amber-300" />} />
+                <Input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} disabled={disabled} icon={<Folder className="size-4 text-amber-300" />} />
                 {value && <Check className="absolute top-1/2 right-3 size-4 -translate-y-1/2 text-emerald-400" />}
             </div>
-            {status?.client !== "lan" && (
+            {status?.client !== "lan" && !disabled && (
                 <button onClick={() => setOpen(true)} className="grid size-10 place-items-center rounded-xl text-muted hover:bg-white/[0.06] hover:text-fg" aria-label="Browse">
                     <FolderOpen className="size-5" />
                 </button>

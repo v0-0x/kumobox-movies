@@ -115,6 +115,13 @@ func TestMediaRoutes(t *testing.T) {
 	if w := do(s, "GET", "/api/media/155/season/1", local, "", nil); w.Code != http.StatusBadRequest {
 		t.Errorf("a movie's season: %d", w.Code)
 	}
+	// What TMDB doesn't have is a 404 (the UI doesn't ask again), not a
+	// server error.
+	for _, path := range []string{"/api/media/999999", "/api/media/" + strconv.Itoa(show) + "/season/9"} {
+		if w := do(s, "GET", path, local, "", nil); w.Code != http.StatusNotFound {
+			t.Errorf("%s: %d %s, want 404", path, w.Code, w.Body.String())
+		}
+	}
 
 	var genres []string
 	decodeBody(t, do(s, "GET", "/api/catalog/genres", local, "", nil), &genres)
@@ -173,6 +180,18 @@ func TestMediaRoutes(t *testing.T) {
 	}
 	if w := do(s, "GET", "/api/providers", local, "", nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"archive"`) {
 		t.Errorf("providers: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A title or season TMDB doesn't have is a 404 (which the UI doesn't ask
+// for again), with TMDB's reason.
+func TestNotOnTMDB(t *testing.T) {
+	s := newCatalogServer(t)
+	local := "127.0.0.1:5000"
+	for _, path := range []string{"/api/media/99999999", "/api/media/" + strconv.Itoa(catalog.ShowID(1396)) + "/season/42"} {
+		if w := do(s, "GET", path, local, "", nil); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "TMDB") {
+			t.Errorf("%s: %d %s", path, w.Code, w.Body.String())
+		}
 	}
 }
 

@@ -56,6 +56,35 @@ func TestLocalUpdateKeepsOtherFields(t *testing.T) {
 	}
 }
 
+// A movie put on the Watched list is watched: its progress is 1 (unless
+// the update says otherwise), so it can be marked unwatched again.
+func TestWatchedMovieHasProgress(t *testing.T) {
+	p := newTestPlatform(t, nil)
+	ctx := context.Background()
+	m, show := testMovie(1), testShow(2, "FINISHED", 8)
+	p.db.SetCache(liteKey(m.ID), m, time.Hour)
+	p.db.SetCache(liteKey(show.ID), show, time.Hour)
+	if err := p.UpdateEntry(ctx, EntryUpdate{MediaID: m.ID, Status: ptr("COMPLETED"), Score: ptr(70.0)}); err != nil {
+		t.Fatal(err)
+	}
+	if r := readLocal(t, p, m.ID); r.Status != "COMPLETED" || r.Progress != MovieEpisode || r.Score != 70 {
+		t.Fatalf("watched movie: %+v", r)
+	}
+	if err := p.UpdateEntry(ctx, EntryUpdate{MediaID: m.ID, Status: ptr("PLANNING"), Progress: ptr(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if r := readLocal(t, p, m.ID); r.Status != "PLANNING" || r.Progress != 0 {
+		t.Fatalf("back on the watchlist: %+v", r)
+	}
+	// A show's progress is the caller's to say.
+	if err := p.UpdateEntry(ctx, EntryUpdate{MediaID: show.ID, Status: ptr("COMPLETED")}); err != nil {
+		t.Fatal(err)
+	}
+	if r := readLocal(t, p, show.ID); r.Progress != 0 {
+		t.Fatalf("show: %+v", r)
+	}
+}
+
 // The list comes whole, or by type, one list per status with the
 // UI's names, the latest changes first.
 func TestCollectionTypes(t *testing.T) {
@@ -352,6 +381,36 @@ func TestRefreshListMedia(t *testing.T) {
 	before := f.total()
 	if _, err := p.CollectionWithin(ctx, "", 10*time.Minute); err != nil || f.total() != before {
 		t.Errorf("fetched again: %v, %d requests", err, f.total()-before)
+	}
+}
+
+// After the metadata language (or region) changed, the list's copies are
+// due again, also those of titles that don't change any more: until then
+// they're kept, for the list to show at once and offline.
+func TestResetCacheRefreshesTheList(t *testing.T) {
+	f := newFakeTMDB(t, nil)
+	p := newTestPlatform(t, f)
+	ctx := context.Background()
+	movie := testMovie(155)
+	addLocal(t, p, movie, "COMPLETED", 1)
+	if _, err := p.db.Write(`UPDATE local_list SET media_updated = ?`, time.Now().Add(-time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	p.invalidate()
+
+	p.ResetCache()
+	if e := p.listEntry(movie.ID); e == nil || e.Media == nil || e.Media.Title.English != "Movie 155" {
+		t.Fatalf("the list's copy is gone: %+v", e)
+	}
+	c, err := p.CollectionWithin(ctx, "", 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.count("/movie/155") != 1 {
+		t.Fatalf("fetched %d times", f.count("/movie/155"))
+	}
+	if e := c.Find(movie.ID); e == nil || e.Media.Title.English != "The Dark Knight" {
+		t.Errorf("not refreshed: %+v", e)
 	}
 }
 

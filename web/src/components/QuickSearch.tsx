@@ -47,6 +47,8 @@ export function QuickSearch() {
         setQ("")
         navigate(to)
     }
+    // The Search page, for the words typed and the kind picked.
+    const advanced = () => `/search?q=${encodeURIComponent(q.trim())}${type ? `&type=${type}` : ""}`
 
     return (
         <DialogPrimitive.Root open={open} onOpenChange={v => searchOpenStore.set(v)}>
@@ -73,7 +75,7 @@ export function QuickSearch() {
                                     setSel(s => Math.max(0, s - 1))
                                 } else if (e.key === "Enter") {
                                     if (results[sel]) go(entryUrl(results[sel]))
-                                    else if (q.trim()) go(`/search?q=${encodeURIComponent(q)}`)
+                                    else if (q.trim()) go(advanced())
                                 }
                             }}
                             placeholder={type === "MOVIE" ? "Search movies…" : type === "TV" ? "Search TV shows…" : "Search movies and TV shows…"}
@@ -115,7 +117,7 @@ export function QuickSearch() {
                         )}
                     </div>
                     {q.trim() && (
-                        <button onClick={() => go(`/search?q=${encodeURIComponent(q)}${type ? `&type=${type}` : ""}`)} className="flex w-full items-center justify-between border-t border-line px-5 py-3 text-sm text-muted hover:bg-white/[0.04] hover:text-fg">
+                        <button onClick={() => go(advanced())} className="flex w-full items-center justify-between border-t border-line px-5 py-3 text-sm text-muted hover:bg-white/[0.04] hover:text-fg">
                             Advanced search for “{q}” <ArrowRight className="size-4" />
                         </button>
                     )}

@@ -348,10 +348,15 @@ func (p *Platform) refreshListMedia(ctx context.Context, maxAge time.Duration, l
 // Changing the list
 
 // UpdateEntry creates or updates a list entry. Fields the update leaves out
-// keep their value (a new entry starts on the watchlist).
+// keep their value (a new entry starts on the watchlist), but for a movie
+// put on the Watched list: it's watched, its progress is 1.
 func (p *Platform) UpdateEntry(ctx context.Context, u EntryUpdate) error {
 	if u.Status != nil && listNames[*u.Status] == "" {
 		return errors.New("invalid list status " + *u.Status)
+	}
+	if u.Status != nil && *u.Status == "COMPLETED" && u.Progress == nil && IsMovie(u.MediaID) {
+		one := MovieEpisode
+		u.Progress = &one
 	}
 	media, err := p.MediaLite(ctx, u.MediaID)
 	if err != nil {

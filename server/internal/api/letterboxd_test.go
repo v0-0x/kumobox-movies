@@ -194,6 +194,26 @@ func TestLetterboxdConnect(t *testing.T) {
 	}
 }
 
+// A diary entry read from the feed and deleted stays deleted while the feed
+// still has it.
+func TestLetterboxdDeletedEntryStaysDeleted(t *testing.T) {
+	s := newLetterboxdServer(t)
+	wantCode(t, do(s, "POST", "/api/letterboxd/connect", local, `{"username":"davevis"}`, nil), http.StatusOK, "connect")
+	d := diaryOf(t, s, 155)
+	if len(d) != 1 {
+		t.Fatalf("imported: %+v", d)
+	}
+	wantCode(t, do(s, "DELETE", "/api/letterboxd/diary/"+strconv.FormatInt(d[0].ID, 10), local, "", nil), http.StatusOK, "delete")
+	var res letterboxd.Result
+	decodeBody(t, do(s, "POST", "/api/letterboxd/sync", local, "", nil), &res)
+	if res.Diary != 0 || res.Added != 0 {
+		t.Errorf("sync after deleting: %+v", res)
+	}
+	if d := diaryOf(t, s, 155); len(d) != 0 {
+		t.Errorf("the deleted entry came back: %+v", d)
+	}
+}
+
 // Devices on the LAN see the account and sync, but don't connect it, import
 // files or sign in to the API.
 func TestLetterboxdLAN(t *testing.T) {
