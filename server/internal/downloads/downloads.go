@@ -688,8 +688,14 @@ func (m *Manager) ytdlp(r *run, res *Resolved, out string) error {
 	args = append(args, res.URL)
 	cmd := exec.CommandContext(r.ctx, "yt-dlp", args...)
 	// An interrupt lets yt-dlp stop the ffmpeg it may have started; it gets
-	// killed if it's still running 10s later.
-	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	// killed if it's still running 10s later. Windows has no interrupt to
+	// send: yt-dlp and the ffmpeg it started are ended at once there.
+	cmd.Cancel = func() error {
+		if err := cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return util.KillGroup(cmd.Process)
+		}
+		return nil
+	}
 	cmd.WaitDelay = 10 * time.Second
 	progress := m.progress(r)
 	stdout := &lineWriter{fn: func(line string) {
