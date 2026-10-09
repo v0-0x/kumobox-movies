@@ -61,7 +61,7 @@ func writeScript(t *testing.T, dir, name, body string) string {
 
 func enqueue(t *testing.T, m *Manager, title string) *Item {
 	t.Helper()
-	it, err := m.Enqueue(Item{MediaID: 1, Episode: 1, AnimeTitle: title, Source: "stream", URL: testURL})
+	it, err := m.Enqueue(Item{MediaID: 1, Episode: 1, Title: title, Source: "stream", URL: testURL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +501,7 @@ func TestCancelThenRetryWaitsForOldRun(t *testing.T) {
 // Start says the resolvers are wired up.
 func TestRestoredDownloadsWaitForStart(t *testing.T) {
 	old, _ := newTestManager(t, nil)
-	raw, _ := json.Marshal(Item{ID: "restored", MediaID: 7, Episode: 3, AnimeTitle: "Resume", Mode: "sub", Source: "stream",
+	raw, _ := json.Marshal(Item{ID: "restored", MediaID: 7, Episode: 3, Title: "Resume", Mode: "sub", Source: "stream",
 		URL: testURL, Status: StatusDownloading, Progress: 0.4, CreatedAt: 1})
 	if _, err := old.db.Write(`INSERT INTO downloads(id, data, created_at) VALUES(?, ?, 1)`, "restored", string(raw)); err != nil {
 		t.Fatal(err)
@@ -519,6 +519,24 @@ func TestRestoredDownloadsWaitForStart(t *testing.T) {
 	m.Start()
 	if got := waitFinal(t, m, "restored", 10*time.Second); got.Status != StatusCompleted {
 		t.Fatalf("got %s (%q), want completed", got.Status, got.Error)
+	}
+}
+
+// A download's title is "title" to the UI; a row an earlier build saved
+// with Kumo's name for it ("animeTitle") keeps its title.
+func TestItemTitle(t *testing.T) {
+	raw, _ := json.Marshal(Item{ID: "x", Title: "Heat (1995)"})
+	if !strings.Contains(string(raw), `"title":"Heat (1995)"`) || strings.Contains(string(raw), "anime") {
+		t.Errorf("JSON: %s", raw)
+	}
+	old, _ := newTestManager(t, nil)
+	if _, err := old.db.Write(`INSERT INTO downloads(id, data, created_at) VALUES(?, ?, 1)`, "old",
+		`{"id":"old","mediaId":949,"animeTitle":"Heat (1995)","status":"completed","createdAt":1}`); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(old.settings, old.db, old.hub, old.files)
+	if got := find(m, "old"); got == nil || got.Title != "Heat (1995)" {
+		t.Fatalf("restored: %+v", got)
 	}
 }
 
@@ -625,7 +643,7 @@ func TestDownloadNames(t *testing.T) {
 		{catalog.ShowID(85949), 1002, "Picard", "Picard/Season 01/Star Trek： Picard - S01E02.mp4", "main"},
 		{catalog.ShowID(77), 1001, "Not: On TMDB?", "Not： On TMDB/Season 01/Not： On TMDB - S01E01.mp4", "main"},
 	} {
-		it, err := m.Enqueue(Item{MediaID: c.mediaID, Episode: c.episode, AnimeTitle: c.title, Source: "stream", URL: testURL})
+		it, err := m.Enqueue(Item{MediaID: c.mediaID, Episode: c.episode, Title: c.title, Source: "stream", URL: testURL})
 		if err != nil {
 			t.Fatal(err)
 		}
