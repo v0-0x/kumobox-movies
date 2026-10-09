@@ -55,7 +55,7 @@ parts:
 | `release` | parses movie/TV file and release names: title, year, season, episode(s), resolution, source, codec, HDR, audio, group, edition, extras |
 | `providers` | streaming providers: `archive` (Internet Archive), `stremio` (addon protocol client + catalogs), Nuvio JS providers (run in `extensions`' sandbox) |
 | `torrent` | clients (qBittorrent, Transmission — unchanged), search sources (Torznab, YTS, EZTV, apibay, Torrents-CSV, Internet Archive), auto downloader for shows |
-| `library` | scanner/matcher using `release` + `catalog` (folders like `Movie (2010)/`, `Show/Season 01/S01E02.mkv`) |
+| `library` | scanner/matcher using `release` + `catalog` (folders like `Movie (2010)/`, `Show/Season 01/S01E02.mkv`): files matched by movie/show folder (earlier matches, `{tmdb-…}`/`{imdb-…}` tags, the list, then a remembered TMDB search); kinds `main`, `part` (a movie's later part), `special`, `extra`; a multi-episode file's last key in `episodeEnd` |
 | `stream` | in-app player helpers (unchanged) + `Service` aggregating the providers |
 | `player` | mpv/in-app sessions; chapter-based intro/credits skip |
 | everything else | as in Kumo (share, update, downloads, discord, images, extensions, winsetup, macsetup, util) |
@@ -121,7 +121,9 @@ hosts (tests, offline demos).
 | `POST /api/anime/{id}/episode` | `POST /api/media/{id}/episode` (body `{episode: key, watched}`) |
 | `GET/PUT /api/anime/{id}/language` | `GET/PUT /api/media/{id}/language` |
 | — | `GET /api/media/{id}/season/{n}` → `SeasonDetail` |
-| — | `GET /api/media/{id}/episodes` (library-aware episode list, as Kumo's) |
+| — | `GET /api/media/{id}/episodes` (library-aware episode list, as Kumo's; each episode's `key` — also in `number` — `season` and `episode`) |
+| — | `GET /api/library/titles?host=` (Local library page: each title's files summed up) |
+| `POST /api/library/match` | same, body `{paths, mediaId, absolute?, season?, episodeOffset?, renumber?}` |
 | `POST /api/anilist/search` | `POST /api/catalog/search` |
 | `GET /api/anilist/discover` | `GET /api/catalog/discover` |
 | `GET /api/anilist/schedule` | `GET /api/catalog/schedule?start=&end=` |
