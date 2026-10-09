@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+// A library folder can be a whole drive ("E:\", or "/"): its files are
+// read with all their folders, like in any other library folder.
+func TestParseDriveRoot(t *testing.T) {
+	root := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	path := filepath.Join(root, "TV", "Breaking Bad (2008)", "Season 01", "01 - Pilot.mkv")
+	if !underAny(path, []string{root}) || !underAny(filepath.Join(root, "x.mkv"), []string{root}) {
+		t.Fatalf("%s isn't in %s", path, root)
+	}
+	p := Parse(path, []string{root})
+	if p.Title != "Breaking Bad" || p.Year != 2008 || p.Season != 1 || p.Episode != 1 || p.Folder != filepath.Join(root, "TV", "Breaking Bad (2008)") {
+		t.Errorf("got %+v", p)
+	}
+}
+
 func TestParse(t *testing.T) {
 	root := filepath.FromSlash("/lib/TV")
 	movies := filepath.FromSlash("/lib/Movies")

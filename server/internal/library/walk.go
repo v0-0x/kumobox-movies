@@ -98,10 +98,11 @@ func walkLibrary(root string, ignorePatterns []string, progress func(found int))
 	return res, nil
 }
 
-// underAny reports whether path is inside one of the dirs.
+// underAny reports whether path is inside one of the dirs (a drive's root,
+// "E:\" or "/", included).
 func underAny(path string, dirs []string) bool {
 	for _, d := range dirs {
-		if path == d || strings.HasPrefix(path, d+string(os.PathSeparator)) {
+		if path == d || strings.HasPrefix(path, strings.TrimSuffix(d, string(os.PathSeparator))+string(os.PathSeparator)) {
 			return true
 		}
 	}
