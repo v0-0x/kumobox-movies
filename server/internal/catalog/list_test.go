@@ -56,6 +56,35 @@ func TestLocalUpdateKeepsOtherFields(t *testing.T) {
 	}
 }
 
+// A movie put on the Watched list is watched: its progress is 1 (unless
+// the update says otherwise), so it can be marked unwatched again.
+func TestWatchedMovieHasProgress(t *testing.T) {
+	p := newTestPlatform(t, nil)
+	ctx := context.Background()
+	m, show := testMovie(1), testShow(2, "FINISHED", 8)
+	p.db.SetCache(liteKey(m.ID), m, time.Hour)
+	p.db.SetCache(liteKey(show.ID), show, time.Hour)
+	if err := p.UpdateEntry(ctx, EntryUpdate{MediaID: m.ID, Status: ptr("COMPLETED"), Score: ptr(70.0)}); err != nil {
+		t.Fatal(err)
+	}
+	if r := readLocal(t, p, m.ID); r.Status != "COMPLETED" || r.Progress != MovieEpisode || r.Score != 70 {
+		t.Fatalf("watched movie: %+v", r)
+	}
+	if err := p.UpdateEntry(ctx, EntryUpdate{MediaID: m.ID, Status: ptr("PLANNING"), Progress: ptr(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if r := readLocal(t, p, m.ID); r.Status != "PLANNING" || r.Progress != 0 {
+		t.Fatalf("back on the watchlist: %+v", r)
+	}
+	// A show's progress is the caller's to say.
+	if err := p.UpdateEntry(ctx, EntryUpdate{MediaID: show.ID, Status: ptr("COMPLETED")}); err != nil {
+		t.Fatal(err)
+	}
+	if r := readLocal(t, p, show.ID); r.Progress != 0 {
+		t.Fatalf("show: %+v", r)
+	}
+}
+
 // The list comes whole, or by type, one list per status with the
 // UI's names, the latest changes first.
 func TestCollectionTypes(t *testing.T) {
