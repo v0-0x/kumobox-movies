@@ -3,7 +3,7 @@ import { useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { EpisodeCard, WatchedToggle } from "@/components/EpisodeCard"
 import { AddFromLibraryDialog, EntryFilesMenu } from "@/components/library/EntryFileTools"
-import { episodeKey, formatKey, MOVIE_EPISODE, nextEpisode, splitKey } from "@/lib/ids"
+import { episodeKey, episodeKeyOf, formatKey, MOVIE_EPISODE, nextEpisode, splitKey } from "@/lib/ids"
 import { usePlay } from "@/lib/play"
 import { useEpisodeMarker, useEpisodes, useSeason, useStatus } from "@/lib/queries"
 import type { EntryView, Episode, EpisodeView, LocalFile, Season } from "@/lib/types"
@@ -39,13 +39,13 @@ function seasonsOf(entry: EntryView, episodes: EpisodeView[]): Season[] {
     const listed = (entry.media.seasons ?? []).filter(s => s.episodeCount > 0)
     if (listed.length) return [...listed.filter(s => s.seasonNumber > 0).sort((a, b) => a.seasonNumber - b.seasonNumber), ...listed.filter(s => s.seasonNumber === 0)]
     // No season list (TMDB not reachable): the seasons the library has.
-    const nums = [...new Set(episodes.map(e => splitKey(e.number)[0]).filter(s => s > 0))].sort((a, b) => a - b)
-    return (nums.length ? nums : [1]).map(n => ({ seasonNumber: n, name: `Season ${n}`, episodeCount: episodes.filter(e => splitKey(e.number)[0] === n).length }))
+    const nums = [...new Set(episodes.map(e => splitKey(episodeKeyOf(e))[0]).filter(s => s > 0))].sort((a, b) => a - b)
+    return (nums.length ? nums : [1]).map(n => ({ seasonNumber: n, name: `Season ${n}`, episodeCount: episodes.filter(e => splitKey(episodeKeyOf(e))[0] === n).length }))
 }
 
 const seasonName = (s: Season) => (s.seasonNumber === 0 ? "Specials" : s.name && !/^season \d+$/i.test(s.name) ? s.name : `Season ${s.seasonNumber}`)
 
-export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView; onStream: () => void; onTorrents: () => void }) {
+export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView; onStream: () => void; onTorrents: (key?: number) => void }) {
     const media = entry.media
     const { data: status } = useStatus()
     const { playLocal, watch, localPlayer, remote } = usePlay()
@@ -59,7 +59,7 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
     const completed = entry.listEntry?.status === "COMPLETED"
 
     // The season of the next episode to watch, unless one was picked.
-    const upNext = entry.nextEpisode?.number || nextEpisode(media, progress)
+    const upNext = (entry.nextEpisode && episodeKeyOf(entry.nextEpisode)) || nextEpisode(media, progress)
     const fallback = seasons.find(s => s.seasonNumber === splitKey(upNext)[0])?.seasonNumber ?? seasons[0]?.seasonNumber ?? 1
     const picked = Number(params.get("season"))
     const season = params.has("season") && seasons.some(s => s.seasonNumber === picked) ? picked : fallback
@@ -76,7 +76,7 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
 
     const rows = useMemo(() => {
         const byKey = new Map<number, EpisodeView>()
-        for (const e of [...lib.episodes, ...lib.extras]) if (e.number > 0 && !byKey.has(e.number)) byKey.set(e.number, e)
+        for (const e of [...lib.episodes, ...lib.extras]) if (episodeKeyOf(e) > 0 && !byKey.has(episodeKeyOf(e))) byKey.set(episodeKeyOf(e), e)
         const day = today()
         const make = (key: number, meta?: Episode): Row => {
             const l = byKey.get(key)
@@ -107,7 +107,7 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
     const hosts = [...new Set(withFiles.map(e => e.file?.hostName).filter((h): h is string => !!h))]
     // Specials numbered S00Exx show in the Specials season; the rest are extras.
     const hasSpecials = seasons.some(s => s.seasonNumber === 0)
-    const extras = lib.extras.filter(e => e.file && !(hasSpecials && e.number > 0 && splitKey(e.number)[0] === 0))
+    const extras = lib.extras.filter(e => e.file && !(hasSpecials && episodeKeyOf(e) > 0 && episodeKeyOf(e) < 1000))
     const watchedHere = rows.filter(r => r.watched).length
     const lastOfSeason = season > 0 ? rows.filter(r => r.aired).at(-1)?.key : undefined
     const online = status?.settings.onlineStream.enabled !== false
@@ -125,7 +125,7 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
                             Watch online
                         </Button>
                     )}
-                    <Button size="sm" variant="ghost" icon={<Magnet className="size-4" />} onClick={onTorrents}>
+                    <Button size="sm" variant="ghost" icon={<Magnet className="size-4" />} onClick={() => onTorrents()}>
                         Find torrents
                     </Button>
                     <Button size="sm" variant="ghost" icon={<FolderInput className="size-4" />} onClick={() => setAdding(true)}>
@@ -235,7 +235,7 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
                                                             </DropdownItem>
                                                         )}
                                                         {!r.file && (
-                                                            <DropdownItem icon={<Magnet />} onSelect={onTorrents}>
+                                                            <DropdownItem icon={<Magnet />} onSelect={() => onTorrents(r.key)}>
                                                                 Find torrents
                                                             </DropdownItem>
                                                         )}
@@ -263,6 +263,21 @@ export function SeasonsPanel({ entry, onStream, onTorrents }: { entry: EntryView
     )
 }
 
+// What a file that isn't an episode is: a movie's later part, a trailer, a
+// featurette..., a special without a number.
+function extraLabel(x: EpisodeView) {
+    const extra = x.file?.parsed?.extra
+    switch (x.kind) {
+        case "part":
+            return "Next part"
+        case "special":
+            return x.file?.hostName ? `Special · on ${x.file.hostName}` : "Special"
+        case "extra":
+            return extra ? extra[0].toUpperCase() + extra.slice(1) : "Extra"
+    }
+    return "No episode number"
+}
+
 // Featurettes, behind the scenes and other bonus files of the library.
 function Extras({ entry, extras }: { entry: EntryView; extras: EpisodeView[] }) {
     const { playLocal } = usePlay()
@@ -276,7 +291,7 @@ function Extras({ entry, extras }: { entry: EntryView; extras: EpisodeView[] }) 
                         key={x.file!.path}
                         image={x.image || banner(media) || cover(media)}
                         title={x.title || x.file!.name}
-                        subtitle={x.kind === "nc" ? "Bonus" : "Extra"}
+                        subtitle={extraLabel(x)}
                         hasFile
                         onClick={() => playLocal(x.file!.path, media.id, 0)}
                     />
@@ -293,7 +308,7 @@ export function MovieLibrary({ entry, onStream, onTorrents }: { entry: EntryView
     const { playLocal, localPlayer, remote } = usePlay()
     const [adding, setAdding] = useState(false)
     const lib = useLibraryEpisodes(entry)
-    const main = lib.episodes.find(e => e.number === MOVIE_EPISODE && e.file) ?? lib.episodes.find(e => e.file)
+    const main = lib.episodes.find(e => episodeKeyOf(e) === MOVIE_EPISODE && e.file) ?? lib.episodes.find(e => e.file)
     const extras = lib.extras.filter(e => e.file)
     const online = status?.settings.onlineStream.enabled !== false
 

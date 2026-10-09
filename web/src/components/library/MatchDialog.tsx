@@ -3,46 +3,74 @@ import { ArrowRight, Link2 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "@/lib/toast"
 import { api } from "@/lib/api"
-import { episodeKey, episodeKeys, formatKey, keyAtIndex, MOVIE_EPISODE, mediaIsShow } from "@/lib/ids"
+import { episodeKey, episodeKeys, formatKey, keyAtIndex, MOVIE_EPISODE, mediaIsShow, splitKey } from "@/lib/ids"
 import type { LocalFile, Media } from "@/lib/types"
 import { cn, cover, mediaSummary, title } from "@/lib/utils"
 import { MediaPicker } from "../MediaPicker"
 import { Button, Dialog, Input } from "../ui"
 
-type Numbering = "names" | "offset" | "order"
+type Numbering = "names" | "offset" | "season" | "order"
 
 // Natural order for file names ("Ep 2" before "Ep 10"), like the server.
 export function naturalCompare(a: string, b: string) {
     return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
 }
 
+// What a file's name says it is (main, special or extra), whatever it was
+// matched as before.
+const nameKind = (f: LocalFile) => f.parsed?.kind || f.kind
+
+type Planned = { key: number; end: number; part: boolean }
+
 // The episode key each file gets with the chosen numbering (mirrors the
-// server): from the names, the season and episode they carry (season 1 when
-// a name has only an episode number); counted, the number in the name (or
-// the file's place in name order) is the n-th episode of the show, so a
-// show numbered 1-24 across two seasons lands on S01-S02. A movie's file
-// is the movie. 0: no episode (bonus material, or no number).
-function episodesFor(files: LocalFile[], target: Media | null, numbering: Numbering, offset: number) {
+// server's library.AssignManual): from the names, the season and episode
+// they carry (a number without a season counts from the first episode);
+// counted, the number in the name (or the file's place in name order) is
+// the n-th episode of the show, so a show numbered 1-24 across two seasons
+// lands on S01-S02; or the numbers are episodes of one season. A movie's
+// files are the movie (its later parts when it's split in parts). Extras
+// get no episode.
+function episodesFor(files: LocalFile[], target: Media | null, numbering: Numbering, offset: number, season: number) {
     const order = new Map<string, number>()
     if (numbering === "order") {
         files
-            .filter(f => f.kind === "main")
+            .filter(f => nameKind(f) === "main")
             .slice()
             .sort((a, b) => naturalCompare(a.name, b.name))
             .forEach((f, i) => order.set(f.path, i + 1))
     }
     const movie = !!target && !mediaIsShow(target)
-    const counted = (n: number) => (n > 0 ? keyAtIndex(target, n) || (target && episodeKeys(target).length ? 0 : episodeKey(1, n)) : 0)
-    return new Map(
+    // The server's absolute numbering: the n-th episode, else season 1's.
+    const counted = (n: number) => (n > 0 ? keyAtIndex(target, n) || (n < 1000 ? episodeKey(1, n) : 0) : 0)
+    const sameSeason = (key: number, end: number) => (end > key && splitKey(end)[0] === splitKey(key)[0] ? end : 0)
+    // A movie split in parts plays from its first part: the others are parts.
+    const firstPart = new Map<string, number>()
+    for (const f of files) {
+        const p = f.parsed?.part ?? 0
+        if (p > 0 && nameKind(f) === "main") firstPart.set(f.dir, Math.min(firstPart.get(f.dir) ?? p, p))
+    }
+    return new Map<string, Planned>(
         files.map(f => {
-            if (f.kind === "nc") return [f.path, 0]
-            if (movie) return [f.path, f.kind === "main" ? MOVIE_EPISODE : 0]
-            if (numbering === "order") return [f.path, counted(order.get(f.path) ?? 0)]
-            const ep = f.parsed.episode
-            if (ep < 0) return [f.path, 0]
-            if (numbering === "offset") return [f.path, counted(ep + offset)]
-            const season = f.parsed.season > 0 ? f.parsed.season : f.kind === "special" ? 0 : 1
-            return [f.path, ep > 0 ? episodeKey(season, ep) : 0]
+            const none = { key: 0, end: 0, part: false }
+            if (nameKind(f) === "extra") return [f.path, none]
+            if (movie) return [f.path, { key: MOVIE_EPISODE, end: 0, part: (f.parsed?.part ?? 0) > (firstPart.get(f.dir) ?? Infinity) }]
+            let first = numbering === "order" ? (order.get(f.path) ?? 0) : f.parsed.episode
+            let last = numbering === "order" ? 0 : (f.parsed.episodeEnd ?? 0)
+            if (first <= 0) return [f.path, none]
+            if (numbering !== "names") {
+                first += offset
+                if (last) last += offset
+            }
+            if (numbering === "season") {
+                const key = first < 1000 ? episodeKey(season, first) : 0
+                return [f.path, { key, end: last > first && last < 1000 ? episodeKey(season, last) : 0, part: false }]
+            }
+            if (numbering === "names" && f.parsed.season >= 0) {
+                const key = first < 1000 ? episodeKey(f.parsed.season, first) : counted(f.parsed.absolute ?? 0)
+                return [f.path, { key, end: last > first && last < 1000 ? episodeKey(f.parsed.season, last) : 0, part: false }]
+            }
+            const key = counted(first)
+            return [f.path, { key, end: sameSeason(key, last > first ? counted(last) : 0), part: false }]
         }),
     )
 }
@@ -68,13 +96,16 @@ export function MatchDialog({
     const [picked, setPicked] = useState<Media | null>(null)
     const [numbering, setNumbering] = useState<Numbering>("names")
     const [offset, setOffset] = useState(0)
+    const [season, setSeason] = useState(1)
     const [saving, setSaving] = useState(false)
     const justPicked = useRef(false)
     const target = fixedTarget ?? picked
 
-    const main = files.filter(f => f.kind === "main")
+    const main = files.filter(f => nameKind(f) === "main")
     const parsedEps = main.map(f => f.parsed.episode).filter(e => e > 0)
-    const unnumbered = main.length > 0 && parsedEps.length < main.length
+    const unnumbered = main.length > 0 && parsedEps.length < main.length && !main.some(f => f.parsed.date)
+    // Files with episodes or in season folders are a show's: search shows.
+    const looksLikeShow = files.some(f => f.parsed?.show)
 
     // Reset when opened for another set of files, and suggest a numbering:
     // files without numbers -> file order; numbers without a season past the
@@ -86,12 +117,13 @@ export function MatchDialog({
         setSaving(false)
         setNumbering(unnumbered ? "order" : "names")
         setOffset(0)
+        setSeason(1)
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, files])
     useEffect(() => {
         if (!target || unnumbered || !mediaIsShow(target)) return
         const first = target.seasons?.find(x => x.seasonNumber === 1)?.episodeCount ?? 0
-        const seasonless = main.filter(f => f.parsed.season <= 0 && f.parsed.episode > 0)
+        const seasonless = main.filter(f => f.parsed.season < 0 && f.parsed.episode > 0)
         if (first > 0 && seasonless.some(f => f.parsed.episode > first)) {
             setNumbering("offset")
             setOffset(0)
@@ -99,17 +131,19 @@ export function MatchDialog({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [target?.id])
 
-    const eps = useMemo(() => episodesFor(files, target, numbering, offset), [files, target, numbering, offset])
+    const eps = useMemo(() => episodesFor(files, target, numbering, offset, season), [files, target, numbering, offset, season])
     const show = !!target && mediaIsShow(target)
     const known = useMemo(() => new Set(target && show ? episodeKeys(target) : []), [target, show])
     // Episodes the show doesn't have (when its seasons are known).
     const unknown = (key: number) => show && known.size > 0 && key >= 1000 && !known.has(key)
-    const outOfRange = main.filter(f => unknown(eps.get(f.path) ?? 0)).length
+    const outOfRange = main.filter(f => unknown(eps.get(f.path)?.key ?? 0)).length
     const label = (f: LocalFile) => {
-        if (f.kind === "nc") return "Bonus"
-        const key = eps.get(f.path) ?? 0
-        if (!key) return f.kind === "special" ? "Extra" : "No number"
-        return show ? formatKey(key) : "Movie"
+        const x = f.parsed?.extra
+        if (nameKind(f) === "extra") return x ? x[0].toUpperCase() + x.slice(1) : "Extra"
+        const p = eps.get(f.path)
+        if (!show) return p?.part ? `Part ${f.parsed.part}` : "Movie"
+        if (!p?.key) return f.parsed?.date ? f.parsed.date : nameKind(f) === "special" ? "Special" : "No number"
+        return formatKey(p.key) + (p.end ? `–E${String(splitKey(p.end)[1]).padStart(2, "0")}` : "")
     }
 
     const save = async () => {
@@ -119,10 +153,12 @@ export function MatchDialog({
             await api.post("/api/library/match", {
                 paths: files.map(f => f.path),
                 mediaId: target.id,
-                // Shows only: numbers counted from the first episode (absolute),
-                // shifted by episodeOffset, or the files' order.
+                // Shows only: numbers counted from the first episode
+                // (absolute) or episodes of one season, shifted by
+                // episodeOffset, or the files' order.
                 absolute: show && numbering === "offset",
-                episodeOffset: show && numbering === "offset" ? offset : 0,
+                season: show && numbering === "season" ? season : undefined,
+                episodeOffset: show && (numbering === "offset" || numbering === "season") ? offset : 0,
                 renumber: show && numbering === "order",
             })
             toast.success(`Matched ${files.length} ${files.length === 1 ? "file" : "files"} to ${title(target)}`)
@@ -155,9 +191,19 @@ export function MatchDialog({
                 initialQuery={initialQuery}
                 heading={`Match ${files.length} ${files.length === 1 ? "file" : "files"} to…`}
                 description="Search TMDB for the right movie or show. The match is locked, so later scans keep it."
+                typeFilter={looksLikeShow ? "TV" : ""}
             />
         )
     }
+
+    const shift = (
+        <span className="flex items-center gap-2 text-xs text-muted">
+            shifted by
+            <div className="w-20">
+                <Input type="number" value={offset} onChange={e => setOffset(Number(e.target.value) || 0)} />
+            </div>
+        </span>
+    )
 
     // Step 2: episode numbering and confirm.
     return (
@@ -197,18 +243,21 @@ export function MatchDialog({
                         [
                             ["names", "From the file names (S01E02)"],
                             ["offset", "Counted from the first episode (absolute numbers)"],
+                            ["season", "Episodes of one season"],
                             ["order", "1, 2, 3… in file-name order"],
                         ] as [Numbering, string][]
                     ).map(([v, text]) => (
-                        <label key={v} className={cn("flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition", numbering === v ? "border-brand/50 bg-brand-soft" : "border-line hover:bg-white/[0.03]")}>
+                        <label key={v} className={cn("flex cursor-pointer flex-wrap items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition", numbering === v ? "border-brand/50 bg-brand-soft" : "border-line hover:bg-white/[0.03]")}>
                             <input type="radio" name="numbering" checked={numbering === v} onChange={() => setNumbering(v)} className="accent-[var(--brand)]" />
                             <span className="flex-1">{text}</span>
-                            {v === "offset" && numbering === "offset" && (
-                                <span className="flex items-center gap-2 text-xs text-muted">
-                                    shifted by
-                                    <div className="w-20">
-                                        <Input type="number" value={offset} onChange={e => setOffset(Number(e.target.value) || 0)} />
+                            {v === "offset" && numbering === "offset" && shift}
+                            {v === "season" && numbering === "season" && (
+                                <span className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                                    season
+                                    <div className="w-16">
+                                        <Input type="number" min={0} value={season} onChange={e => setSeason(Math.max(0, Number(e.target.value) || 0))} />
                                     </div>
+                                    {shift}
                                 </span>
                             )}
                         </label>
@@ -232,7 +281,7 @@ export function MatchDialog({
                                 {f.name}
                             </span>
                             <ArrowRight className="size-3.5 shrink-0 text-subtle" />
-                            <span className={cn("w-24 shrink-0 text-right font-semibold tabular-nums", unknown(eps.get(f.path) ?? 0) && "text-amber-300")}>{label(f)}</span>
+                            <span className={cn("w-28 shrink-0 text-right font-semibold tabular-nums", unknown(eps.get(f.path)?.key ?? 0) && "text-amber-300")}>{label(f)}</span>
                         </div>
                     ))}
             </div>

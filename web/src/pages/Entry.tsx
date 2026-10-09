@@ -13,7 +13,7 @@ import { PluginActions, PluginSlot, usePluginDropdownActions } from "@/component
 import { sendPluginEvent } from "@/components/plugins/PluginRenderer"
 import { Badge, Button, Dropdown, DropdownContent, DropdownItem, DropdownSeparator, DropdownTrigger, EmptyState, Skeleton, Tabs, Tooltip } from "@/components/ui"
 import { api } from "@/lib/api"
-import { airedEpisodes, episodeIndex, formatKey, MOVIE_EPISODE, mediaIsShow, nextEpisode } from "@/lib/ids"
+import { airedEpisodes, episodeIndex, episodeKeyOf, formatKey, MOVIE_EPISODE, mediaIsShow, nextEpisode } from "@/lib/ids"
 import { usePlay } from "@/lib/play"
 import { useEntry, useEpisodeMarker, useStatus } from "@/lib/queries"
 import type { EntryView } from "@/lib/types"
@@ -26,9 +26,12 @@ export default function EntryPage() {
     const id = Number(params.get("id"))
     const { data: entry, isLoading, error } = useEntry(id)
     const { data: status } = useStatus()
+    // The episode "Find torrents" was picked for (a key), for the Torrents tab.
+    const [torrentEpisode, setTorrentEpisode] = useState<number | undefined>()
 
     useEffect(() => {
         document.getElementById("main-scroll")?.scrollTo({ top: 0 })
+        setTorrentEpisode(undefined)
     }, [id])
 
     if (isLoading) return <EntrySkeleton />
@@ -67,10 +70,27 @@ export default function EntryPage() {
             <EntryHero entry={entry} onTab={setTab} />
             <div className="relative z-10 flex flex-col gap-8 px-6 md:px-8 xl:px-10">
                 <PluginSlot slot="before-anime-entry-episode-list" />
-                <Tabs variant="underline" value={tab} onChange={setTab} tabs={tabs} />
+                <Tabs
+                    variant="underline"
+                    value={tab}
+                    onChange={t => {
+                        setTorrentEpisode(undefined)
+                        setTab(t)
+                    }}
+                    tabs={tabs}
+                />
                 {/* Keyed by media too: panels keep per-title state (search results, chosen provider). */}
                 <div key={`${entry.media.id}-${tab}`} className="fade-in">
-                    {tab === "episodes" && <SeasonsPanel entry={entry} onStream={() => setTab("stream")} onTorrents={() => setTab("torrents")} />}
+                    {tab === "episodes" && (
+                        <SeasonsPanel
+                            entry={entry}
+                            onStream={() => setTab("stream")}
+                            onTorrents={key => {
+                                setTorrentEpisode(key)
+                                setTab("torrents")
+                            }}
+                        />
+                    )}
                     {tab === "overview" &&
                         (show ? (
                             <DetailsPanel media={entry.media} />
@@ -86,7 +106,7 @@ export default function EntryPage() {
                             />
                         ))}
                     {tab === "stream" && <StreamPanel entry={entry} />}
-                    {tab === "torrents" && <TorrentPanel entry={entry} />}
+                    {tab === "torrents" && <TorrentPanel entry={entry} episode={torrentEpisode} />}
                 </div>
                 <PluginSlot slot="after-anime-entry-episode-list" />
                 <PluginSlot slot="after-anime-episode-list" />
@@ -116,10 +136,10 @@ function EntryHero({ entry, onTab }: { entry: EntryView; onTab: (t: Tab) => void
     // What Play plays: the movie, or the show's next episode (the server's,
     // which knows the files and the history, else the one after progress).
     const episodes = entry.episodes ?? []
-    const nextView = show ? entry.nextEpisode : (episodes.find(e => e.number === MOVIE_EPISODE) ?? entry.nextEpisode)
-    const key = show ? nextView?.number || nextEpisode(media, progress) : MOVIE_EPISODE
-    const file = nextView?.number === key ? nextView.file : null
-    const resumeAt = nextView?.number === key ? nextView.resumeAt : 0
+    const nextView = show ? entry.nextEpisode : (episodes.find(e => episodeKeyOf(e) === MOVIE_EPISODE) ?? entry.nextEpisode)
+    const key = show ? (nextView && episodeKeyOf(nextView)) || nextEpisode(media, progress) : MOVIE_EPISODE
+    const file = nextView && episodeKeyOf(nextView) === key ? nextView.file : null
+    const resumeAt = nextView && episodeKeyOf(nextView) === key ? nextView.resumeAt : 0
     const available = !!file || (show ? key > 0 && (!!nextView?.aired || episodeIndex(media, key) <= airedEpisodes(media)) : media.status !== "NOT_YET_RELEASED")
     const watched = !show && list?.status === "COMPLETED"
     const playLabel = show

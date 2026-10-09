@@ -7,28 +7,19 @@ import { Carousel, MediaCard, MediaCardSkeleton, MediaGrid } from "@/components/
 import { useLibraryCardMenu } from "@/components/library/LibraryCardMenu"
 import { Badge, Button, EmptyState, IconButton, Input, Progress, Select, Tabs, Tooltip } from "@/components/ui"
 import { api } from "@/lib/api"
+import { fileKeys, fileLabel } from "@/lib/files"
 import { usePersisted } from "@/lib/hooks"
 import { episodeIndex, formatKey, mediaIsShow, splitKey, totalEpisodes } from "@/lib/ids"
 import { usePlay } from "@/lib/play"
-import { useCollection, useEpisodeMarker, useLibraryFiles, useScan, useSharedLibraries, useStatus } from "@/lib/queries"
+import { useCollection, useEpisodeMarker, useLibraryTitles, useScan, useSharedLibraries, useStatus } from "@/lib/queries"
 import { scanStore, useStore } from "@/lib/store"
-import type { CollectionItem, LocalFile } from "@/lib/types"
-import { banner, cn, cover, entryUrl, formatBytes, formatLabel, LIST_STATUS, mostCommon, relativeTime, title, year } from "@/lib/utils"
+import type { LibraryTitle, LocalFile } from "@/lib/types"
+import { banner, cn, cover, entryUrl, formatBytes, formatLabel, LIST_STATUS, relativeTime, title, year } from "@/lib/utils"
 
-// "Local library": only movies and shows that have files on this computer.
-
-type Group = {
-    item: CollectionItem
-    files: LocalFile[] // main episodes first (by key), then specials and extras
-    episodes: number[] // distinct downloaded main episode keys
-    size: number
-    latest: number // newest file, unix seconds
-    resolutions: string[]
-    releaseGroups: string[]
-    dir: string
-    unwatched: number
-    next: LocalFile | null // first downloaded episode not watched yet
-}
+// "Local library": only movies and shows that have files on this computer
+// (or on another KumoBox sharing its library). The server sums each title's
+// files up (GET /api/library/titles): episodes by season, size, quality,
+// what's unwatched.
 
 type StatusFilter = "ALL" | "CURRENT" | "PLANNING" | "COMPLETED" | "PAUSED" | "DROPPED" | "NONE"
 type SortKey = "added" | "title" | "unwatched" | "episodes" | "size"
@@ -45,16 +36,14 @@ const STATUS_TABS: { value: StatusFilter; label: string }[] = [
     { value: "NONE", label: "Not on my list" },
 ]
 
-function statusOf(g: Group): StatusFilter {
-    const s = g.item.listEntry?.status
+function statusOf(t: LibraryTitle): StatusFilter {
+    const s = t.listEntry?.status
     if (!s) return "NONE"
     return s === "REPEATING" ? "CURRENT" : (s as StatusFilter)
 }
 
-const uniq = (xs: (string | undefined)[]) => [...new Set(xs.filter((x): x is string => !!x))]
-
 // Episode keys as runs: [S01E01, S01E02, S01E03, S01E05, S02E01, S02E02]
-// -> "S01E01–E03, E05, S02E01–E02".
+// -> "S01E01–E03, E05, S02E01–E02" (as the server writes them).
 function episodeRanges(keys: number[]) {
     const s = [...new Set(keys)].sort((a, b) => a - b)
     const out: string[] = []
@@ -72,49 +61,17 @@ function episodeRanges(keys: number[]) {
     return out.join(", ")
 }
 
-function buildGroups(items: CollectionItem[], files: LocalFile[]): Group[] {
-    const byMedia = new Map<number, LocalFile[]>()
-    for (const f of files) {
-        if (f.ignored || !f.mediaId) continue
-        const list = byMedia.get(f.mediaId)
-        if (list) list.push(f)
-        else byMedia.set(f.mediaId, [f])
-    }
-    const rank = (k: string) => (k === "main" ? 0 : k === "special" ? 1 : 2)
-    const out: Group[] = []
-    for (const item of items) {
-        const fs = byMedia.get(item.media.id)
-        if (!fs?.length) continue
-        fs.sort((a, b) => rank(a.kind) - rank(b.kind) || a.episode - b.episode || a.name.localeCompare(b.name))
-        const main = fs.filter(f => f.kind === "main")
-        const le = item.listEntry
-        const watchedUpTo = le?.status === "COMPLETED" ? Infinity : (le?.progress ?? 0)
-        const unwatched = main.filter(f => f.episode > watchedUpTo)
-        out.push({
-            item,
-            files: fs,
-            episodes: [...new Set(main.map(f => f.episode))],
-            size: fs.reduce((n, f) => n + f.size, 0),
-            latest: Math.max(...fs.map(f => f.modTime)),
-            resolutions: uniq(fs.map(f => f.parsed?.resolution)),
-            releaseGroups: uniq(fs.map(f => f.parsed?.releaseGroup)),
-            dir: mostCommon(fs.map(f => f.dir)),
-            unwatched: new Set(unwatched.map(f => f.episode)).size,
-            next: unwatched[0] ?? null,
-        })
-    }
-    return out
-}
+// Watched up to (a key): everything for a title watched to the end.
+const watchedUpTo = (t: LibraryTitle) => (t.listEntry?.status === "COMPLETED" ? Infinity : (t.listEntry?.progress ?? 0))
 
 export default function LocalLibraryPage() {
     const { data: status } = useStatus()
-    const { data: coll, isLoading: collLoading, error } = useCollection()
-    const { data: localFiles, isLoading: filesLoading } = useLibraryFiles()
+    const { data: coll } = useCollection()
     // The libraries other KumoBox apps on the network share with this one.
     const { data: shared } = useSharedLibraries()
     const [source, setSource] = usePersisted<string>("kumobox-local-source", "local")
     const host = source === "local" ? undefined : shared?.find(l => l.host.id === source)
-    const files = host ? host.files : localFiles
+    const { data: titlesData, isLoading: loading, error } = useLibraryTitles(host?.host.id ?? "")
     const scan = useScan()
     const scanning = useStore(scanStore, s => s.running)
     const scanState = useStore(scanStore)
@@ -128,82 +85,77 @@ export default function LocalLibraryPage() {
     const [view, setView] = usePersisted<View>("kumobox-local-view", "grid")
     const [q, setQ] = useState("")
 
-    const groups = useMemo(() => {
-        const items = new Map<number, CollectionItem>()
-        for (const l of coll?.lists ?? []) for (const it of l.items) items.set(it.media.id, it)
-        for (const it of coll?.localOnly ?? []) items.set(it.media.id, it)
-        return buildGroups([...items.values()], files ?? [])
-    }, [coll, files])
+    const titles = useMemo(() => titlesData ?? [], [titlesData])
 
     const counts = useMemo(() => {
-        const c: Record<string, number> = { ALL: groups.length }
-        for (const g of groups) c[statusOf(g)] = (c[statusOf(g)] ?? 0) + 1
+        const c: Record<string, number> = { ALL: titles.length }
+        for (const t of titles) c[statusOf(t)] = (c[statusOf(t)] ?? 0) + 1
         return c
-    }, [groups])
+    }, [titles])
     // Tabs with nothing in them are hidden, so a remembered filter may have no tab
     // any more: fall back to All.
     const activeFilter: StatusFilter = filter !== "ALL" && STATUS_TABS.some(t => t.value === filter) && counts[filter] > 0 ? filter : "ALL"
 
     const shown = useMemo(() => {
         const needle = q.trim().toLowerCase()
-        const out = groups.filter(g => {
-            if (kind && g.item.media.type !== kind) return false
-            if (activeFilter !== "ALL" && statusOf(g) !== activeFilter) return false
+        const out = titles.filter(t => {
+            if (kind && t.media.type !== kind) return false
+            if (activeFilter !== "ALL" && statusOf(t) !== activeFilter) return false
             if (!needle) return true
-            const m = g.item.media
-            return [m.title.userPreferred, m.title.romaji, m.title.english, m.title.native, ...(m.synonyms ?? [])].some(t => t?.toLowerCase().includes(needle))
+            const m = t.media
+            return [m.title.userPreferred, m.title.romaji, m.title.english, m.title.native, ...(m.synonyms ?? [])].some(x => x?.toLowerCase().includes(needle))
         })
         out.sort((a, b) => {
             switch (sort) {
                 case "title":
-                    return title(a.item.media).localeCompare(title(b.item.media))
+                    return title(a.media).localeCompare(title(b.media))
                 case "unwatched":
-                    return b.unwatched - a.unwatched || b.latest - a.latest
+                    return b.unwatched - a.unwatched || b.addedAt - a.addedAt
                 case "episodes":
                     return b.episodes.length - a.episodes.length
                 case "size":
                     return b.size - a.size
                 default:
-                    return b.latest - a.latest
+                    return b.addedAt - a.addedAt
             }
         })
         return out
-    }, [groups, kind, activeFilter, sort, q])
+    }, [titles, kind, activeFilter, sort, q])
 
     // Newest files on disk, one card per title and day (a season of 10
     // episodes shows up as "S01E01–E10", not ten cards).
     const recent = useMemo(() => {
-        const media = new Map(groups.map(g => [g.item.media.id, g]))
-        const batches = new Map<string, { group: Group; files: LocalFile[]; latest: number }>()
-        const sorted = (files ?? []).filter(f => !f.ignored && f.mediaId && f.kind === "main" && media.has(f.mediaId)).sort((a, b) => b.modTime - a.modTime)
-        for (const f of sorted) {
-            const key = `${f.mediaId}:${new Date(f.modTime * 1000).toDateString()}`
+        const files = titles.flatMap(t => t.files.filter(f => f.kind === "main" && f.episode > 0).map(f => ({ t, f })))
+        files.sort((a, b) => b.f.modTime - a.f.modTime)
+        const batches = new Map<string, { title: LibraryTitle; files: LocalFile[]; latest: number }>()
+        for (const { t, f } of files) {
+            const key = `${t.media.id}:${new Date(f.modTime * 1000).toDateString()}`
             const b = batches.get(key)
             if (b) b.files.push(f)
-            else if (batches.size < 16) batches.set(key, { group: media.get(f.mediaId)!, files: [f], latest: f.modTime })
+            else if (batches.size < 16) batches.set(key, { title: t, files: [f], latest: f.modTime })
         }
         return [...batches.values()].map(b => {
             b.files.sort((x, y) => x.episode - y.episode)
-            const le = b.group.item.listEntry
-            const watchedUpTo = le?.status === "COMPLETED" ? Infinity : (le?.progress ?? 0)
-            return { ...b, play: b.files.find(f => f.episode > watchedUpTo) ?? b.files[0], allWatched: b.files.every(f => f.episode <= watchedUpTo) }
+            const upTo = watchedUpTo(b.title)
+            const keys = b.files.flatMap(fileKeys)
+            return { ...b, keys, play: b.files.find(f => f.episode > upTo) ?? b.files[0], allWatched: keys.every(k => k <= upTo) }
         })
-    }, [files, groups])
+    }, [titles])
 
     const totals = useMemo(
         () => ({
-            movies: groups.filter(g => !mediaIsShow(g.item.media)).length,
-            shows: groups.filter(g => mediaIsShow(g.item.media)).length,
-            episodes: groups.reduce((n, g) => n + (mediaIsShow(g.item.media) ? g.episodes.length : 0), 0),
-            size: groups.reduce((n, g) => n + g.size, 0),
+            movies: titles.filter(t => !mediaIsShow(t.media)).length,
+            shows: titles.filter(t => mediaIsShow(t.media)).length,
+            episodes: titles.reduce((n, t) => n + (mediaIsShow(t.media) ? t.episodes.length : 0), 0),
+            size: titles.reduce((n, t) => n + t.size, 0),
         }),
-        [groups],
+        [titles],
     )
 
-    const loading = collLoading || filesLoading
     const libraryDir = status?.settings.library.dir
     const trusted = status?.client !== "lan"
     const openFolder = (path?: string) => path && api.post("/api/open", { path }).catch(e => toast.error(e.message))
+    const hostFiles = host?.files.length ?? 0
 
     return (
         <div className="min-h-full pb-24">
@@ -259,7 +211,7 @@ export default function LocalLibraryPage() {
             <div className="flex flex-col gap-10 px-6 pt-8 md:px-8 xl:px-10">
                 {error && <EmptyState title="Couldn't load your library">{(error as Error).message}</EmptyState>}
 
-                {scanning && groups.length === 0 && (
+                {scanning && titles.length === 0 && (
                     <div className="card mx-auto w-full max-w-xl p-6 rise-in">
                         <div className="flex items-center gap-3">
                             <FolderSync className="size-5 animate-pulse text-brand-strong" />
@@ -275,13 +227,13 @@ export default function LocalLibraryPage() {
                     </div>
                 )}
 
-                {host && !loading && groups.length === 0 && (
+                {host && !loading && titles.length === 0 && (
                     <EmptyState icon={<Share2 className="size-6" />} title="Nothing to show yet">
-                        {host.host.name} shares {host.files.length} {host.files.length === 1 ? "file" : "files"}; their movies and shows appear here once TMDB answers.
+                        {host.host.name} shares {hostFiles} {hostFiles === 1 ? "file" : "files"}; their movies and shows appear here once TMDB answers.
                     </EmptyState>
                 )}
 
-                {!host && !loading && !scanning && groups.length === 0 && !error && (
+                {!host && !loading && !scanning && titles.length === 0 && !error && (
                     <EmptyState
                         icon={<HardDrive className="size-6" />}
                         title={libraryDir ? "Nothing in your library yet" : "Choose your library folder"}
@@ -300,7 +252,7 @@ export default function LocalLibraryPage() {
                         {libraryDir ? (
                             <>
                                 KumoBox looks for video files in <span className="font-mono text-fg/80">{libraryDir}</span>. Download movies and episodes from a provider or with torrents, or copy files there
-                                (like <span className="font-mono text-fg/80">Movie (2010)/</span> or <span className="font-mono text-fg/80">Show/Season 01/</span>).
+                                (like <span className="font-mono text-fg/80">Movie (2010)/</span> or <span className="font-mono text-fg/80">Show (2008)/Season 01/</span>).
                             </>
                         ) : (
                             "Pick the folder where your movies and shows live and KumoBox will scan and match them automatically."
@@ -312,16 +264,16 @@ export default function LocalLibraryPage() {
                     <section className="rise-in">
                         <h2 className="mb-4 text-xl font-semibold tracking-tight">Recently added</h2>
                         <Carousel itemClassName="w-[300px]">
-                            {recent.map(({ group, files: batch, latest, play, allWatched }) => {
-                                const m = group.item.media
-                                const eps = mediaIsShow(m) ? episodeRanges(batch.map(f => f.episode)) : year(m) || "Movie"
+                            {recent.map(({ title: t, keys, latest, play, allWatched }) => {
+                                const m = t.media
+                                const show = mediaIsShow(m)
                                 return (
                                     <EpisodeCard
                                         key={`${m.id}:${latest}`}
                                         image={banner(m) || cover(m)}
-                                        label={mediaIsShow(m) ? formatKey(play.episode) : "Movie"}
+                                        label={show ? formatKey(play.episode) : "Movie"}
                                         title={title(m)}
-                                        subtitle={`${eps} · added ${relativeTime(latest)}`}
+                                        subtitle={`${show ? episodeRanges(keys) : year(m) || "Movie"} · added ${relativeTime(latest)}`}
                                         hasFile
                                         watched={allWatched}
                                         onClick={() => playLocal(play.path, m.id, play.episode)}
@@ -337,7 +289,7 @@ export default function LocalLibraryPage() {
                     </section>
                 )}
 
-                {(loading || groups.length > 0) && (
+                {(loading || titles.length > 0) && (
                     <section>
                         <div className="mb-6 flex flex-wrap items-center gap-3">
                             <Tabs value={activeFilter} onChange={setFilter} tabs={STATUS_TABS.filter(t => t.value === "ALL" || counts[t.value]).map(t => ({ ...t, count: counts[t.value] ?? 0 }))} />
@@ -389,21 +341,14 @@ export default function LocalLibraryPage() {
                             </EmptyState>
                         ) : view === "grid" ? (
                             <MediaGrid size={status?.settings.ui.cardSize}>
-                                {shown.map(g => (
-                                    <MediaCard
-                                        key={g.item.media.id}
-                                        media={g.item.media}
-                                        listEntry={g.item.listEntry}
-                                        localCount={g.files.length}
-                                        downloaded={g.episodes}
-                                        menu={libraryMenu.menu(g.item.media)}
-                                    />
+                                {shown.map(t => (
+                                    <MediaCard key={t.media.id} media={t.media} listEntry={t.listEntry} localCount={t.files.length} downloaded={t.episodes} menu={libraryMenu.menu(t.media)} />
                                 ))}
                             </MediaGrid>
                         ) : (
                             <div className="flex flex-col gap-3">
-                                {shown.map(g => (
-                                    <LibraryRow key={g.item.media.id} group={g} trusted={trusted && !host} onOpen={openFolder} onPlay={f => playLocal(f.path, f.mediaId, f.episode)} />
+                                {shown.map(t => (
+                                    <LibraryRow key={t.media.id} item={t} trusted={trusted && !host} onOpen={openFolder} onPlay={f => playLocal(f.path, f.mediaId, f.episode)} />
                                 ))}
                             </div>
                         )}
@@ -424,14 +369,14 @@ function Stat({ label, value }: { label: string; value: string }) {
     )
 }
 
-function LibraryRow({ group: g, trusted, onOpen, onPlay }: { group: Group; trusted: boolean; onOpen: (path: string) => void; onPlay: (f: LocalFile) => void }) {
+function LibraryRow({ item: t, trusted, onOpen, onPlay }: { item: LibraryTitle; trusted: boolean; onOpen: (path: string) => void; onPlay: (f: LocalFile) => void }) {
     const [open, setOpen] = useState(false)
-    const m = g.item.media
-    const le = g.item.listEntry
+    const m = t.media
+    const le = t.listEntry
     const total = totalEpisodes(m)
     const isMovie = !mediaIsShow(m)
-    const extras = g.files.length - g.files.filter(f => f.kind === "main").length
     const marker = useEpisodeMarker(m)
+    const upTo = watchedUpTo(t)
 
     return (
         <div className="card overflow-hidden">
@@ -454,34 +399,48 @@ function LibraryRow({ group: g, trusted, onOpen, onPlay }: { group: Group; trust
                         )}
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        <Badge tone="brand">
-                            <HardDrive className="mr-1 size-3" />
-                            {isMovie ? "Movie" : episodeRanges(g.episodes)}
-                            {!isMovie && total > 0 && <span className="ml-1 opacity-70">({g.episodes.length}/{total})</span>}
-                        </Badge>
-                        {extras > 0 && <Badge>+{extras} extras</Badge>}
-                        {g.unwatched > 0 && <Badge tone="green">{g.unwatched} unwatched</Badge>}
-                        {g.resolutions.slice(0, 2).map(r => (
+                        {isMovie ? (
+                            <Badge tone="brand">
+                                <HardDrive className="mr-1 size-3" />
+                                Movie
+                            </Badge>
+                        ) : (
+                            t.seasons.map(s => (
+                                <Tooltip key={s.season} content={s.total ? `${s.count} of ${s.total} episodes of season ${s.season}` : `${s.count} episodes of season ${s.season}`}>
+                                    <span>
+                                        <Badge tone="brand">
+                                            <HardDrive className="mr-1 size-3" />
+                                            {s.ranges}
+                                            {s.total > 0 && s.count < s.total && <span className="ml-1 opacity-70">({s.count}/{s.total})</span>}
+                                        </Badge>
+                                    </span>
+                                </Tooltip>
+                            ))
+                        )}
+                        {t.specials > 0 && <Badge>+{t.specials} specials</Badge>}
+                        {t.extras > 0 && <Badge>+{t.extras} extras</Badge>}
+                        {t.unwatched > 0 && <Badge tone="green">{isMovie ? "Unwatched" : `${t.unwatched} unwatched`}</Badge>}
+                        {t.resolutions.slice(0, 2).map(r => (
                             <Badge key={r}>{r}</Badge>
                         ))}
-                        {g.releaseGroups.slice(0, 2).map(r => (
+                        {t.releaseGroups.slice(0, 2).map(r => (
                             <Badge key={r} tone="blue">
                                 {r}
                             </Badge>
                         ))}
                         <span className="text-xs text-subtle">
-                            {formatBytes(g.size)} · added {relativeTime(g.latest)}
+                            {formatBytes(t.size)} · added {relativeTime(t.addedAt)}
                         </span>
                     </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                    {g.next && (
-                        <Button variant="primary" size="sm" icon={<Play className="size-4 fill-current" />} onClick={() => onPlay(g.next!)}>
-                            {isMovie ? "Play" : formatKey(g.next.episode)}
+                    {t.next && (
+                        <Button variant="primary" size="sm" icon={<Play className="size-4 fill-current" />} onClick={() => onPlay(t.next!)}>
+                            {isMovie ? "Play" : formatKey(t.next.episode)}
                         </Button>
                     )}
-                    {trusted && g.dir && (
-                        <IconButton label="Open folder" variant="subtle" size="sm" onClick={() => onOpen(g.dir)}>
+                    {trusted && t.dir && (
+                        <IconButton label="Open folder" variant="subtle" size="sm" onClick={() => onOpen(t.dir)}>
                             <FolderOpen className="size-4" />
                         </IconButton>
                     )}
@@ -492,27 +451,27 @@ function LibraryRow({ group: g, trusted, onOpen, onPlay }: { group: Group; trust
             </div>
             {open && (
                 <div className="border-t border-line bg-surface-1/50">
-                    {g.files.map(f => {
-                        const watched = le?.status === "COMPLETED" || (f.kind === "main" && (le?.progress ?? 0) >= f.episode)
+                    {t.files.map(f => {
+                        const keys = fileKeys(f)
+                        const episode = f.kind === "main" && keys.length > 0
+                        const watched = episode && keys.every(k => k <= upTo)
                         return (
                             <div key={f.path} className="group/file flex w-full items-center gap-3 px-4 py-2 text-sm transition hover:bg-white/[0.04]">
                                 <button onClick={() => onPlay(f)} title={f.path} className="flex min-w-0 flex-1 items-center gap-3 text-left">
                                     <span className="grid size-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-muted transition group-hover/file:bg-brand group-hover/file:text-white">
                                         <Play className="ml-0.5 size-3 fill-current" />
                                     </span>
-                                    <span className={cn("w-20 shrink-0 font-semibold tabular-nums", watched && "text-subtle")}>
-                                        {f.kind === "main" ? (isMovie ? "Movie" : formatKey(f.episode)) : f.kind === "nc" ? "Bonus" : "Extra"}
-                                    </span>
+                                    <span className={cn("w-28 shrink-0 font-semibold tabular-nums", watched && "text-subtle")}>{fileLabel(f)}</span>
                                     <span className={cn("min-w-0 flex-1 truncate", watched ? "text-subtle" : "text-fg/85")}>{f.name}</span>
                                 </button>
                                 {f.parsed?.resolution && <span className="hidden shrink-0 text-xs text-subtle sm:inline">{f.parsed.resolution}</span>}
                                 <span className="w-20 shrink-0 text-right text-xs text-subtle tabular-nums">{formatBytes(f.size)}</span>
-                                {f.kind === "main" && (
+                                {episode && (
                                     <Tooltip content={watched ? "Mark as unwatched" : "Mark as watched"}>
                                         <button
                                             aria-label={watched ? "Mark as unwatched" : "Mark as watched"}
                                             disabled={marker.pending}
-                                            onClick={() => marker.mark(f.episode, !watched)}
+                                            onClick={() => marker.mark(watched ? keys[0] : keys[keys.length - 1], !watched)}
                                             className={cn(
                                                 "grid size-7 shrink-0 place-items-center rounded-full transition disabled:opacity-50",
                                                 watched ? "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25" : "text-subtle hover:bg-white/[0.08] hover:text-fg",
@@ -525,7 +484,7 @@ function LibraryRow({ group: g, trusted, onOpen, onPlay }: { group: Group; trust
                             </div>
                         )
                     })}
-                    {g.dir && <p className="truncate px-4 py-2 font-mono text-[11px] text-subtle">{g.dir}</p>}
+                    {t.dir && <p className="truncate px-4 py-2 font-mono text-[11px] text-subtle">{t.dir}</p>}
                 </div>
             )}
         </div>

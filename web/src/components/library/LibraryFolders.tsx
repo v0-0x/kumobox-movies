@@ -4,7 +4,8 @@ import { useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { toast } from "@/lib/toast"
 import { api } from "@/lib/api"
-import { formatKey, isShow, mediaRef } from "@/lib/ids"
+import { fileLabel } from "@/lib/files"
+import { mediaRef } from "@/lib/ids"
 import { useCollection, useLibraryFiles, useLibraryFolders, useStatus } from "@/lib/queries"
 import type { FolderInfo, LocalFile, Media } from "@/lib/types"
 import { cn, cover, formatBytes, plural, title } from "@/lib/utils"
@@ -372,7 +373,7 @@ function FolderRow({
                                 </span>
                                 <span className="hidden max-w-56 truncate text-xs text-subtle sm:inline">{x.mediaId > 0 ? title(m) || `#${x.mediaId}` : "Unmatched"}</span>
                                 <Tooltip content={x.locked ? "Matched by hand — scans keep it" : "Matched automatically"}>
-                                    <span className="w-20 shrink-0 text-right text-xs font-semibold tabular-nums">{x.kind === "nc" ? "Bonus" : x.kind === "special" ? "Extra" : !x.episode ? "—" : isShow(x.mediaId) ? formatKey(x.episode) : "Movie"}</span>
+                                    <span className="w-24 shrink-0 text-right text-xs font-semibold tabular-nums">{x.mediaId > 0 ? fileLabel(x) : "—"}</span>
                                 </Tooltip>
                             </label>
                         )

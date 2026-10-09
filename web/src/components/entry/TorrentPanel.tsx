@@ -24,7 +24,9 @@ type SortKey = "best" | "seeders" | "size" | "date"
 
 // The Torrents tab of a movie or show: search every torrent source (or one)
 // and send what's picked to the torrent client.
-export function TorrentPanel({ entry }: { entry: EntryView }) {
+// episode (a key), when given, is the episode to look for first: the one
+// "Find torrents" was picked for on the Episodes tab.
+export function TorrentPanel({ entry, episode }: { entry: EntryView; episode?: number }) {
     const { data: status } = useStatus()
     const settings = status?.settings
     const media = entry.media
@@ -34,8 +36,8 @@ export function TorrentPanel({ entry }: { entry: EntryView }) {
 
     const [provider, setProvider] = useState(() => settings?.torrent.defaultProvider || "all")
     // The episode after the last one watched (the last aired when all are).
-    const start = nextEpisode(media, entry.listEntry?.progress ?? 0) || latestAired(media) || firstEpisode(media)
-    const [scope, setScope] = useState<Scope>(() => (show && media.status !== "RELEASING" && (entry.listEntry?.progress ?? 0) === 0 ? "season" : "episode"))
+    const start = episode || nextEpisode(media, entry.listEntry?.progress ?? 0) || latestAired(media) || firstEpisode(media)
+    const [scope, setScope] = useState<Scope>(() => (show && !episode && media.status !== "RELEASING" && (entry.listEntry?.progress ?? 0) === 0 ? "season" : "episode"))
     const [season, setSeason] = useState(() => splitKey(start)[0] || 1)
     const [ep, setEp] = useState(() => splitKey(start)[1] || 1)
     const [resolution, setResolution] = useState(() => settings?.torrent.preferredResolution ?? "")

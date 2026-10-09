@@ -227,21 +227,46 @@ export type LetterboxdImportResult = LetterboxdResult & { files: string[] | null
 // all the same).
 export type LetterboxdConnected = LetterboxdStatus & { viewer: Viewer | null; result: LetterboxdResult | null; syncError?: string }
 
+// What a file's path says about it (server: library.Parsed). season is -1
+// when the name has none, episode -1 when it has no number (for a number
+// without a season, "Show - 105", it's that number); episodeEnd is the last
+// episode of a multi-episode file (S01E01E02: 2). folder is the movie's or
+// show's folder, folderTitle the title in its name.
 export type Parsed = {
     title: string
     folderTitle: string
+    folder?: string
     season: number
     part: number
     episode: number
+    episodeEnd?: number
+    absolute?: number
+    date?: string
     episodeTitle: string
     releaseGroup: string
     resolution: string
+    source?: string
+    codec?: string
+    hdr?: string[]
+    audio?: string[]
+    edition?: string
     year: number
+    show?: boolean
+    extra?: string // trailer, featurette, sample...
     kind: string
+    tmdbId?: number
+    imdbId?: string
+    tvdbId?: number
 }
 
+// What a library file is: a movie or an episode, a later part of a movie
+// split across files (CD2: the movie plays from part 1), a special, bonus
+// material (trailers, featurettes, samples...).
+export type FileKind = "main" | "part" | "special" | "extra"
+
 // A video file of the library. episode is its episode key (1 for a movie,
-// see lib/ids.ts).
+// see lib/ids.ts), 0 when unknown and for extras; episodeEnd the key of the
+// last episode of a file holding several (S01E01E02: 1001 and 1002).
 export type LocalFile = {
     path: string
     dir: string
@@ -251,8 +276,8 @@ export type LocalFile = {
     parsed: Parsed
     mediaId: number
     episode: number
-    airedEpisode: number
-    kind: "main" | "special" | "nc"
+    episodeEnd?: number
+    kind: FileKind
     locked: boolean
     ignored: boolean
     matchScore: number
@@ -271,9 +296,14 @@ export type HistoryEntry = {
 }
 
 // An episode as GET /api/media/{id} (and …/episodes) lists it, with what
-// the library and the watch history know: number is the episode key.
+// the library and the watch history know. key is the episode key (see lib/ids.ts; number holds the same, for older
+// code), season and episode the season and the episode's number in it. A
+// file that isn't an episode (an extra, a movie's later part) has key 0.
 export type EpisodeView = {
+    key: number
     number: number
+    season?: number
+    episode?: number
     title: string
     image: string
     summary: string
@@ -814,3 +844,24 @@ export type SharingPeer = {
 export type SharingStatus = { enabled: boolean; id: string; name: string; listening: boolean; peers: SharingPeer[]; addresses: string[] }
 
 export type SharedLibrary = { host: SharingPeer; files: LocalFile[] }
+
+// A movie or show of the Local library page (GET /api/library/titles): its
+// files summed up. episodes are the keys of the regular episodes with a file
+// (the movie's 1), ranges them written short ("S01E01–E10, S02E01–E03").
+export type LibraryTitle = {
+    media: Media
+    listEntry: ListEntry | null
+    files: LocalFile[]
+    episodes: number[]
+    seasons: { season: number; count: number; total: number; ranges: string }[]
+    ranges: string
+    specials: number
+    extras: number
+    size: number
+    addedAt: number
+    resolutions: string[]
+    releaseGroups: string[]
+    dir: string
+    unwatched: number
+    next: LocalFile | null
+}

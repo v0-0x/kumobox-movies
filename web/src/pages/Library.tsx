@@ -197,8 +197,9 @@ function AllFiles() {
                     options={[
                         { value: "all", label: "All kinds" },
                         { value: "main", label: "Movies & episodes" },
-                        { value: "special", label: "Extras" },
-                        { value: "nc", label: "Bonus" },
+                        { value: "part", label: "Movie parts" },
+                        { value: "special", label: "Specials" },
+                        { value: "extra", label: "Extras" },
                     ]}
                 />
             </div>
@@ -225,8 +226,9 @@ function AllFiles() {
                         )}
                         <select value={f.kind} onChange={e => patch(f, { kind: e.target.value })} className="h-8 rounded-lg border border-line bg-surface-2 px-2 text-xs">
                             <option value="main">{isShow(f.mediaId) ? "Episode" : "Movie"}</option>
-                            <option value="special">Extra</option>
-                            <option value="nc">Bonus</option>
+                            {!isShow(f.mediaId) && <option value="part">Later part</option>}
+                            {isShow(f.mediaId) && <option value="special">Special</option>}
+                            <option value="extra">Extra</option>
                         </select>
                         {isShow(f.mediaId) && <KeyInput value={f.episode} onChange={k => patch(f, { episode: k })} />}
                         {f.mediaId > 0 && (

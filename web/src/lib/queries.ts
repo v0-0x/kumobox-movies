@@ -19,6 +19,7 @@ import type {
     LetterboxdImportResult,
     LetterboxdResult,
     LetterboxdStatus,
+    LibraryTitle,
     LocalFile,
     MarketEntry,
     Media,
@@ -297,6 +298,16 @@ export const libraryFilesQuery = { queryKey: ["library", "files"], queryFn: () =
 
 export function useLibraryFiles() {
     return useQuery(libraryFilesQuery)
+}
+
+// The Local library page: the movies and shows with files, this computer's
+// (host "") or a sharing KumoBox's, each summed up by the server.
+export function useLibraryTitles(host = "") {
+    return useQuery({
+        queryKey: ["library", "titles", host],
+        queryFn: () => api.get<LibraryTitle[] | null>(`/api/library/titles${host ? `?host=${encodeURIComponent(host)}` : ""}`),
+        refetchInterval: host ? 30_000 : false,
+    })
 }
 
 // ---------------------------------------------------------------------------

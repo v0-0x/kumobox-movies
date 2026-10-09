@@ -3,10 +3,11 @@ import { useEffect, useState } from "react"
 import { useCollection, useSearch } from "@/lib/queries"
 import type { Media } from "@/lib/types"
 import { cn, cover, mediaSummary, originalTitle, title } from "@/lib/utils"
-import { Dialog, ErrorState, Input, Spinner } from "./ui"
+import { Dialog, ErrorState, Input, Spinner, Tabs } from "./ui"
 
 // Search TMDB (and the user's list) to pick a movie or show. type limits
-// it to movies (MOVIE) or shows (TV).
+// it to movies (MOVIE) or shows (TV); typeFilter, when set, lets the user
+// switch between movies, shows and both, starting with it.
 export function MediaPicker({
     open,
     onOpenChange,
@@ -15,6 +16,7 @@ export function MediaPicker({
     heading = "Choose a movie or show",
     description,
     type = "",
+    typeFilter,
 }: {
     open: boolean
     onOpenChange: (v: boolean) => void
@@ -23,7 +25,12 @@ export function MediaPicker({
     heading?: string
     description?: React.ReactNode
     type?: "" | "MOVIE" | "TV"
+    typeFilter?: "" | "MOVIE" | "TV"
 }) {
+    const [kind, setKind] = useState<"" | "MOVIE" | "TV">(type || typeFilter || "")
+    useEffect(() => {
+        if (open) setKind(type || typeFilter || "")
+    }, [open, type, typeFilter])
     const [q, setQ] = useState(initialQuery)
     const [dq, setDq] = useState(initialQuery)
     useEffect(() => {
@@ -36,11 +43,11 @@ export function MediaPicker({
         const t = setTimeout(() => setDq(q), 300)
         return () => clearTimeout(t)
     }, [q])
-    const { data, isFetching, error, refetch } = useSearch({ search: dq, type, perPage: 20 }, open && dq.trim().length > 1)
+    const { data, isFetching, error, refetch } = useSearch({ search: dq, type: kind, perPage: 20 }, open && dq.trim().length > 1)
     const { data: coll } = useCollection()
     const fromList = (coll?.lists ?? [])
         .flatMap(l => l.items)
-        .filter(i => !type || i.media.type === type)
+        .filter(i => !kind || i.media.type === kind)
         .filter(i => dq.trim().length > 1 && [title(i.media), i.media.title.english ?? "", i.media.title.native ?? ""].some(t => t.toLowerCase().includes(dq.toLowerCase())))
         .map(i => i.media)
         .slice(0, 6)
@@ -48,7 +55,19 @@ export function MediaPicker({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange} title={heading} description={description} className="w-[min(94vw,680px)]">
-            <Input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={type === "TV" ? "Search TV shows…" : type === "MOVIE" ? "Search movies…" : "Search movies and TV shows…"} icon={<Search className="size-4" />} />
+            <Input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={kind === "TV" ? "Search TV shows…" : kind === "MOVIE" ? "Search movies…" : "Search movies and TV shows…"} icon={<Search className="size-4" />} />
+            {typeFilter !== undefined && !type && (
+                <Tabs
+                    className="mt-3"
+                    value={kind}
+                    onChange={setKind}
+                    tabs={[
+                        { value: "", label: "All" },
+                        { value: "MOVIE", label: "Movies" },
+                        { value: "TV", label: "Shows" },
+                    ]}
+                />
+            )}
             <div className="mt-4 flex min-h-40 flex-col gap-1">
                 {isFetching && results.length === 0 && (
                     <div className="grid h-40 place-items-center">

@@ -62,7 +62,7 @@ function LibraryCardMenu({ media, onMatch }: { media: Media; onMatch: (files: Lo
         })
     })
     // Searches TMDB for the title the files carry, not the wrong match's.
-    const match = act(fs => onMatch(fs, fs.find(f => f.parsed?.folderTitle)?.parsed.folderTitle || fs.find(f => f.parsed?.title)?.parsed.title || ""))
+    const match = act(fs => onMatch(fs, fs.find(f => f.parsed?.title)?.parsed.title || fs.find(f => f.parsed?.folderTitle)?.parsed.folderTitle || ""))
     const openFolder = act(fs => api.post("/api/open", { path: mostCommon(fs.map(f => f.dir)) }))
     const none = files?.length === 0
 

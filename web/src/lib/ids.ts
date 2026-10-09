@@ -26,6 +26,10 @@ export const mediaRef = (id: number) => `TMDB ${isShow(id) ? "tv" : "movie"}/${t
 
 export const episodeKey = (season: number, episode: number) => season * KEY_SEASON + episode
 
+// The key of an episode the server lists (GET /api/media/{id} and
+// …/episodes): its key ("number" holds the same, for older code).
+export const episodeKeyOf = (e: { key?: number; number: number }) => e.key ?? e.number
+
 // The season and episode of a key.
 export const splitKey = (key: number): [season: number, episode: number] => [Math.floor(key / KEY_SEASON), key % KEY_SEASON]
 

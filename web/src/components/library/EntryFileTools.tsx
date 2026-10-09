@@ -94,7 +94,7 @@ export function EntryFilesMenu({ entry }: { entry: EntryView }) {
                 </DropdownContent>
             </Dropdown>
             <AddFromLibraryDialog open={adding} onOpenChange={setAdding} media={entry.media} />
-            <MatchDialog open={moving} onOpenChange={setMoving} files={files} initialQuery={files[0]?.parsed.folderTitle || files[0]?.parsed.title || ""} />
+            <MatchDialog open={moving} onOpenChange={setMoving} files={files} initialQuery={files[0]?.parsed.title || files[0]?.parsed.folderTitle || ""} />
         </>
     )
 }
