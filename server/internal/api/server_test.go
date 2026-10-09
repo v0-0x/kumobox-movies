@@ -169,6 +169,24 @@ func TestCrossSiteRequests(t *testing.T) {
 	}
 }
 
+// A plugin's permissions (files it may read and write, commands it may
+// run) are granted on this computer, as plugins are installed there.
+func TestPluginGrantOnlyFromThisComputer(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, ""
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if w := do(s, "POST", "/api/extensions/some-plugin/grant", "192.168.1.20:5000", "", nil); w.Code != http.StatusForbidden {
+		t.Errorf("LAN grant: %d %s", w.Code, w.Body.String())
+	}
+	// From this computer it's only refused for not being installed.
+	if w := do(s, "POST", "/api/extensions/some-plugin/grant", "127.0.0.1:5000", "", nil); w.Code == http.StatusForbidden || !strings.Contains(w.Body.String(), "not installed") {
+		t.Errorf("local grant: %d %s", w.Code, w.Body.String())
+	}
+}
+
 // Settings slices must not be shared with the live settings: decoding a
 // LAN device's request used to write its extraDirs straight into them.
 func TestSettingsSlicesNotShared(t *testing.T) {
