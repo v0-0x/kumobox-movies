@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
@@ -56,6 +57,10 @@ type MediaQuery struct {
 	// Query is free text the user typed: it replaces the searches made
 	// from the title and ids, and nothing is filtered out.
 	Query string `json:"query,omitempty"`
+	// Media is the catalog entry the query was made from, when there is
+	// one: extension providers get it whole (sources only use the fields
+	// above).
+	Media *catalog.Media `json:"-"`
 }
 
 // Source searches one site or indexer for torrents.

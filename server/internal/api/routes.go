@@ -159,26 +159,8 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/downloads/{id}", h(func(r *http.Request) (any, error) { s.app.Downloads.Remove(r.PathValue("id")); return nil, nil }))
 	m.HandleFunc("POST /api/downloads/clear", h(func(r *http.Request) (any, error) { s.app.Downloads.ClearFinished(); return nil, nil }))
 
-	// --- torrents
-	m.HandleFunc("GET /api/torrents/providers", h(func(r *http.Request) (any, error) { return s.app.Torrents.Providers(), nil }))
-	m.HandleFunc("POST /api/torrents/search", h(s.torrentSearch))
-	m.HandleFunc("POST /api/torrents/download", h(s.torrentDownload))
-	m.HandleFunc("GET /api/torrent-client/status", h(func(r *http.Request) (any, error) { return s.app.Torrents.Status(r.Context()), nil }))
-	m.HandleFunc("GET /api/torrent-client/list", h(s.torrentList))
-	m.HandleFunc("POST /api/torrent-client/action", h(s.torrentAction))
-	m.HandleFunc("POST /api/torrent-client/start", h(func(r *http.Request) (any, error) { return nil, s.app.Torrents.StartClient(r.Context()) }))
-	m.HandleFunc("POST /api/torrent-client/add", h(s.torrentAdd))
-	m.HandleFunc("GET /api/autodownloader/rules", h(func(r *http.Request) (any, error) { return s.app.AutoDL.Rules() }))
-	m.HandleFunc("POST /api/autodownloader/rules", h(s.saveRule))
-	m.HandleFunc("DELETE /api/autodownloader/rules/{id}", h(func(r *http.Request) (any, error) {
-		id, _ := strconv.Atoi(r.PathValue("id"))
-		return nil, s.app.AutoDL.DeleteRule(id)
-	}))
-	m.HandleFunc("POST /api/autodownloader/run", h(func(r *http.Request) (any, error) {
-		n, err := s.app.AutoDL.Run(r.Context())
-		return map[string]int{"added": n}, err
-	}))
-	m.HandleFunc("GET /api/autodownloader/items", h(func(r *http.Request) (any, error) { return s.app.AutoDL.Items(), nil }))
+	// --- torrents (search, client, auto downloader)
+	s.torrentRoutes()
 
 	// --- extensions & plugins
 	m.HandleFunc("GET /api/extensions", h(func(r *http.Request) (any, error) { return s.app.Extensions.List(), nil }))

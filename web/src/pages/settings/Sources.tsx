@@ -113,7 +113,7 @@ const BUILT_IN: BuiltIn[] = [
 // Where torrents are searched: Torznab indexers (Jackett, Prowlarr) and the
 // built-in sources.
 export function TorrentSourcesSection({ draft, set }: SectionProps) {
-    const { data: providers } = useQuery({ queryKey: ["torrent-providers"], queryFn: () => api.get<{ id: string; name: string; extension: boolean }[]>("/api/torrents/providers") })
+    const { data: providers } = useQuery({ queryKey: ["torrent-providers"], queryFn: () => api.get<{ id: string; name: string; kind: string }[]>("/api/torrents/providers") })
     const ts = draft.torrentSources
     const indexers = ts?.torznab ?? []
     const setIndexers = (v: TorznabIndexer[]) => set("torrentSources", { torznab: v })
@@ -127,7 +127,7 @@ export function TorrentSourcesSection({ draft, set }: SectionProps) {
                         className="w-56"
                         value={draft.torrent.defaultProvider}
                         onChange={v => set("torrent", { defaultProvider: v })}
-                        options={[{ value: "all", label: "All sources" }, ...(providers ?? []).map(x => ({ value: x.id, label: x.name + (x.extension ? " (extension)" : "") }))]}
+                        options={[{ value: "all", label: "All sources" }, ...(providers ?? []).map(x => ({ value: x.id, label: x.name + (x.kind === "extension" ? " (extension)" : "") }))]}
                     />
                 </Row>
                 <Row label="Preferred resolution">

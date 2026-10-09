@@ -561,6 +561,7 @@ export type DownloadItem = {
 }
 
 export type TorrentResult = {
+    // The ids of the sources that found it, comma-separated.
     provider: string
     name: string
     link: string
@@ -575,13 +576,27 @@ export type TorrentResult = {
     date: string
     resolution: string
     releaseGroup: string
+    // The key of the one episode it holds, -1 when it's not one episode.
     episodeNumber: number
+    // A pack: several episodes, a season, the whole show.
     isBatch: boolean
     isBestRelease: boolean
     confirmed: boolean
     trusted: boolean
     remake: boolean
     dub: boolean
+}
+
+// POST /api/torrents/search: the results, best first, and the sources that
+// failed ("Source: what went wrong").
+export type TorrentSearchResponse = { results: TorrentResult[]; errors: string[] }
+
+// GET /api/torrents/providers: the search sources.
+export type TorrentProviderInfo = {
+    id: string
+    name: string
+    supports: ("movie" | "tv")[]
+    kind: "torznab" | "builtin" | "extension"
 }
 
 export type Torrent = {
@@ -704,18 +719,33 @@ export type PluginState = {
 // GET /api/catalog/schedule: episodes of the shows on the list.
 export type ScheduleItem = AiringEpisode & { media: Media; listStatus?: string }
 
+// An auto downloader rule: keep a show downloaded. resolution is "2160",
+// "1080", "720", "480" or "" (any); releaseGroups are preferred, in order;
+// packs allows season packs when several episodes of a finished season are
+// wanted; destination (empty: the library) is where torrents are saved;
+// startFrom is the key of the first episode wanted (0: the one after the
+// last watched).
 export type AutoRule = {
     id?: number
-    enabled: boolean
     mediaId: number
+    enabled: boolean
     title: string
+    resolution: string
     releaseGroups: string[]
-    resolutions: string[]
-    additionalTerms: string[]
-    episodeType: "recent" | "all"
+    mustContain: string[]
+    mustNotContain: string[]
     minSeeders: number
-    provider: string
+    packs: boolean
+    destination: string
+    startFrom: number
 }
+
+// Something the auto downloader grabbed: episode is the episode's key, or
+// the season's (season*1000) for a season pack.
+export type AutoItem = { key: string; ruleId: number; mediaId: number; episode: number; pack: boolean; title: string; createdAt: number }
+
+// POST /api/autodownloader/run.
+export type AutoRunReport = { added: number; wanted: number; errors: string[]; busy?: boolean }
 
 // A library folder as found on disk (Library tools, manual matching).
 export type FolderInfo = {

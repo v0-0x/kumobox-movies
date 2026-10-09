@@ -142,7 +142,7 @@ type OnlineStreamSettings struct {
 
 type TorrentSettings struct {
 	DefaultClient   string `json:"defaultClient"`   // qbittorrent | transmission | none
-	DefaultProvider string `json:"defaultProvider"` // nyaa | animetosho | extension id
+	DefaultProvider string `json:"defaultProvider"` // "all" or a search source id
 	ShowActiveCount bool   `json:"showActiveCount"`
 	// Create a sub folder per movie or show inside the library directory.
 	CreateSubfolder     bool   `json:"createSubfolder"`
@@ -243,7 +243,7 @@ func Defaults() Settings {
 		OnlineStream: OnlineStreamSettings{Enabled: true, DefaultProvider: "archive"},
 		Torrent: TorrentSettings{
 			DefaultClient:       "qbittorrent",
-			DefaultProvider:     "nyaa",
+			DefaultProvider:     "all",
 			ShowActiveCount:     true,
 			CreateSubfolder:     true,
 			PreferredResolution: "1080",
@@ -411,6 +411,11 @@ func sanitize(s Settings) Settings {
 	}
 	if s.Torrent.AutoDownloadMinutes < 5 {
 		s.Torrent.AutoDownloadMinutes = 20
+	}
+	// Kumo's anime sources are gone.
+	switch s.Torrent.DefaultProvider {
+	case "", "nyaa", "animetosho":
+		s.Torrent.DefaultProvider = d.Torrent.DefaultProvider
 	}
 	if s.UI.AccentColor == "" {
 		s.UI.AccentColor = d.UI.AccentColor

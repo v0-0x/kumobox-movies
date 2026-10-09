@@ -300,16 +300,3 @@ func TestInvalidClientHost(t *testing.T) {
 		t.Fatalf("Transmission: %v", err)
 	}
 }
-
-func TestEnrich(t *testing.T) {
-	r := &SearchResult{Name: "[SubsPlease] Sousou no Frieren - 12 (1080p) [ABCD1234].mkv"}
-	enrich(r)
-	if r.ReleaseGroup != "SubsPlease" || r.Resolution != "1080p" || r.EpisodeNumber != 12 || r.IsBatch {
-		t.Fatalf("%+v", r)
-	}
-	b := &SearchResult{Name: "[Judas] Frieren (Season 1) [1080p][HEVC x265 10bit][Dual-Audio] (Batch)"}
-	enrich(b)
-	if !b.IsBatch || !b.Dub {
-		t.Fatalf("batch %+v", b)
-	}
-}

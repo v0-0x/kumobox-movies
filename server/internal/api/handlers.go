@@ -5,8 +5,6 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,13 +12,11 @@ import (
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
-	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/downloads"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
-	"github.com/v0-0x/kumobox-movies/server/internal/torrent"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -187,35 +183,6 @@ func (s *Server) match(r *http.Request) (any, error) {
 	s.app.Hub.Publish("library-updated", nil)
 	s.app.PrefetchMedia(body.MediaID)
 	return nil, nil
-}
-
-// torrentFolder is where a torrent for a title is saved: the folder that
-// already holds its files (inside the library), else the usual new folder
-// of its own.
-func (s *Server) torrentFolder(mediaID int, title string) string {
-	def := s.app.Torrents.SavePathFor(title)
-	cfg := s.app.Settings.Get()
-	lib := filepath.Clean(config.ExpandHome(cfg.Library.Dir))
-	if mediaID <= 0 || cfg.Library.Dir == "" || !cfg.Torrent.CreateSubfolder {
-		return def
-	}
-	files, _ := s.app.Files.ByMedia(mediaID)
-	counts := map[string]int{}
-	best := ""
-	for _, f := range files {
-		d := filepath.Clean(f.Dir)
-		if d == lib || !util.IsSubPath(lib, d) || strings.HasPrefix(filepath.Base(d), ".") {
-			continue
-		}
-		counts[d]++
-		if counts[d] > counts[best] {
-			best = d
-		}
-	}
-	if best != "" {
-		return best
-	}
-	return def
 }
 
 // naturalLess compares file names with numbers in numeric order
@@ -740,187 +707,6 @@ func (s *Server) osDownload(r *http.Request) (any, error) {
 	}
 	s.app.Hub.Info(fmt.Sprintf("Queued %d download(s)", len(items)))
 	return items, nil
-}
-
-// ---------------------------------------------------------------------------
-// Torrents
-
-func (s *Server) torrentSearch(r *http.Request) (any, error) {
-	var body struct {
-		Provider   string `json:"provider"`
-		MediaID    int    `json:"mediaId"`
-		Query      string `json:"query"`
-		Episode    int    `json:"episode"`
-		Batch      bool   `json:"batch"`
-		Resolution string `json:"resolution"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	var search func(ctx context.Context, p torrent.Provider) ([]*torrent.SearchResult, error)
-	if body.MediaID <= 0 {
-		if body.Query == "" {
-			return nil, badRequest("type something to search")
-		}
-		search = func(ctx context.Context, p torrent.Provider) ([]*torrent.SearchResult, error) {
-			return p.Search(ctx, body.Query)
-		}
-	} else {
-		media, err := s.app.Platform.MediaLite(r.Context(), body.MediaID)
-		if err != nil {
-			return nil, err
-		}
-		q := torrent.SmartQuery{Media: media, Query: body.Query, Episode: body.Episode, Batch: body.Batch, Resolution: body.Resolution}
-		search = func(ctx context.Context, p torrent.Provider) ([]*torrent.SearchResult, error) {
-			return p.SmartSearch(ctx, q)
-		}
-	}
-	if body.Provider == allProviders {
-		return s.searchAllProviders(r.Context(), search)
-	}
-	p, err := s.app.Torrents.Provider(body.Provider)
-	if err != nil {
-		return nil, err
-	}
-	res, err := search(r.Context(), p)
-	if err != nil {
-		return nil, err
-	}
-	if res == nil {
-		res = []*torrent.SearchResult{}
-	}
-	return res, nil
-}
-
-func (s *Server) torrentDownload(r *http.Request) (any, error) {
-	var body struct {
-		Provider string                  `json:"provider"`
-		MediaID  int                     `json:"mediaId"`
-		Results  []*torrent.SearchResult `json:"results"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	title := ""
-	if body.MediaID > 0 {
-		if media, err := s.app.Platform.MediaLite(r.Context(), body.MediaID); err == nil {
-			title = media.PreferredTitle()
-		}
-	}
-	var uris []string
-	for _, res := range body.Results {
-		// Results of a multi-provider search each come from their own provider.
-		id := body.Provider
-		if res.Provider != "" && (id == allProviders || id == "") {
-			id = res.Provider
-		}
-		p, err := s.app.Torrents.Provider(id)
-		if err != nil {
-			return nil, err
-		}
-		m, err := p.Magnet(r.Context(), res)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", res.Name, err)
-		}
-		uris = append(uris, m)
-	}
-	if len(uris) == 0 {
-		return nil, badRequest("nothing to download")
-	}
-	save := s.torrentFolder(body.MediaID, title)
-	if err := s.app.Torrents.Add(r.Context(), uris, save); err != nil {
-		return nil, err
-	}
-	s.app.Hub.Success(fmt.Sprintf("Sent %d torrent(s) to the torrent client", len(uris)))
-	return map[string]any{"savePath": save}, nil
-}
-
-func (s *Server) torrentList(r *http.Request) (any, error) {
-	c, err := s.app.Torrents.Client()
-	if err != nil {
-		return nil, badRequest(err.Error())
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	list, err := c.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if list == nil {
-		list = []torrent.Torrent{}
-	}
-	return list, nil
-}
-
-func (s *Server) torrentAction(r *http.Request) (any, error) {
-	var body struct {
-		Hashes []string `json:"hashes"`
-		Action string   `json:"action"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	c, err := s.app.Torrents.Client()
-	if err != nil {
-		return nil, badRequest(err.Error())
-	}
-	switch body.Action {
-	case "pause":
-		return nil, c.Pause(r.Context(), body.Hashes)
-	case "resume":
-		return nil, c.Resume(r.Context(), body.Hashes)
-	case "remove":
-		return nil, c.Remove(r.Context(), body.Hashes, false)
-	case "removeData":
-		return nil, c.Remove(r.Context(), body.Hashes, true)
-	case "open":
-		if !isTrusted(r) {
-			return nil, forbidden("only available on this computer")
-		}
-		list, err := c.List(r.Context())
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range list {
-			if len(body.Hashes) > 0 && t.Hash == body.Hashes[0] {
-				target := t.ContentPath
-				if st, err := os.Stat(target); err != nil || !st.IsDir() {
-					target = filepath.Dir(target)
-				}
-				return nil, util.Open(target)
-			}
-		}
-		return nil, notFound("torrent not found")
-	}
-	return nil, badRequest("unknown action")
-}
-
-func (s *Server) torrentAdd(r *http.Request) (any, error) {
-	var body struct {
-		Magnet  string `json:"magnet"`
-		MediaID int    `json:"mediaId"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	if !strings.HasPrefix(body.Magnet, "magnet:") && !strings.HasPrefix(body.Magnet, "http") {
-		return nil, badRequest("enter a magnet link or a .torrent URL")
-	}
-	title := ""
-	if body.MediaID > 0 {
-		if media, err := s.app.Platform.MediaLite(r.Context(), body.MediaID); err == nil {
-			title = media.PreferredTitle()
-		}
-	}
-	return nil, s.app.Torrents.Add(r.Context(), []string{body.Magnet}, s.app.Torrents.SavePathFor(title))
-}
-
-func (s *Server) saveRule(r *http.Request) (any, error) {
-	var rule torrent.Rule
-	if err := decode(r, &rule); err != nil {
-		return nil, err
-	}
-	return s.app.AutoDL.SaveRule(rule)
 }
 
 // ---------------------------------------------------------------------------
