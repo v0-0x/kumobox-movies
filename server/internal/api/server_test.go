@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -15,6 +16,14 @@ func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("LOCALAPPDATA", t.TempDir()) // the runtime dir on Windows
+	// Tests never reach the real TMDB (a key set in a test makes the app
+	// fetch the Discover page in the background): without a stand-in, it's
+	// an address nothing answers at.
+	if os.Getenv("KUMOBOX_TMDB_URL") == "" {
+		dead := httptest.NewServer(http.NotFoundHandler())
+		dead.Close()
+		t.Setenv("KUMOBOX_TMDB_URL", dead.URL)
+	}
 	a, err := app.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
