@@ -320,16 +320,20 @@ export type EpisodeView = {
     hasFile: boolean
 }
 
+// episodes is null for a show whose seasons aren't known and that has no
+// episode file (Go's empty list).
 export type EntryView = {
     media: Media
     listEntry: ListEntry | null
-    episodes: EpisodeView[]
+    episodes: EpisodeView[] | null
     specials: EpisodeView[] | null
     others: EpisodeView[] | null
     nextEpisode: EpisodeView | null
     localCount: number
     sharedCount: number // files other KumoBox apps share
     images?: { banner: string; poster: string; fanart: string; clearlogo: string } | null
+    // The title's ids on other sites.
+    mappings?: { tmdbId: number; imdbId?: string; tvdbId?: number }
     metadataNote?: string
 }
 

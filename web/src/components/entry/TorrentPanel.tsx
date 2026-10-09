@@ -38,7 +38,8 @@ export function TorrentPanel({ entry, episode }: { entry: EntryView; episode?: n
     // The episode after the last one watched (the last aired when all are).
     const start = episode || nextEpisode(media, entry.listEntry?.progress ?? 0) || latestAired(media) || firstEpisode(media)
     const [scope, setScope] = useState<Scope>(() => (show && !episode && media.status !== "RELEASING" && (entry.listEntry?.progress ?? 0) === 0 ? "season" : "episode"))
-    const [season, setSeason] = useState(() => splitKey(start)[0] || 1)
+    // A special (S00E03, from the Episodes tab) is looked for in season 0.
+    const [season, setSeason] = useState(() => (show ? splitKey(start)[0] : 1))
     const [ep, setEp] = useState(() => splitKey(start)[1] || 1)
     const [resolution, setResolution] = useState(() => settings?.torrent.preferredResolution ?? "")
     const [query, setQuery] = useState("")
