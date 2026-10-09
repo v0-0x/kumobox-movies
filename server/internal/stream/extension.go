@@ -272,8 +272,11 @@ func (p *ExtensionProvider) Streams(ctx context.Context, r providers.Request) ([
 		key = catalog.EpisodeKey(r.Season, r.Episode)
 	}
 	ep := findEpisode(c.Episodes, ProviderEpisode(media, key))
-	if ep == nil && r.IsTV() && r.Episode > 0 {
-		// Some sites list each season apart: the match may be the season.
+	if ep == nil && r.IsTV() && r.Episode > 0 && c.Mapping.Manual {
+		// Some sites list each season apart: the title picked by hand may
+		// be the season. (A title found by searching is the show's, which
+		// may lack the latest episodes: its episode with that number would
+		// be one of an earlier season.)
 		ep = findEpisode(c.Episodes, float64(r.Episode))
 	}
 	if ep == nil {

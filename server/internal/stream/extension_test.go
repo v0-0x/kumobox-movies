@@ -137,6 +137,28 @@ func TestExtensionProviderShow(t *testing.T) {
 	}
 }
 
+// A site that has fewer episodes than the show (the latest season isn't
+// there yet) has no episode past them: never one of an earlier season
+// with that number in its season.
+func TestExtensionProviderMissingEpisode(t *testing.T) {
+	ext := &fakeExtension{results: []extensions.OSSearchResult{{ID: "bb", Title: "Breaking Bad"}}, episodes: map[string]int{"bb": 7}}
+	media := show()
+	p := NewExtensionProvider(openTestDB(t), ext, func(ctx context.Context, id int) (*catalog.Media, error) { return media, nil })
+	streams, err := p.Streams(context.Background(), RequestFor(media, 2003))
+	if err == nil || !strings.Contains(err.Error(), "S02E03") {
+		t.Fatalf("S02E03 of a site with season 1 only: %v, %+v", err, streams)
+	}
+	// Picked by hand (a site listing each season apart), the season's own
+	// number is tried.
+	ext.episodes["bb-s2"] = 5
+	if err := p.SetMatch(media.ID, "bb-s2", "Breaking Bad Season 2"); err != nil {
+		t.Fatal(err)
+	}
+	if streams, err := p.Streams(context.Background(), RequestFor(media, 2003)); err != nil || len(streams) == 0 || !strings.Contains(streams[0].URL, "bb-s2-3.") {
+		t.Fatalf("hand-picked season: %v, %+v", err, streams)
+	}
+}
+
 func TestExtensionProviderMovieAndBadMatch(t *testing.T) {
 	ext := &fakeExtension{
 		results:  []extensions.OSSearchResult{{ID: "tdk", Title: "The Dark Knight (2008)"}},
