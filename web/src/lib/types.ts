@@ -344,10 +344,18 @@ export type Settings = {
         resumePlayback: boolean
         autoPlayNext: boolean
         rememberTracks: boolean
+        // Audio in this language rather than the original (a dub), e.g.
+        // "fre,fra,fr"; "": the original language.
         preferredAudioLang: string
+        // Subtitles in this language ("": English, for foreign audio).
         preferredSubLang: string
-        skipIntroAniSkip: boolean
-        skipOutroAniSkip: boolean
+        // Subtitles only when the audio isn't in a language of the user's
+        // (else whenever preferredSubLang is set); forced ones always.
+        subtitlesForForeign: boolean
+        // Skip the chapters named as an intro or a recap / the end credits
+        // or a preview.
+        skipIntro: boolean
+        skipCredits: boolean
     }
     mpv: { path: string; socket: string; extraArgs: string; fullscreen: boolean }
     transcode: { ffmpegPath: string; ffprobePath: string; mode: string; hwAccel: string; vaapiNode: string; preset: string }
@@ -450,11 +458,17 @@ export type Status = {
     settings: Settings
 }
 
+// A part of a video its chapters name as an intro, a recap, the credits or a
+// preview of the next episode (GET /api/playback/skips).
+export type SkipInterval = { type: string; start: number; end: number }
+
 export type PlaybackSession = {
     id: string
     mediaId: number
-    episode: number
-    title: string
+    episode: number // key
+    title: string // "Show — S01E02 · Pilot", "Movie (2010)"
+    mediaTitle?: string
+    episodeTitle?: string
     source: string
     player: string
     position: number
@@ -462,6 +476,7 @@ export type PlaybackSession = {
     paused: boolean
     active: boolean
     progressUpdated: boolean
+    skips?: SkipInterval[] | null
 }
 
 export type TrackPrefs = {

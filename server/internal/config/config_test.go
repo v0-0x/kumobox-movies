@@ -38,6 +38,10 @@ func TestFirstLaunchSavesDefaults(t *testing.T) {
 	if got.TMDB.Language != "en-US" || got.TMDB.Region != "US" || got.TMDB.APIKey != "" {
 		t.Fatalf("TMDB defaults: %+v", got.TMDB)
 	}
+	// Original audio, subtitles for foreign languages, nothing skipped.
+	if p := got.Playback; p.PreferredAudioLang != "" || p.PreferredSubLang != "" || !p.SubtitlesForForeign || p.SkipIntro || p.SkipCredits {
+		t.Fatalf("playback defaults: %+v", p)
+	}
 }
 
 // Settings saved without some fields (by an older version, or edited by

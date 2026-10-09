@@ -310,6 +310,23 @@ func parseTrackList(raw json.RawMessage) []Track {
 	return out
 }
 
+// parseChapterList reads mpv's chapter-list: the chapters' names and
+// starts, in order.
+func parseChapterList(raw json.RawMessage) []Chapter {
+	var list []struct {
+		Title string  `json:"title"`
+		Time  float64 `json:"time"`
+	}
+	if !decodeProp(raw, &list) {
+		return nil
+	}
+	out := make([]Chapter, 0, len(list))
+	for _, c := range list {
+		out = append(out, Chapter{Title: c.Title, Start: c.Time})
+	}
+	return out
+}
+
 func (m *Mpv) ShowText(text string, ms int) {
 	_, _ = m.Command("show-text", text, ms)
 }

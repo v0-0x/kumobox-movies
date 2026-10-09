@@ -65,6 +65,7 @@ type App struct {
 	DataDir    string
 
 	prefetch *prefetcher
+	presence presence
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -207,29 +208,8 @@ func (a *App) wire() {
 		return r, nil
 	}
 
-	// Auto play next local episode.
-	a.Player.NextResolver = func(ctx context.Context, s *player.Session) (*player.PlayRequest, error) {
-		if s.Source != "local" {
-			return nil, nil
-		}
-		files, err := a.Files.ByMedia(s.MediaID)
-		if err != nil {
-			return nil, err
-		}
-		media, err := a.Platform.MediaLite(ctx, s.MediaID)
-		if err != nil {
-			return nil, err
-		}
-		next := media.NextEpisode(s.Episode)
-		if next == 0 {
-			return nil, nil // the last one, or a movie
-		}
-		f := library.EpisodeFile(files, next)
-		if f == nil {
-			return nil, nil
-		}
-		return &player.PlayRequest{MediaID: s.MediaID, Episode: f.Episode, Title: EpisodeTitle(media, f.Episode), Source: "local", Target: f.Path}, nil
-	}
+	// Auto play next: the next episode's file, or stream (playback.go).
+	a.Player.NextResolver, a.Player.HasNext = a.nextEpisode, a.hasNextEpisode
 
 	// Plugins hooks after progress updates.
 	a.Player.OnProgress = append(a.Player.OnProgress, func(mediaID, episode int) {
@@ -240,58 +220,14 @@ func (a *App) wire() {
 		a.Extensions.FireHook("onPostUpdateEntry", map[string]any{"mediaId": mediaID})
 	})
 
-	// Discord rich presence.
-	var (
-		presenceMu   sync.Mutex
-		lastPresence time.Time
-		showing      bool // a presence is set and must be cleared eventually
-	)
-	clearPresence := func() {
-		presenceMu.Lock()
-		was := showing
-		showing, lastPresence = false, time.Time{}
-		presenceMu.Unlock()
-		if was {
-			a.Discord.Clear()
-		}
-	}
-	a.Player.OnStatus = append(a.Player.OnStatus, func(s *player.Session) {
-		cfg := a.Settings.Get()
-		if !cfg.Discord.RichPresence || cfg.Discord.ClientID == "" || !s.Active {
-			clearPresence()
-			return
-		}
-		presenceMu.Lock()
-		if time.Since(lastPresence) < 15*time.Second {
-			presenceMu.Unlock()
-			return
-		}
-		lastPresence, showing = time.Now(), true
-		presenceMu.Unlock()
-		media, err := a.Platform.MediaLite(context.Background(), s.MediaID)
-		act := discord.Activity{Details: s.Title}
-		if err == nil {
-			act.Details = media.PreferredTitle()
-			act.LargeImage = media.CoverImage.Large
-			act.LargeText = media.PreferredTitle()
-			if media.IsShow() && s.Episode > 0 {
-				act.State = catalog.FormatKey(s.Episode)
-			} else if y := media.Year(); y > 0 && !media.IsShow() {
-				act.State = fmt.Sprint(y)
-			}
-		}
-		if s.Duration > 0 && !s.Paused {
-			act.Start = time.Now().Add(-time.Duration(s.Position) * time.Second)
-			act.End = act.Start.Add(time.Duration(s.Duration) * time.Second)
-		}
-		_ = a.Discord.SetActivity(cfg.Discord.ClientID, act)
-	})
+	// Discord rich presence (playback.go).
+	a.Player.OnStatus = append(a.Player.OnStatus, a.showPresence)
 
 	a.Extensions.Host = a.pluginServices()
 
 	a.Settings.OnChange(func(old, cur config.Settings) {
 		if !cur.Discord.RichPresence || cur.Discord.ClientID != old.Discord.ClientID {
-			clearPresence() // turned off: don't leave "Watching…" behind
+			a.clearPresence() // turned off: don't leave "Watching…" behind
 		}
 		if old.Library.AutoRefresh != cur.Library.AutoRefresh || fmt.Sprint(old.LibraryDirs()) != fmt.Sprint(cur.LibraryDirs()) {
 			a.Scanner.StartWatcher()
@@ -393,15 +329,6 @@ func (a *App) progressFromHistory(finished []history.Entry) {
 			_, _ = a.Platform.UpdateProgress(ctx, h.MediaID, h.Episode)
 		}
 	}
-}
-
-// EpisodeTitle is how the players title an episode: the movie's title, or
-// the show's with the episode (Show — S01E05).
-func EpisodeTitle(media *catalog.Media, episode int) string {
-	if !media.IsShow() || episode <= 0 {
-		return media.PreferredTitle()
-	}
-	return media.PreferredTitle() + " — " + catalog.FormatKey(episode)
 }
 
 // PrefetchCollectionArt downloads covers and banners of everything in the

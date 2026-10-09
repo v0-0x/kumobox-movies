@@ -98,10 +98,21 @@ type PlaybackSettings struct {
 	ResumePlayback      bool    `json:"resumePlayback"`
 	AutoPlayNext        bool    `json:"autoPlayNext"`
 	RememberTracks      bool    `json:"rememberTracks"`
-	PreferredAudioLang  string  `json:"preferredAudioLang"` // e.g. "jpn,ja"
-	PreferredSubLang    string  `json:"preferredSubLang"`   // e.g. "eng,en"
-	SkipIntroAniSkip    bool    `json:"skipIntroAniSkip"`   // openings
-	SkipOutroAniSkip    bool    `json:"skipOutroAniSkip"`   // endings
+	// Audio in this language rather than the title's original one (a dub),
+	// a list of language codes like "fre,fra,fr"; empty: the original.
+	PreferredAudioLang string `json:"preferredAudioLang"`
+	// Subtitles in this language, e.g. "eng,en"; empty: English, where
+	// SubtitlesForForeign wants them.
+	PreferredSubLang string `json:"preferredSubLang"`
+	// SubtitlesForForeign turns subtitles on (in PreferredSubLang) only
+	// when the audio isn't in a language of the user's; off, subtitles
+	// show whenever PreferredSubLang is set. Forced subtitles in the
+	// audio's language show either way (see player.ChooseTracks).
+	SubtitlesForForeign bool `json:"subtitlesForForeign"`
+	// Skip the parts of a video its chapter names mark as an intro or a
+	// recap (SkipIntro), the end credits or a preview (SkipCredits).
+	SkipIntro   bool `json:"skipIntro"`
+	SkipCredits bool `json:"skipCredits"`
 }
 
 type MpvSettings struct {
@@ -230,6 +241,7 @@ func Defaults() Settings {
 			RememberTracks:      true,
 			PreferredAudioLang:  "",
 			PreferredSubLang:    "",
+			SubtitlesForForeign: true,
 		},
 		Mpv: MpvSettings{Path: "mpv"},
 		Transcode: TranscodeSettings{

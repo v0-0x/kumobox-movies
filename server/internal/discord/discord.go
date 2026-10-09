@@ -11,11 +11,14 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -25,7 +28,7 @@ const (
 	// presence can't set it.)
 	typeWatching = 3
 	// status_display_type: the status under your name (member list, DMs)
-	// shows the activity's details, the anime ("Watching Frieren"), rather
+	// shows the activity's details, the title ("Watching Breaking Bad"), rather
 	// than the Discord application's name ("Watching KumoBox").
 	statusShowsDetails = 2
 )
@@ -116,33 +119,90 @@ func (c *Client) closeLocked() {
 	}
 }
 
+// Activity is a rich presence: Details and State are its two lines (the
+// status under the user's name says "Watching <Details>"), the large image
+// the poster, the small one the app's badge, Start and End the time bar.
 type Activity struct {
 	Details    string
 	State      string
-	LargeImage string
+	LargeImage string // an https URL, or the key of one of the application's art assets
 	LargeText  string
+	SmallImage string
+	SmallText  string
 	Start      time.Time
 	End        time.Time
 }
 
-// SetActivity updates the presence (clientID is a Discord application id).
-func (c *Client) SetActivity(clientID string, a Activity) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if clientID == "" {
-		return errors.New("no Discord application id configured")
+// AppAsset names the image used without a poster, and as the small badge
+// ("KumoBox"): an art asset uploaded under that name to the Discord
+// application (Settings › Discord), if it has one; Discord shows nothing
+// otherwise.
+const AppAsset = "kumobox"
+
+// Watching is what plays, for Presence.
+type Watching struct {
+	Title        string // the movie's or show's
+	Year         int    // release year (0: unknown)
+	Show         bool
+	Episode      int    // a show's episode key (0: unknown)
+	EpisodeTitle string // "" when unknown
+	Poster       string // the poster's URL
+	Position     float64
+	Duration     float64
+	Paused       bool
+}
+
+// Presence is the activity for w at now: "Watching <title>", over the
+// episode ("S01E02 · Pilot") for a show or the year for a movie, with the
+// poster and, while it plays, the time bar.
+func Presence(w Watching, now time.Time) Activity {
+	a := Activity{Details: w.Title, LargeImage: AppAsset, LargeText: w.Title, SmallImage: AppAsset, SmallText: "KumoBox"}
+	// Discord shows images from the web by their https URL.
+	if strings.HasPrefix(w.Poster, "https://") {
+		a.LargeImage = w.Poster
 	}
-	if err := c.connect(clientID); err != nil {
-		return err
+	switch {
+	case w.Show && w.Episode > 0:
+		a.State = catalog.FormatKey(w.Episode)
+		if w.EpisodeTitle != "" {
+			a.State += " · " + w.EpisodeTitle
+		}
+	case !w.Show && w.Year > 0:
+		a.State = strconv.Itoa(w.Year)
+		a.LargeText = fmt.Sprintf("%s (%d)", w.Title, w.Year)
 	}
-	act := map[string]any{"details": trim(a.Details), "state": trim(a.State), "type": typeWatching}
-	if !c.noStatusDisplay {
+	if w.Duration > 0 && !w.Paused {
+		a.Start = now.Add(-time.Duration(w.Position * float64(time.Second)))
+		a.End = a.Start.Add(time.Duration(w.Duration * float64(time.Second)))
+	}
+	return a
+}
+
+// payload is the activity as SET_ACTIVITY takes it; statusDisplay asks for
+// the details in the user's status.
+func (a Activity) payload(statusDisplay bool) map[string]any {
+	act := map[string]any{"type": typeWatching}
+	if a.Details != "" {
+		act["details"] = trim(a.Details)
+	}
+	if a.State != "" {
+		act["state"] = trim(a.State)
+	}
+	if statusDisplay {
 		act["status_display_type"] = statusShowsDetails
 	}
 	assets := map[string]any{}
 	if a.LargeImage != "" {
 		assets["large_image"] = a.LargeImage
-		assets["large_text"] = trim(a.LargeText)
+		if a.LargeText != "" {
+			assets["large_text"] = trim(a.LargeText)
+		}
+	}
+	if a.SmallImage != "" {
+		assets["small_image"] = a.SmallImage
+		if a.SmallText != "" {
+			assets["small_text"] = trim(a.SmallText)
+		}
 	}
 	act["assets"] = assets
 	ts := map[string]any{}
@@ -155,6 +215,20 @@ func (c *Client) SetActivity(clientID string, a Activity) error {
 	if len(ts) > 0 {
 		act["timestamps"] = ts
 	}
+	return act
+}
+
+// SetActivity updates the presence (clientID is a Discord application id).
+func (c *Client) SetActivity(clientID string, a Activity) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if clientID == "" {
+		return errors.New("no Discord application id configured")
+	}
+	if err := c.connect(clientID); err != nil {
+		return err
+	}
+	act := a.payload(!c.noStatusDisplay)
 	f, err := c.setActivity(act)
 	if err == nil && f.err() != nil && act["status_display_type"] != nil {
 		// Too old a Discord for status_display_type may refuse it: without

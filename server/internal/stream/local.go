@@ -59,15 +59,25 @@ type ExternalSub struct {
 	Language string `json:"language"`
 }
 
+// ProbeChapter is a chapter of a file, from its chapter marks: the players
+// skip intros and credits by their names (see player.ChapterSkips).
+type ProbeChapter struct {
+	Title string  `json:"title"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
+
 type Probe struct {
-	Path         string        `json:"path"`
-	Container    string        `json:"container"`
-	Duration     float64       `json:"duration"`
-	Size         int64         `json:"size"`
-	Video        []ProbeStream `json:"video"`
-	Audio        []ProbeStream `json:"audio"`
-	Subtitles    []ProbeStream `json:"subtitles"`
-	ExternalSubs []ExternalSub `json:"externalSubs"`
+	Path         string         `json:"path"`
+	Container    string         `json:"container"`
+	Duration     float64        `json:"duration"`
+	Size         int64          `json:"size"`
+	ModTime      int64          `json:"modTime"` // unix nanoseconds: a changed file is probed again
+	Video        []ProbeStream  `json:"video"`
+	Audio        []ProbeStream  `json:"audio"`
+	Subtitles    []ProbeStream  `json:"subtitles"`
+	ExternalSubs []ExternalSub  `json:"externalSubs"`
+	Chapters     []ProbeChapter `json:"chapters"`
 	// Playback decision: direct | remux | transcode
 	Method string `json:"method"`
 	Reason string `json:"reason"`
@@ -99,14 +109,14 @@ func (l *Local) Probe(ctx context.Context, path string) (*Probe, error) {
 	if err != nil {
 		return nil, err
 	}
-	var p Probe
-	if l.db.GetCache(key, &p) && p.Size == st.Size() {
-		p.Method, p.Reason = decide(&p, cfg.Transcode.Mode, 0, nil)
-		return &p, nil
+	var cached Probe
+	if l.db.GetCache(key, &cached) && cached.Size == st.Size() && cached.ModTime == st.ModTime().UnixNano() {
+		cached.Method, cached.Reason = decide(&cached, cfg.Transcode.Mode, 0, nil)
+		return &cached, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, cfg.Transcode.FfprobePath, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path).Output()
+	out, err := exec.CommandContext(ctx, cfg.Transcode.FfprobePath, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", path).Output()
 	if err != nil {
 		var exit *exec.ExitError
 		switch {
@@ -125,6 +135,20 @@ func (l *Local) Probe(ctx context.Context, path string) (*Probe, error) {
 		}
 		return nil, fmt.Errorf("ffprobe failed (install ffmpeg: %s): %w", util.InstallHint("ffmpeg"), err)
 	}
+	p, err := parseProbe(out)
+	if err != nil {
+		return nil, err
+	}
+	p.Path, p.Size, p.ModTime = path, st.Size(), st.ModTime().UnixNano()
+	p.ExternalSubs = externalSubs(path)
+	l.db.SetCache(key, p, 30*24*time.Hour)
+	p.Method, p.Reason = decide(p, cfg.Transcode.Mode, 0, nil)
+	return p, nil
+}
+
+// parseProbe reads ffprobe's JSON (-show_format -show_streams
+// -show_chapters).
+func parseProbe(out []byte) (*Probe, error) {
 	var raw struct {
 		Format struct {
 			FormatName string `json:"format_name"`
@@ -142,11 +166,16 @@ func (l *Local) Probe(ctx context.Context, path string) (*Probe, error) {
 			Tags        map[string]string `json:"tags"`
 			Disposition map[string]int    `json:"disposition"`
 		} `json:"streams"`
+		Chapters []struct {
+			StartTime string            `json:"start_time"`
+			EndTime   string            `json:"end_time"`
+			Tags      map[string]string `json:"tags"`
+		} `json:"chapters"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, err
 	}
-	p = Probe{Path: path, Container: raw.Format.FormatName, Size: st.Size()}
+	p := &Probe{Container: raw.Format.FormatName}
 	p.Duration, _ = strconv.ParseFloat(raw.Format.Duration, 64)
 	counts := map[string]int{}
 	for _, s := range raw.Streams {
@@ -169,10 +198,21 @@ func (l *Local) Probe(ctx context.Context, path string) (*Probe, error) {
 			p.Subtitles = append(p.Subtitles, ps)
 		}
 	}
-	p.ExternalSubs = externalSubs(path)
-	l.db.SetCache(key, p, 30*24*time.Hour)
-	p.Method, p.Reason = decide(&p, cfg.Transcode.Mode, 0, nil)
-	return &p, nil
+	for _, c := range raw.Chapters {
+		start, err := strconv.ParseFloat(c.StartTime, 64)
+		if err != nil {
+			continue
+		}
+		end, _ := strconv.ParseFloat(c.EndTime, 64)
+		title := ""
+		for k, v := range c.Tags {
+			if strings.EqualFold(k, "title") {
+				title = strings.TrimSpace(v)
+			}
+		}
+		p.Chapters = append(p.Chapters, ProbeChapter{Title: title, Start: start, End: end})
+	}
+	return p, nil
 }
 
 func externalSubs(path string) []ExternalSub {
@@ -194,8 +234,9 @@ func externalSubs(path string) []ExternalSub {
 	return out
 }
 
-// probeKey caches probes; v2 added the profile and pixel format.
-func probeKey(path string) string { return "probe2:" + path }
+// probeKey caches probes; v2 added the profile and pixel format, v3 the
+// chapters and the modification time.
+func probeKey(path string) string { return "probe3:" + path }
 
 // Caps are the video formats a player can decode, like "h264", "hevc" or
 // "hevc-10" (10-bit), and "mkv" when it plays Matroska files as they are.

@@ -367,14 +367,6 @@ type playLocalBody struct {
 	Caps    []string `json:"caps"` // video formats the in-app player decodes
 }
 
-func (s *Server) episodeTitle(ctx context.Context, mediaID, episode int, fallback string) string {
-	media, err := s.app.Platform.MediaLite(ctx, mediaID)
-	if err != nil {
-		return fallback
-	}
-	return app.EpisodeTitle(media, episode)
-}
-
 func (s *Server) playLocal(r *http.Request) (any, error) {
 	var body playLocalBody
 	if err := decode(r, &body); err != nil {
@@ -398,10 +390,11 @@ func (s *Server) playLocal(r *http.Request) (any, error) {
 	if !isTrusted(r) {
 		playerName = "builtin"
 	}
-	title := s.episodeTitle(r.Context(), body.MediaID, body.Episode, f.Name)
+	t := s.app.PlayTitles(r.Context(), body.MediaID, body.Episode, f.Name)
 	if playerName == "mpv" {
 		sess, err := s.app.Player.PlayMpv(player.PlayRequest{
-			MediaID: body.MediaID, Episode: body.Episode, Title: title, Source: "local", Target: f.Path, Start: body.Start,
+			MediaID: body.MediaID, Episode: body.Episode, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
+			Source: "local", Target: f.Path, Start: body.Start,
 		})
 		if err != nil {
 			return nil, err
@@ -412,11 +405,13 @@ func (s *Server) playLocal(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.builtinPlay(body, probe, title), nil
+	return s.builtinPlay(body, probe, t), nil
 }
 
-// builtinPlay is what the in-app player needs to open an episode.
-func (s *Server) builtinPlay(body playLocalBody, probe *stream.Probe, title string) map[string]any {
+// builtinPlay is what the in-app player needs to open an episode: the file's
+// probe, where to resume, the tracks to start with (choice) and the parts
+// its chapters say to skip.
+func (s *Server) builtinPlay(body playLocalBody, probe *stream.Probe, t app.Titles) map[string]any {
 	s.app.Local.Decide(probe, stream.CapsOf(body.Caps))
 	// The in-app player opens the episode: a new viewing, which may update
 	// progress again (rewatch).
@@ -426,8 +421,9 @@ func (s *Server) builtinPlay(body playLocalBody, probe *stream.Probe, title stri
 		resume = *body.Start
 	}
 	return map[string]any{
-		"player": "builtin", "probe": probe, "title": title, "resumeAt": resume,
+		"player": "builtin", "probe": probe, "title": t.Window, "mediaTitle": t.Media, "episodeTitle": t.Episode, "resumeAt": resume,
 		"mediaId": body.MediaID, "episode": body.Episode, "tracks": s.app.Player.Tracks.Get(body.MediaID),
+		"choice": s.builtinTracks(body.MediaID, probe), "skips": chapterSkips(probe),
 	}
 }
 
@@ -441,6 +437,10 @@ type playStreamBody struct {
 	Title     string            `json:"title"`
 	Source    string            `json:"source"`
 	Start     *float64          `json:"start"`
+	// The streaming provider and version (the next episode comes from
+	// them), when the in-app player hands a stream over to mpv.
+	Provider string `json:"provider"`
+	Dub      bool   `json:"dub"`
 }
 
 func (s *Server) playStream(r *http.Request) (any, error) {
@@ -454,12 +454,14 @@ func (s *Server) playStream(r *http.Request) (any, error) {
 	if body.URL == "" {
 		return nil, badRequest("missing url")
 	}
+	t := s.app.PlayTitles(r.Context(), body.MediaID, body.Episode, "Stream")
 	if body.Title == "" {
-		body.Title = s.episodeTitle(r.Context(), body.MediaID, body.Episode, "Stream")
+		body.Title = t.Window
 	}
 	return s.app.Player.PlayMpv(player.PlayRequest{
-		MediaID: body.MediaID, Episode: body.Episode, Title: body.Title, Source: util2(body.Source, "stream"),
-		Target: body.URL, Headers: body.Headers, Referrer: body.Referrer, SubFiles: body.Subtitles, Start: body.Start,
+		MediaID: body.MediaID, Episode: body.Episode, Title: body.Title, MediaTitle: t.Media, EpisodeTitle: t.Episode,
+		Source: util2(body.Source, "stream"), Target: body.URL, Headers: body.Headers, Referrer: body.Referrer,
+		SubFiles: body.Subtitles, Start: body.Start, Provider: body.Provider, Dub: body.Dub,
 	})
 }
 
@@ -518,12 +520,75 @@ func (s *Server) saveTracks(r *http.Request) (any, error) {
 	return nil, s.app.Player.Tracks.Save(p)
 }
 
-// skips are the parts of an episode the in-app player offers to skip.
-// AniSkip only knows anime (by MyAnimeList id): none for TMDB titles, until
-// skipping by chapter names replaces it.
+// skips are the parts of a file (?path=, of the library or shared by
+// another KumoBox) that its chapters name as an intro, a recap, the credits
+// or a preview: the players offer to skip them. Streams have none.
 func (s *Server) skips(r *http.Request) (any, error) {
-	return []player.SkipInterval{}, nil
+	path := r.URL.Query().Get("path")
+	var probe *stream.Probe
+	var err error
+	switch {
+	case path == "":
+		return []player.SkipInterval{}, nil
+	case share.IsRemote(path):
+		probe, err = s.app.Share.Probe(r.Context(), path)
+	default:
+		probe, err = s.app.Local.Probe(r.Context(), path)
+	}
+	if err != nil {
+		return []player.SkipInterval{}, nil
+	}
+	return chapterSkips(probe), nil
 }
+
+// chapterSkips are the parts of a probed file its chapters say to skip.
+func chapterSkips(p *stream.Probe) []player.SkipInterval {
+	chapters := make([]player.Chapter, 0, len(p.Chapters))
+	for _, c := range p.Chapters {
+		chapters = append(chapters, player.Chapter{Title: c.Title, Start: c.Start, End: c.End})
+	}
+	if out := player.ChapterSkips(chapters, p.Duration); out != nil {
+		return out
+	}
+	return []player.SkipInterval{}
+}
+
+// builtinTracks are the tracks the in-app player opens a file with, as the
+// settings and the choice remembered for the title say (player.ChooseTracks):
+// audio is the index of the audio track (-1: the file's default), sub the
+// subtitles' key in the player ("e<n>" the n-th embedded track, "x<n>" the
+// n-th external file, "off"; "": the player's own pick).
+func (s *Server) builtinTracks(mediaID int, p *stream.Probe) map[string]any {
+	var tracks []player.Track
+	for _, a := range p.Audio {
+		tracks = append(tracks, player.Track{ID: a.TypeIndex + 1, Type: "audio", Lang: a.Language, Title: a.Title, Codec: a.Codec, Default: a.Default, Forced: a.Forced})
+	}
+	for _, sub := range p.Subtitles {
+		if !sub.Bitmap { // images: mpv only
+			tracks = append(tracks, player.Track{ID: sub.TypeIndex + 1, Type: "sub", Lang: sub.Language, Title: sub.Title, Codec: sub.Codec, Default: sub.Default, Forced: sub.Forced})
+		}
+	}
+	for i, x := range p.ExternalSubs {
+		tracks = append(tracks, player.Track{ID: externalSub + i, Type: "sub", Lang: x.Language, Title: x.Name, External: true})
+	}
+	c := s.app.Player.ChooseTracks(mediaID, "local", false, tracks)
+	audio, sub := -1, ""
+	if c.HasAudio {
+		audio = c.Audio - 1
+	}
+	switch {
+	case c.HasSub && c.Sub >= externalSub:
+		sub = fmt.Sprintf("x%d", c.Sub-externalSub)
+	case c.HasSub:
+		sub = fmt.Sprintf("e%d", c.Sub-1)
+	case c.SubOff:
+		sub = "off"
+	}
+	return map[string]any{"audio": audio, "sub": sub, "restored": c.Restored, "note": c.Note}
+}
+
+// externalSub numbers the external subtitle files after the embedded tracks.
+const externalSub = 10001
 
 func (s *Server) clearHistory(r *http.Request) (any, error) {
 	return nil, s.app.History.Clear(queryInt(r, "mediaId"), queryInt(r, "episode"))
@@ -700,10 +765,13 @@ func (s *Server) osPlay(r *http.Request) (any, error) {
 	}
 	_ = s.setLanguageMode(media.ID, mode)
 	key := stream.EpisodeKeyOf(media, body.Episode)
-	title := fmt.Sprintf("%s [%s]", app.EpisodeTitle(media, key), strings.ToUpper(mode))
+	t := s.app.PlayTitles(r.Context(), media.ID, key, media.PreferredTitle())
+	if body.Dub {
+		t.Window += " (Dub)"
+	}
 	return s.app.Player.PlayMpv(player.PlayRequest{
-		MediaID: media.ID, Episode: key, Title: title, Source: "stream", Target: src.URL,
-		Headers: src.Headers, Referrer: src.Referrer, SubFiles: subs,
+		MediaID: media.ID, Episode: key, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode, Source: "stream", Target: src.URL,
+		Headers: src.Headers, Referrer: src.Referrer, SubFiles: subs, Provider: provider, Dub: body.Dub,
 	})
 }
 
