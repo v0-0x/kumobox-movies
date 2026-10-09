@@ -1,0 +1,13 @@
+[Unit]
+Description=KumoBox anime server (headless, web UI on 127.0.0.1:43311)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/kumobox/kumobox --web-ui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

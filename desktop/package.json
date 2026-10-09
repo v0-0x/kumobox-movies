@@ -1,0 +1,16 @@
+{
+  "name": "kumobox",
+  "productName": "KumoBox",
+  "version": "1.0.0",
+  "description": "KumoBox desktop window (starts the local KumoBox server)",
+  "main": "main.js",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  }
+}

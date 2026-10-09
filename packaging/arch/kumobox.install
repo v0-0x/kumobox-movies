@@ -1,0 +1,11 @@
+post_install() {
+    echo ">> KumoBox installed. Start it from your app menu or run: kumobox"
+    echo ">> For sub/dub streaming install ani-cli:   yay -S ani-cli"
+    echo ">> Optional:                                sudo pacman -S yt-dlp qbittorrent"
+    echo ">> Headless/LAN server (no window):         systemctl --user enable --now kumobox-server"
+}
+
+post_upgrade() {
+    echo ">> KumoBox updated. If it's open, open it again from the app menu: it restarts as the new version."
+    echo ">> Using the headless server?            systemctl --user restart kumobox-server"
+}

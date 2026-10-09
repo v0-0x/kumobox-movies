@@ -1,0 +1,90 @@
+# KumoBox — anime app for Arch Linux.
+#
+# Build & install from a checkout of this repository:
+#     cd packaging/arch && makepkg -si      (after a git pull: makepkg -sif)
+#
+# The package is built straight from the checkout two levels up, so local
+# changes are picked up without committing them.
+
+pkgname=kumobox
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Anime library: AniList sync, auto matching, mpv & in-app player, ani-cli sub/dub streaming, torrents, extensions"
+arch=('x86_64' 'aarch64')
+url="https://github.com/v0-0x/kumobox-movies"
+license=('GPL-3.0-or-later')
+depends=('electron' 'mpv' 'ffmpeg' 'hicolor-icon-theme' 'xdg-utils')
+makedepends=('go' 'nodejs' 'npm')
+optdepends=(
+    'ani-cli: sub/dub online streaming and downloads (AUR)'
+    'yt-dlp: faster, more reliable stream downloads'
+    'qbittorrent: torrent client (enable Tools › Options › Web UI)'
+    'transmission-gtk: alternative torrent client'
+    'discord: rich presence'
+)
+options=('!lto' '!debug' '!strip' '!buildflags') # pure Go (CGO off): makepkg's C/LD flags don't apply
+install=kumobox.install
+
+_root="$(realpath "${startdir}/../..")"
+
+# The version and commit go into the server, which compares them with
+# GitHub's to offer updates (Home page). KumoBox's updater builds a downloaded
+# source, which has no .git: it passes them in KUMOBOX_COMMIT and KUMOBOX_VERSION.
+# In a git checkout they come from git (version 1.0.<number of commits>);
+# otherwise, e.g. in an extracted source zip, the defaults stay. pkgver
+# stays 1.0.0 on purpose: a pkgver() function would make makepkg rewrite
+# this file in your checkout, and git pull would then stop on it.
+build() {
+    cd "${_root}"
+    export GOFLAGS="-trimpath -mod=readonly -modcacherw"
+    export CGO_ENABLED=0
+    local commit="${KUMOBOX_COMMIT:-}" version="${KUMOBOX_VERSION:-}" count
+    if [[ ! -e "${_root}/.git" ]]; then
+        # Not a checkout: Go mustn't stamp a git repository it's inside of
+        # (e.g. a home folder kept in git).
+        GOFLAGS+=" -buildvcs=false"
+    elif command -v git >/dev/null; then
+        [[ -n ${commit} ]] || commit="$(git -C "${_root}" rev-parse HEAD 2>/dev/null)" || commit=""
+        if [[ -z ${version} ]] && count="$(git -C "${_root}" rev-list --count HEAD 2>/dev/null)"; then
+            version="1.0.${count}"
+        fi
+    fi
+    local config=github.com/v0-0x/kumobox-movies/server/internal/config
+    local ldflags="-s -w"
+    [[ -z ${commit} ]] || ldflags+=" -X ${config}.Commit=${commit}"
+    [[ -z ${version} ]] || ldflags+=" -X ${config}.AppVersion=${version}"
+    make server GO_LDFLAGS="${ldflags}"
+}
+
+check() {
+    cd "${_root}/server"
+    go test ./internal/library/ ./internal/anicli/ ./internal/extensions/
+}
+
+package() {
+    cd "${_root}"
+    install -Dm755 dist/kumobox "${pkgdir}/usr/lib/kumobox/kumobox"
+    install -Dm644 desktop/main.js "${pkgdir}/usr/lib/kumobox/app/main.js"
+    install -Dm644 desktop/preload.js "${pkgdir}/usr/lib/kumobox/app/preload.js"
+    install -Dm644 desktop/package.json "${pkgdir}/usr/lib/kumobox/app/package.json"
+    install -Dm644 packaging/icons/kumobox-512.png "${pkgdir}/usr/lib/kumobox/app/icon.png"
+
+    install -Dm755 packaging/kumobox.sh "${pkgdir}/usr/bin/kumobox"
+    install -d "${pkgdir}/usr/bin"
+    ln -s /usr/lib/kumobox/kumobox "${pkgdir}/usr/bin/kumobox-server"
+
+    install -Dm644 packaging/kumobox.desktop "${pkgdir}/usr/share/applications/kumobox.desktop"
+    # The icon, by two names: kumobox, the menu entry's since the new logo
+    # (desktops cache icons by name, and kept showing the old one), and
+    # kumobox, which desktop shortcuts made before ask for (the app moves them
+    # to kumobox when it starts).
+    local s n
+    for n in kumobox kumobox; do
+        for s in 16 32 48 64 128 256 512; do
+            install -Dm644 "packaging/icons/kumobox-${s}.png" "${pkgdir}/usr/share/icons/hicolor/${s}x${s}/apps/${n}.png"
+        done
+        install -Dm644 packaging/icons/kumobox.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/${n}.svg"
+    done
+    install -Dm644 packaging/kumobox-server.service "${pkgdir}/usr/lib/systemd/user/kumobox-server.service"
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
