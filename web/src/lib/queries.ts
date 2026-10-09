@@ -20,8 +20,9 @@ import type {
     MarketEntry,
     Media,
     MediaPage,
-    OnlineProvider,
+    NuvioRepo,
     PluginState,
+    ProviderInfo,
     RawCollection,
     ScheduleItem,
     SeasonDetail,
@@ -29,7 +30,8 @@ import type {
     SharedLibrary,
     SharingStatus,
     Status,
-    StreamEpisodes,
+    StreamsResult,
+    StremioAddon,
     Torrent,
     TorrentResult,
     UpdateStatus,
@@ -78,10 +80,32 @@ export function useCollection() {
     })
 }
 
+// The server's episode views carry an episode's key in `key` and its number
+// in its season in `number`; the UI identifies episodes by key, in `number`
+// (see lib/ids.ts), as every other episode field does.
+export function withKey<T extends EpisodeView | null | undefined>(e: T): T {
+    return e && e.key !== undefined && e.key !== e.number ? { ...e, number: e.key } : e
+}
+
+function listsWithKeys<T extends { episodes?: EpisodeView[] | null; specials?: EpisodeView[] | null; others?: EpisodeView[] | null; nextEpisode?: EpisodeView | null }>(v: T): T {
+    return {
+        ...v,
+        episodes: v.episodes?.map(withKey) ?? v.episodes,
+        specials: v.specials?.map(withKey) ?? v.specials,
+        others: v.others?.map(withKey) ?? v.others,
+        nextEpisode: withKey(v.nextEpisode),
+    }
+}
+
+// A title's page data (GET /api/media/{id}), episodes by key.
+export async function fetchEntry(id: number) {
+    return listsWithKeys(await api.get<EntryView>(`/api/media/${id}`))
+}
+
 export function useEntry(id: number) {
     return useQuery({
         queryKey: ["entry", id],
-        queryFn: () => api.get<EntryView>(`/api/media/${id}`),
+        queryFn: () => fetchEntry(id),
         enabled: id > 0,
         staleTime: 30_000,
     })
@@ -95,7 +119,7 @@ export function useEpisodes(id: number, enabled = true) {
         queryKey: ["entry", id, "episodes"],
         queryFn: async () => {
             const res = await api.get<EpisodesView | EpisodeView[] | null>(`/api/media/${id}/episodes`)
-            return (Array.isArray(res) ? { episodes: res } : (res ?? { episodes: [] })) as EpisodesView
+            return listsWithKeys((Array.isArray(res) ? { episodes: res } : (res ?? { episodes: [] })) as EpisodesView)
         },
         enabled: enabled && id > 0,
         staleTime: 30_000,
@@ -297,31 +321,58 @@ export function useLibraryFiles() {
 // Streaming providers (Internet Archive, Stremio addons, Nuvio repositories,
 // extensions).
 
-export function useOnlineProviders() {
-    return useQuery({ queryKey: ["os-providers"], queryFn: () => api.get<OnlineProvider[]>("/api/providers/providers"), staleTime: 5 * 60_000 })
+// Every provider (disabled ones too), in the order they're asked.
+export function useProviders() {
+    return useQuery({ queryKey: ["providers"], queryFn: () => api.get<ProviderInfo[]>("/api/providers"), staleTime: 5 * 60_000 })
 }
 
-// only: the version listed is the only one there is, not a choice to remember.
-export function useStreamEpisodes(provider: string, mediaId: number, dub: boolean, enabled = true, only = false) {
+// The streams of a movie (episode 1) or of a show's episode (a key), best
+// first, from every enabled provider ("" ) or one. The server keeps them a
+// few minutes; links expire, so they aren't kept longer here either.
+export function useProviderStreams(mediaId: number, episode: number, provider = "", enabled = true) {
     return useQuery({
-        queryKey: ["os-episodes", provider, mediaId, dub],
-        queryFn: () => api.get<StreamEpisodes>(`/api/providers/episodes${qs({ provider, mediaId, dub, only: only ? 1 : undefined })}`),
-        enabled: enabled && mediaId > 0 && !!provider,
+        queryKey: ["provider-streams", mediaId, episode, provider],
+        queryFn: () => api.get<StreamsResult>(`/api/providers/streams${qs({ mediaId, episode, provider })}`),
+        enabled: enabled && mediaId > 0 && episode > 0,
+        retry: false,
+        staleTime: 4 * 60_000,
+        gcTime: 5 * 60_000,
+    })
+}
+
+export function useStremioAddons() {
+    return useQuery({ queryKey: ["stremio-addons"], queryFn: () => api.get<StremioAddon[] | null>("/api/providers/stremio/addons") })
+}
+
+// An addon collection ("" for the first of Settings › Providers).
+export function useStremioCatalog(url: string, enabled = true) {
+    return useQuery({
+        queryKey: ["stremio-catalog", url],
+        queryFn: () => api.get<{ url: string; catalogs: string[]; addons: StremioAddon[] }>(`/api/providers/stremio/catalog${qs({ url })}`),
+        enabled,
         retry: false,
         staleTime: 10 * 60_000,
     })
 }
 
-// Whether the provider has the original audio and a dub (both while it's
-// not known).
-export function useStreamModes(provider: string, mediaId: number, enabled = true) {
+export function useNuvioRepo(url: string, enabled = true) {
     return useQuery({
-        queryKey: ["os-modes", provider, mediaId],
-        queryFn: () => api.get<{ sub: boolean; dub: boolean }>(`/api/providers/modes${qs({ provider, mediaId })}`),
-        enabled: enabled && mediaId > 0 && !!provider,
+        queryKey: ["nuvio-repo", url],
+        queryFn: () => api.get<NuvioRepo>(`/api/providers/nuvio/repo${qs({ url })}`),
+        enabled: enabled && !!url,
         retry: false,
-        staleTime: 30 * 60_000,
+        staleTime: 10 * 60_000,
     })
+}
+
+// What a provider change may have changed.
+export function invalidateProviders(qc: QueryClient) {
+    qc.invalidateQueries({ queryKey: ["providers"] })
+    qc.invalidateQueries({ queryKey: ["provider-streams"] })
+    qc.invalidateQueries({ queryKey: ["stremio-addons"] })
+    qc.invalidateQueries({ queryKey: ["stremio-catalog"] })
+    qc.invalidateQueries({ queryKey: ["nuvio-repo"] })
+    qc.invalidateQueries({ queryKey: ["extensions"] })
 }
 
 export function useDownloads() {

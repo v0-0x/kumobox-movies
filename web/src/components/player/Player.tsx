@@ -21,11 +21,11 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "@/lib/toast"
 import { api, qs } from "@/lib/api"
-import { formatKey, mediaIsShow, nextEpisode } from "@/lib/ids"
+import { mediaIsShow, nextEpisode } from "@/lib/ids"
 import { prefersHls, randomId, videoCaps } from "@/lib/playback"
-import { useSettings } from "@/lib/queries"
+import { fetchEntry, useSettings } from "@/lib/queries"
 import { playerStore, type PlayerRequest } from "@/lib/store"
-import type { EntryView, Probe, StreamSource, TrackPrefs } from "@/lib/types"
+import type { PlayResult, Probe, StreamSource, TrackPrefs } from "@/lib/types"
 import { cn, formatDuration } from "@/lib/utils"
 import { parseVTT, type Cue } from "@/lib/vtt"
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger } from "../ui"
@@ -131,7 +131,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     useEffect(() => {
         let cancelled = false
         // The movie or show: its original language, title and episodes.
-        const entryP = api.get<EntryView>(`/api/media/${mediaId}`).catch(() => null)
+        const entryP = fetchEntry(mediaId).catch(() => null)
         ;(async () => {
             try {
                 setLoading(true)
@@ -220,19 +220,25 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                         setSubKey(pickSub(subOpts, p, settings?.playback.preferredSubLang ?? "", (res.probe.subtitles ?? []).find(s => s.default)?.typeIndex))
                     }
                 } else {
-                    const res = await api.get<{ sources: StreamSource[]; resumeAt: number; tracks: TrackPrefs | null; title: string }>(
-                        `/api/providers/sources${qs({ provider: req.provider, mediaId: req.mediaId, episode: req.episode, dub: req.dub, server: req.server })}`,
-                    )
+                    // The stream picked (or the provider's best link), then
+                    // the other direct links to fall back on, in that order.
+                    const res = await api.post<PlayResult>("/api/providers/play", {
+                        mediaId: req.mediaId,
+                        episode: req.episode,
+                        streamId: req.streamId,
+                        stream: req.stream,
+                        provider: req.provider,
+                        player: "builtin",
+                        start: req.start,
+                    })
                     if (cancelled) return
+                    if (res.action !== "builtin") throw new Error("This source can't be played in the app")
                     prefsRef.current = res.tracks
-                    const e = await entryP
-                    const name = e?.media.title.userPreferred || e?.media.title.english || res.title || "Stream"
-                    setTitle(`${name}${e && mediaIsShow(e.media) ? ` — ${formatKey(req.episode)}` : ""}${req.dub ? " (Dub)" : ""}`)
-                    const sorted = [...res.sources].sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality))
-                    setSources(sorted)
+                    setTitle(res.title || "Stream")
+                    setSources(res.sources)
                     setSourceIdx(0)
                     startAt.current = res.resumeAt || 0
-                    applyStreamSubs(sorted[0])
+                    applyStreamSubs(res.sources[0])
                 }
                 // Next episode
                 entryP
@@ -258,7 +264,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     }, [])
 
     const applyStreamSubs = (src?: StreamSource) => {
-        const opts: SubOption[] = (src?.subtitles ?? []).map((s, i) => ({ key: `s${i}`, label: s.language || `Subtitle ${i + 1}`, lang: s.language, title: s.language, index: i, url: s.url }))
+        const opts: SubOption[] = (src?.subtitles ?? []).map((s, i) => ({ key: `s${i}`, label: s.label || s.language || `Subtitle ${i + 1}`, lang: s.language, title: s.language, index: i, url: s.url }))
         setSubs(opts)
         const def = opts.find((_, i) => src?.subtitles[i].isDefault) ?? opts.find(o => /eng/i.test(o.lang))
         setSubKey(pickSub(opts, prefsRef.current, settings?.playback.preferredSubLang ?? "", undefined, def?.key))
@@ -547,7 +553,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         if (!nextEp) return
         report(true)
         if (req.kind === "local" && nextEp.path) playerStore.set({ kind: "local", path: nextEp.path, mediaId, episode: nextEp.episode })
-        else if (req.kind === "stream") playerStore.set({ ...req, episode: nextEp.episode })
+        // The next episode: the best link of the provider playing this one.
+        else if (req.kind === "stream") playerStore.set({ kind: "stream", mediaId, episode: nextEp.episode, provider: sources[sourceIdx]?.provider ?? req.provider })
     }
     const openInMpv = async () => {
         const v = videoRef.current
@@ -998,13 +1005,6 @@ function CtrlButton({ children, onClick, label }: { children: React.ReactNode; o
             {children}
         </button>
     )
-}
-
-function qualityRank(q: string) {
-    const m = /(\d{3,4})/.exec(q ?? "")
-    if (m) return Number(m[1])
-    if (/auto|default|best/i.test(q ?? "")) return 5000
-    return 0
 }
 
 // An English track, by language tag or title: multi-audio releases often

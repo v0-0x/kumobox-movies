@@ -53,10 +53,12 @@ export default function EntryPage() {
     // Old links say "details"; a movie has no episodes tab.
     const raw = params.get("tab") === "details" ? "overview" : (params.get("tab") as Tab)
     const tab: Tab = tabs.some(t => t.value === raw) ? raw : show ? "episodes" : "overview"
-    const setTab = (t: Tab) =>
+    // episode: the one Watch online opens on (a key).
+    const setTab = (t: Tab, episode?: number) =>
         setParams(
             p => {
                 p.set("tab", t)
+                if (episode) p.set("episode", String(episode))
                 return p
             },
             { replace: true },
@@ -70,7 +72,7 @@ export default function EntryPage() {
                 <Tabs variant="underline" value={tab} onChange={setTab} tabs={tabs} />
                 {/* Keyed by media too: panels keep per-title state (search results, chosen provider). */}
                 <div key={`${entry.media.id}-${tab}`} className="fade-in">
-                    {tab === "episodes" && <SeasonsPanel entry={entry} onStream={() => setTab("stream")} onTorrents={() => setTab("torrents")} />}
+                    {tab === "episodes" && <SeasonsPanel entry={entry} onStream={k => setTab("stream", k)} onTorrents={() => setTab("torrents")} />}
                     {tab === "overview" &&
                         (show ? (
                             <DetailsPanel media={entry.media} />
