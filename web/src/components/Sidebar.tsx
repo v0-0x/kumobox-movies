@@ -1,7 +1,6 @@
 import {
     Bell,
     BellOff,
-    BookOpen,
     CalendarDays,
     Compass,
     Download,
@@ -9,26 +8,26 @@ import {
     HardDrive,
     Home,
     ListChecks,
-    LogIn,
-    LogOut,
     Magnet,
+    Plug,
     Puzzle,
+    RefreshCw,
     Rss,
     Search,
     Settings as SettingsIcon,
+    Settings2,
+    Unplug,
     UserRound,
 } from "lucide-react"
 import { useState } from "react"
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
-import { api } from "@/lib/api"
 import { useMediaQuery } from "@/lib/hooks"
-import { useCollection, useDownloads, useStatus } from "@/lib/queries"
+import { resultSummary, useCollection, useDownloads, useLetterboxd, useStatus } from "@/lib/queries"
 import { notificationsMutedStore, searchOpenStore, torrentCountStore, useStore } from "@/lib/store"
 import { cn, img } from "@/lib/utils"
-import { LoginDialog } from "./LoginDialog"
+import { LetterboxdDialog, LetterboxdMark } from "./LetterboxdDialog"
 import { PluginTrays } from "./plugins/PluginTrays"
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger, Tooltip } from "./ui"
-import { useQueryClient } from "@tanstack/react-query"
 import { toast as sonner } from "sonner"
 import { toast } from "@/lib/toast"
 
@@ -67,12 +66,13 @@ export function Sidebar() {
     const { data: coll } = useCollection()
     const { data: downloads } = useDownloads()
     const torrentCount = useStore(torrentCountStore)
-    const [loginOpen, setLoginOpen] = useState(false)
+    const [letterboxdOpen, setLetterboxdOpen] = useState(false)
+    const letterboxd = useLetterboxd()
     const location = useLocation()
     const navigate = useNavigate()
-    const qc = useQueryClient()
     const wide = useMediaQuery(WIDE)
     const settings = status?.settings
+    const viewer = status?.letterboxd
 
     const activeDownloads = (downloads ?? []).filter(d => ["queued", "resolving", "downloading"].includes(d.status)).length
 
@@ -80,9 +80,8 @@ export function Sidebar() {
         [
             { to: "/", label: "Home", icon: <Home />, match: p => p === "/" },
             { to: "/local", label: "Local library", icon: <HardDrive /> },
-            { to: "/schedule", label: "Schedule", icon: <CalendarDays /> },
-            ...(settings?.manga.enabled !== false ? [{ to: "/manga", label: "Manga", icon: <BookOpen />, match: (p: string) => p.startsWith("/manga") }] : []),
-            { to: "/lists", label: "My lists", icon: <ListChecks /> },
+            { to: "/schedule", label: "Calendar", icon: <CalendarDays /> },
+            { to: "/lists", label: "My list", icon: <ListChecks /> },
         ],
         [
             { to: "/discover", label: "Discover", icon: <Compass /> },
@@ -95,15 +94,18 @@ export function Sidebar() {
         ],
         [
             { to: "/library", label: "Library tools", icon: <FolderSearch />, badge: coll?.unmatchedCount ?? 0 },
-            { to: "/extensions", label: "Extensions", icon: <Puzzle /> },
+            { to: "/extensions", label: "Providers & extensions", icon: <Puzzle /> },
         ],
     ]
 
-    const logout = async () => {
-        await api.post("/api/auth/logout")
-        qc.invalidateQueries()
-        toast.success("Logged out of AniList")
+    const sync = () => {
+        const id = toast.loading("Syncing with Letterboxd…")
+        letterboxd.sync.mutate(undefined, {
+            onSuccess: r => toast.success(`Synced with Letterboxd: ${resultSummary(r)}`, { id }),
+            onError: () => toast.dismiss(id),
+        })
     }
+    const disconnect = () => letterboxd.disconnect.mutate(undefined, { onSuccess: () => toast.success("Disconnected from Letterboxd") })
 
     const link = (it: Item) => {
         const active = it.match ? it.match(location.pathname) : location.pathname.startsWith(it.to)
@@ -172,44 +174,52 @@ export function Sidebar() {
                                 "focus-ring mt-1 flex h-10 items-center gap-2.5 rounded-md text-left transition-colors hover:bg-white/[0.04] data-[state=open]:bg-white/[0.06]",
                                 wide ? "px-2" : "w-10 justify-center",
                             )}
-                            aria-label="Account"
+                            aria-label="Letterboxd account"
                         >
-                            {status?.user?.avatar?.large ? (
-                                <img src={img(status.user.avatar.large)} alt="" className="size-7 shrink-0 rounded-full object-cover" />
+                            {viewer?.avatar?.large ? (
+                                <img src={img(viewer.avatar.large)} alt="" className="size-7 shrink-0 rounded-full object-cover" />
                             ) : (
                                 <span className="grid size-7 shrink-0 place-items-center rounded-full bg-surface-3 text-muted">
-                                    <UserRound className="size-4" />
+                                    {viewer ? <LetterboxdMark className="w-4" /> : <UserRound className="size-4" />}
                                 </span>
                             )}
                             {wide && (
                                 <span className="min-w-0 flex-1">
-                                    <span className="block truncate text-[13px] font-medium">{status?.user ? status.user.name : "Not logged in"}</span>
-                                    <span className="block truncate text-[11px] text-subtle">{status?.user ? "AniList" : "Log in to sync"}</span>
+                                    <span className="block truncate text-[13px] font-medium">{viewer ? viewer.name : "Letterboxd"}</span>
+                                    <span className="block truncate text-[11px] text-subtle">{viewer ? "Letterboxd" : "Connect to sync"}</span>
                                 </span>
                             )}
                         </button>
                     </DropdownTrigger>
-                    <DropdownContent align="start" side="top" className="w-52">
-                        <DropdownLabel>{status?.user ? status.user.name : "Not logged in"}</DropdownLabel>
-                        {status?.user ? (
+                    <DropdownContent align="start" side="top" className="w-56">
+                        <DropdownLabel>{viewer ? `${viewer.name} on Letterboxd` : "Letterboxd isn't connected"}</DropdownLabel>
+                        {viewer ? (
                             <>
-                                <DropdownItem icon={<UserRound />} onSelect={() => window.open(`https://anilist.co/user/${status.user!.name}`, "_blank", "noopener")}>
-                                    AniList profile
+                                {viewer.letterboxd && (
+                                    <DropdownItem icon={<UserRound />} onSelect={() => window.open(viewer.letterboxd, "_blank", "noopener")}>
+                                        Letterboxd profile
+                                    </DropdownItem>
+                                )}
+                                <DropdownItem icon={<RefreshCw />} disabled={letterboxd.sync.isPending} onSelect={sync}>
+                                    Sync now
+                                </DropdownItem>
+                                <DropdownItem icon={<Settings2 />} onSelect={() => navigate("/settings?tab=letterboxd")}>
+                                    Import & export
                                 </DropdownItem>
                                 <DropdownSeparator />
-                                <DropdownItem icon={<LogOut />} danger onSelect={logout}>
-                                    Log out
+                                <DropdownItem icon={<Unplug />} danger onSelect={disconnect}>
+                                    Disconnect
                                 </DropdownItem>
                             </>
                         ) : (
-                            <DropdownItem icon={<LogIn />} onSelect={() => setLoginOpen(true)}>
-                                Log in with AniList
+                            <DropdownItem icon={<Plug />} onSelect={() => setLetterboxdOpen(true)}>
+                                Connect Letterboxd
                             </DropdownItem>
                         )}
                     </DropdownContent>
                 </Dropdown>
             </div>
-            <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} />
+            <LetterboxdDialog open={letterboxdOpen} onOpenChange={setLetterboxdOpen} />
         </aside>
     )
 }
