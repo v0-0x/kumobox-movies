@@ -195,21 +195,37 @@ export type Viewer = {
     letterboxd?: string // profile page
 }
 
-// GET /api/letterboxd/status. lastSync is unix seconds (0: never); pending
-// counts the diary entries not on Letterboxd yet.
+// GET /api/letterboxd/status (and the "letterboxd-status" event). lastSync
+// is when the diary was last read (unix seconds, 0: never), lastError why
+// the last sync failed; pending counts the diary entries logged here that
+// aren't on Letterboxd yet. apiAvailable: API client credentials are set;
+// apiConnected: a member signed in with them (apiMember).
 export type LetterboxdStatus = {
     connected: boolean
     username: string
     displayName: string
+    profileUrl?: string
     lastSync: number
-    lastError: string
+    lastError?: string
     pending: number
-    apiConfigured: boolean
+    syncing: boolean
+    apiAvailable: boolean
     apiConnected: boolean
+    apiMember?: string
 }
 
-// What a sync, an import or a push did. unmatched: titles that weren't found.
-export type LetterboxdResult = { added: number; updated: number; skipped: number; unmatched: string[] | null }
+// What a sync, an import or a push did: films added to the list, updated or
+// skipped (nothing new), diary entries added (a push: entries sent), and the
+// titles that couldn't be found.
+export type LetterboxdResult = { added: number; updated: number; skipped: number; diary?: number; unmatched: string[] | null }
+
+// POST /api/letterboxd/import: the result, and the export's files read.
+export type LetterboxdImportResult = LetterboxdResult & { files: string[] | null }
+
+// POST /api/letterboxd/connect: the status, the member and what the first
+// read of the diary did (syncError: it failed, the account is connected
+// all the same).
+export type LetterboxdConnected = LetterboxdStatus & { viewer: Viewer | null; result: LetterboxdResult | null; syncError?: string }
 
 export type Parsed = {
     title: string
@@ -347,10 +363,18 @@ export type Settings = {
         resumePlayback: boolean
         autoPlayNext: boolean
         rememberTracks: boolean
+        // Audio in this language rather than the original (a dub), e.g.
+        // "fre,fra,fr"; "": the original language.
         preferredAudioLang: string
+        // Subtitles in this language ("": English, for foreign audio).
         preferredSubLang: string
-        skipIntroAniSkip: boolean
-        skipOutroAniSkip: boolean
+        // Subtitles only when the audio isn't in a language of the user's
+        // (else whenever preferredSubLang is set); forced ones always.
+        subtitlesForForeign: boolean
+        // Skip the chapters named as an intro or a recap / the end credits
+        // or a preview.
+        skipIntro: boolean
+        skipCredits: boolean
     }
     mpv: { path: string; socket: string; extraArgs: string; fullscreen: boolean }
     transcode: { ffmpegPath: string; ffprobePath: string; mode: string; hwAccel: string; vaapiNode: string; preset: string }
@@ -453,11 +477,17 @@ export type Status = {
     settings: Settings
 }
 
+// A part of a video its chapters name as an intro, a recap, the credits or a
+// preview of the next episode (GET /api/playback/skips).
+export type SkipInterval = { type: string; start: number; end: number }
+
 export type PlaybackSession = {
     id: string
     mediaId: number
-    episode: number
-    title: string
+    episode: number // key
+    title: string // "Show — S01E02 · Pilot", "Movie (2010)"
+    mediaTitle?: string
+    episodeTitle?: string
     source: string
     player: string
     position: number
@@ -465,6 +495,7 @@ export type PlaybackSession = {
     paused: boolean
     active: boolean
     progressUpdated: boolean
+    skips?: SkipInterval[] | null
 }
 
 export type TrackPrefs = {
@@ -588,7 +619,7 @@ export type StreamsResult = {
 
 // POST /api/providers/play
 export type PlayResult =
-    | { action: "builtin"; sources: StreamSource[]; title: string; resumeAt: number; tracks: TrackPrefs | null; provider: string }
+    | { action: "builtin"; sources: StreamSource[]; title: string; mediaTitle?: string; episodeTitle?: string; key?: number; resumeAt: number; tracks: TrackPrefs | null; provider: string }
     | { action: "mpv"; provider: string }
     | { action: "torrent"; savePath: string }
     | { action: "external"; url: string }
@@ -659,6 +690,7 @@ export type DownloadItem = {
 }
 
 export type TorrentResult = {
+    // The ids of the sources that found it, comma-separated.
     provider: string
     name: string
     link: string
@@ -673,13 +705,27 @@ export type TorrentResult = {
     date: string
     resolution: string
     releaseGroup: string
+    // The key of the one episode it holds, -1 when it's not one episode.
     episodeNumber: number
+    // A pack: several episodes, a season, the whole show.
     isBatch: boolean
     isBestRelease: boolean
     confirmed: boolean
     trusted: boolean
     remake: boolean
     dub: boolean
+}
+
+// POST /api/torrents/search: the results, best first, and the sources that
+// failed ("Source: what went wrong").
+export type TorrentSearchResponse = { results: TorrentResult[]; errors: string[] }
+
+// GET /api/torrents/providers: the search sources.
+export type TorrentProviderInfo = {
+    id: string
+    name: string
+    supports: ("movie" | "tv")[]
+    kind: "torznab" | "builtin" | "extension"
 }
 
 export type Torrent = {
@@ -802,18 +848,33 @@ export type PluginState = {
 // GET /api/catalog/schedule: episodes of the shows on the list.
 export type ScheduleItem = AiringEpisode & { media: Media; listStatus?: string }
 
+// An auto downloader rule: keep a show downloaded. resolution is "2160",
+// "1080", "720", "480" or "" (any); releaseGroups are preferred, in order;
+// packs allows season packs when several episodes of a finished season are
+// wanted; destination (empty: the library) is where torrents are saved;
+// startFrom is the key of the first episode wanted (0: the one after the
+// last watched).
 export type AutoRule = {
     id?: number
-    enabled: boolean
     mediaId: number
+    enabled: boolean
     title: string
+    resolution: string
     releaseGroups: string[]
-    resolutions: string[]
-    additionalTerms: string[]
-    episodeType: "recent" | "all"
+    mustContain: string[]
+    mustNotContain: string[]
     minSeeders: number
-    provider: string
+    packs: boolean
+    destination: string
+    startFrom: number
 }
+
+// Something the auto downloader grabbed: episode is the episode's key, or
+// the season's (season*1000) for a season pack.
+export type AutoItem = { key: string; ruleId: number; mediaId: number; episode: number; pack: boolean; title: string; createdAt: number }
+
+// POST /api/autodownloader/run.
+export type AutoRunReport = { added: number; wanted: number; errors: string[]; busy?: boolean }
 
 // A library folder as found on disk (Library tools, manual matching).
 export type FolderInfo = {

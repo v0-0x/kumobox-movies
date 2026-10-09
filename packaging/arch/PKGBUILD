@@ -56,7 +56,7 @@ build() {
 
 check() {
     cd "${_root}/server"
-    go test ./internal/library/ ./internal/catalog/ ./internal/extensions/
+    go test ./internal/library/ ./internal/catalog/ ./internal/release/ ./internal/letterboxd/ ./internal/extensions/
 }
 
 package() {

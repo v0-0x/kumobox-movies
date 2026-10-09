@@ -774,6 +774,12 @@ const LANGS = [
     { value: "rus,ru", label: "Russian" },
     { value: "jpn,ja", label: "Japanese" },
     { value: "kor,ko", label: "Korean" },
+    { value: "chi,zho,zh", label: "Chinese" },
+    { value: "hin,hi", label: "Hindi" },
+    { value: "dut,nld,nl", label: "Dutch" },
+    { value: "swe,sv", label: "Swedish" },
+    { value: "pol,pl", label: "Polish" },
+    { value: "tur,tr", label: "Turkish" },
     { value: "", label: "File default" },
 ]
 
@@ -799,11 +805,14 @@ function PlaybackSection({ draft, set }: SectionProps) {
                 <Row label="Auto play next episode">
                     <Switch checked={p.autoPlayNext} onChange={v => set("playback", { autoPlayNext: v })} />
                 </Row>
-                <Row label="Skip intros and recaps (chapters)" help="Jumps past chapters named intro, opening or recap, when the file has them">
-                    <Switch checked={p.skipIntroAniSkip} onChange={v => set("playback", { skipIntroAniSkip: v })} />
+                <Row label="Skip intros and recaps (chapters)" help="Jumps past chapters named intro, opening, title sequence or previously on, when the file has them">
+                    <Switch checked={p.skipIntro} onChange={v => set("playback", { skipIntro: v })} />
                 </Row>
-                <Row label="Skip end credits (chapters)" help="Jumps past chapters named credits or ending">
-                    <Switch checked={p.skipOutroAniSkip} onChange={v => set("playback", { skipOutroAniSkip: v })} />
+                <Row
+                    label="Skip end credits (chapters)"
+                    help="Jumps past chapters named credits, ending or next episode preview. Credits at the very end are only skipped when the next episode plays then; scenes after the credits play."
+                >
+                    <Switch checked={p.skipCredits} onChange={v => set("playback", { skipCredits: v })} />
                 </Row>
             </Group>
             <Group title="Progress">
@@ -814,15 +823,34 @@ function PlaybackSection({ draft, set }: SectionProps) {
                     <input type="range" min={0.5} max={1} step={0.01} value={p.completionThreshold} onChange={e => set("playback", { completionThreshold: Number(e.target.value) })} className="accent-[var(--brand)]" />
                 </Stack>
             </Group>
-            <Group title="Audio & subtitles" description="KumoBox remembers the audio and subtitle track you pick for each show and uses it for the next episodes.">
+            <Group
+                title="Audio & subtitles"
+                description="Movies and shows play in their original language, with forced subtitles (signs, foreign dialogue) when there are some. KumoBox remembers the audio and subtitle track you pick for each show and uses it for the next episodes."
+            >
                 <Row label="Remember my track choice per movie or show">
                     <Switch checked={p.rememberTracks} onChange={v => set("playback", { rememberTracks: v })} />
                 </Row>
-                <Row label="Preferred audio language">
-                    <Select className="w-44" value={p.preferredAudioLang} onChange={v => set("playback", { preferredAudioLang: v })} options={LANGS} />
+                <Row label="Preferred audio language" help="Play a dub in this language when the file has one">
+                    <Select
+                        className="w-44"
+                        value={p.preferredAudioLang}
+                        onChange={v => set("playback", { preferredAudioLang: v })}
+                        options={LANGS.map(l => (l.value ? l : { ...l, label: "Original language" }))}
+                    />
                 </Row>
-                <Row label="Preferred subtitle language">
-                    <Select className="w-44" value={p.preferredSubLang} onChange={v => set("playback", { preferredSubLang: v })} options={LANGS} />
+                <Row label="Preferred subtitle language" help="Your language for subtitles (English when not set)">
+                    <Select
+                        className="w-44"
+                        value={p.preferredSubLang}
+                        onChange={v => set("playback", { preferredSubLang: v })}
+                        options={LANGS.map(l => (l.value ? l : { ...l, label: "Not set" }))}
+                    />
+                </Row>
+                <Row
+                    label="Subtitles only for foreign languages"
+                    help="Turn subtitles on when the audio isn't in your subtitle or audio language. Off: subtitles whenever there are some in your preferred subtitle language."
+                >
+                    <Switch checked={p.subtitlesForForeign} onChange={v => set("playback", { subtitlesForForeign: v })} />
                 </Row>
             </Group>
         </>
@@ -1021,11 +1049,17 @@ function TorrentClientSection({ draft, set }: SectionProps) {
 
 function DiscordSection({ draft, set }: SectionProps) {
     return (
-        <Group title="Rich presence" description="Talks to the Discord app on this computer — nothing is sent anywhere else.">
+        <Group
+            title="Rich presence"
+            description="Talks to the Discord app on this computer. Shows “Watching <title>” with the episode or the year, the poster (Discord loads it from TMDB) and the time left."
+        >
             <Row label="Show what I'm watching">
                 <Switch checked={draft.discord.richPresence} onChange={v => set("discord", { richPresence: v })} />
             </Row>
-            <Stack label="Discord application ID" help="Create an application at discord.com/developers and paste its Application ID.">
+            <Stack
+                label="Discord application ID"
+                help="Create an application at discord.com/developers (its name shows as “Watching <name>” in the activity's header) and paste its Application ID. Upload an image named kumobox under Rich Presence › Art Assets for the badge and for titles without a poster."
+            >
                 <Input value={draft.discord.clientId} onChange={e => set("discord", { clientId: e.target.value })} />
             </Stack>
         </Group>

@@ -709,3 +709,18 @@ func normLang(l string) string {
 
 // IsEnglish reports whether a subtitle's language is English.
 func IsEnglish(lang string) bool { return normLang(lang) == "eng" }
+
+// SplitReferrer takes the Referer out of a stream's headers (mpv and the
+// downloaders have an option of their own for it).
+func SplitReferrer(h map[string]string) (map[string]string, string) {
+	out := map[string]string{}
+	referrer := ""
+	for k, v := range h {
+		if strings.EqualFold(k, "referer") {
+			referrer = v
+			continue
+		}
+		out[k] = v
+	}
+	return out, referrer
+}

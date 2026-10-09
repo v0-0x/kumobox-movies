@@ -57,6 +57,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/catalog/schedule", h(s.schedule))
 	m.HandleFunc("GET /api/catalog/list", h(s.rawList))
 	m.HandleFunc("GET /api/catalog/genres", h(func(r *http.Request) (any, error) { return s.app.Platform.Genres(r.Context()) }))
+	s.letterboxdRoutes()
 
 	// --- library
 	m.HandleFunc("POST /api/library/scan", h(s.scan))
@@ -151,26 +152,8 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/downloads/{id}", h(func(r *http.Request) (any, error) { s.app.Downloads.Remove(r.PathValue("id")); return nil, nil }))
 	m.HandleFunc("POST /api/downloads/clear", h(func(r *http.Request) (any, error) { s.app.Downloads.ClearFinished(); return nil, nil }))
 
-	// --- torrents
-	m.HandleFunc("GET /api/torrents/providers", h(func(r *http.Request) (any, error) { return s.app.Torrents.Providers(), nil }))
-	m.HandleFunc("POST /api/torrents/search", h(s.torrentSearch))
-	m.HandleFunc("POST /api/torrents/download", h(s.torrentDownload))
-	m.HandleFunc("GET /api/torrent-client/status", h(func(r *http.Request) (any, error) { return s.app.Torrents.Status(r.Context()), nil }))
-	m.HandleFunc("GET /api/torrent-client/list", h(s.torrentList))
-	m.HandleFunc("POST /api/torrent-client/action", h(s.torrentAction))
-	m.HandleFunc("POST /api/torrent-client/start", h(func(r *http.Request) (any, error) { return nil, s.app.Torrents.StartClient(r.Context()) }))
-	m.HandleFunc("POST /api/torrent-client/add", h(s.torrentAdd))
-	m.HandleFunc("GET /api/autodownloader/rules", h(func(r *http.Request) (any, error) { return s.app.AutoDL.Rules() }))
-	m.HandleFunc("POST /api/autodownloader/rules", h(s.saveRule))
-	m.HandleFunc("DELETE /api/autodownloader/rules/{id}", h(func(r *http.Request) (any, error) {
-		id, _ := strconv.Atoi(r.PathValue("id"))
-		return nil, s.app.AutoDL.DeleteRule(id)
-	}))
-	m.HandleFunc("POST /api/autodownloader/run", h(func(r *http.Request) (any, error) {
-		n, err := s.app.AutoDL.Run(r.Context())
-		return map[string]int{"added": n}, err
-	}))
-	m.HandleFunc("GET /api/autodownloader/items", h(func(r *http.Request) (any, error) { return s.app.AutoDL.Items(), nil }))
+	// --- torrents (search, client, auto downloader)
+	s.torrentRoutes()
 
 	// --- extensions & plugins
 	m.HandleFunc("GET /api/extensions", h(func(r *http.Request) (any, error) { return s.app.Extensions.List(), nil }))
@@ -303,6 +286,10 @@ func (s *Server) saveSettings(r *http.Request) (any, error) {
 	if err := decode(r, &next); err != nil {
 		return nil, err
 	}
+	// The Letterboxd account is connected and disconnected on its own
+	// (letterboxd.go), not with the other settings: a page opened before
+	// would put back the account it saw.
+	next.Letterboxd.Username = cur.Letterboxd.Username
 	// Devices on the LAN may not change network/security settings or
 	// anything that decides which programs run or which folders are read
 	// on this computer.
@@ -566,7 +553,7 @@ func (s *Server) updateEntry(r *http.Request) (any, error) {
 		return nil, err
 	}
 	u.MediaID = id
-	return nil, s.app.Platform.UpdateEntry(r.Context(), u)
+	return nil, s.app.UpdateEntry(r.Context(), u)
 }
 
 func (s *Server) deleteEntry(r *http.Request) (any, error) {

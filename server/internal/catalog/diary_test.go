@@ -57,6 +57,12 @@ func TestDiary(t *testing.T) {
 	if pending, _ := p.PendingDiary(ctx); len(pending) != 1 || pending[0].ID != today.ID {
 		t.Fatalf("pending after exporting: %+v", pending)
 	}
+	if err := p.RateDiary(ctx, today.ID, 150, true); err != nil {
+		t.Fatal(err)
+	}
+	if ofA, _ := p.Diary(ctx, a.ID, 1); len(ofA) != 1 || ofA[0].Rating != 100 || !ofA[0].Liked || !ofA[0].Rewatch {
+		t.Errorf("rated: %+v", ofA)
+	}
 	if err := p.DeleteDiary(ctx, today.ID); err != nil {
 		t.Fatal(err)
 	}

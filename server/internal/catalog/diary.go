@@ -147,6 +147,19 @@ func (p *Platform) MarkDiaryExported(ctx context.Context, ids []int64, at int64)
 	return err
 }
 
+// RateDiary sets the rating (0-100) and like of a viewing: a movie rated
+// once it was logged. Gone already is fine.
+func (p *Platform) RateDiary(ctx context.Context, id int64, rating int, liked bool) error {
+	res, err := p.db.Write(`UPDATE diary SET rating = ?, liked = ? WHERE id = ?`, min(max(rating, 0), 100), b2i(liked), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		p.hub.Publish(events.DiaryUpdated, nil)
+	}
+	return nil
+}
+
 // DeleteDiary removes a viewing from the diary (gone already is fine).
 func (p *Platform) DeleteDiary(ctx context.Context, id int64) error {
 	res, err := p.db.Write(`DELETE FROM diary WHERE id = ?`, id)

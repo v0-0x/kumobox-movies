@@ -44,7 +44,7 @@ func fakeMpvProcess(mode string) int {
 		b, _ := json.Marshal(v)
 		_, _ = conn.Write(append(b, '\n'))
 	}
-	observed := 0
+	asked := 0
 	sc := bufio.NewScanner(conn)
 	for sc.Scan() {
 		var req struct {
@@ -62,7 +62,7 @@ func fakeMpvProcess(mode string) int {
 		switch {
 		case name == "observe_property":
 			send(reply)
-			if observed++; observed == 6 {
+			if asked++; asked == len(observed) {
 				send(map[string]any{"event": "file-loaded"})
 			}
 		case name == "get_property" && arg == "track-list":
@@ -109,12 +109,12 @@ func TestLaunchMpvProcess(t *testing.T) {
 
 	t.Run("plays to the end", func(t *testing.T) {
 		m := newManager(t, "eof")
-		if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 1, Source: "local", Target: "/anime/01.mkv"}); err != nil {
+		if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 1001, Source: "local", Target: "/shows/S01E01.mkv"}); err != nil {
 			t.Fatal(err)
 		}
 		// The end-file mpv wrote just before exiting must not get lost.
 		waitFor(t, "the episode to be marked finished", func() bool {
-			e := m.history.Get(4, 1)
+			e := m.history.Get(4, 1001)
 			return e != nil && e.Duration == 1420 && e.Position == e.Duration
 		})
 		waitFor(t, "the session to end", func() bool { return m.Status() == nil })
@@ -123,7 +123,7 @@ func TestLaunchMpvProcess(t *testing.T) {
 
 	t.Run("quits on Stop", func(t *testing.T) {
 		m := newManager(t, "play")
-		if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 2, Source: "local", Target: "/anime/02.mkv"}); err != nil {
+		if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 1002, Source: "local", Target: "/shows/S01E02.mkv"}); err != nil {
 			t.Fatal(err)
 		}
 		waitFor(t, "the file to load", func() bool {

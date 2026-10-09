@@ -30,7 +30,7 @@ func (a *App) pluginServices() extensions.PluginHostServices {
 			return map[string]any{"MediaListCollection": c}, nil
 		},
 		UpdateEntry: func(ctx context.Context, mediaID int, status *string, score *float64, progress *int) error {
-			return a.Platform.UpdateEntry(ctx, catalog.EntryUpdate{MediaID: mediaID, Status: status, Score: score, Progress: progress})
+			return a.UpdateEntry(ctx, catalog.EntryUpdate{MediaID: mediaID, Status: status, Score: score, Progress: progress})
 		},
 		DeleteEntry: func(ctx context.Context, mediaID int) error { return a.Platform.DeleteEntry(ctx, mediaID) },
 		ListAnime: func(ctx context.Context, page int, search string, perPage int) (any, error) {

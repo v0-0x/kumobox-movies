@@ -19,7 +19,7 @@ import (
 )
 
 // newTestManager builds a Manager on a fresh database, with the network
-// features (AniList progress, AniSkip) off and mpv replaced by fakes.
+// features (list progress) off and mpv replaced by fakes.
 func newTestManager(t *testing.T, edit func(*config.Settings)) (*Manager, *fakeLauncher) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "kumobox.db"))
@@ -32,7 +32,7 @@ func newTestManager(t *testing.T, edit func(*config.Settings)) (*Manager, *fakeL
 	}
 	cfg := settings.Get()
 	cfg.Playback.AutoUpdateProgress = false
-	cfg.Playback.SkipIntroAniSkip = false
+	cfg.Playback.SkipIntro, cfg.Playback.SkipCredits = false, false
 	cfg.Playback.RememberTracks = true
 	cfg.Playback.AutoPlayNext = false
 	if edit != nil {
@@ -122,7 +122,7 @@ func TestMpvKeepsTrackChoiceThroughUnload(t *testing.T) {
 			if err := m.Tracks.Save(saved); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := m.PlayMpv(PlayRequest{MediaID: 7, Episode: 3, Source: "local", Target: "/anime/03.mkv"}); err != nil {
+			if _, err := m.PlayMpv(PlayRequest{MediaID: 7, Episode: 1003, Source: "local", Target: "/shows/S01E03.mkv"}); err != nil {
 				t.Fatal(err)
 			}
 			s, f := liveSession(t, m), l.last()
@@ -176,7 +176,7 @@ func TestPlayMpvSerializesSessions(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := m.PlayMpv(PlayRequest{MediaID: 1, Episode: i + 1, Source: "local", Target: fmt.Sprintf("/anime/%02d.mkv", i+1)})
+			_, err := m.PlayMpv(PlayRequest{MediaID: 1, Episode: 1001 + i, Source: "local", Target: fmt.Sprintf("/shows/S01E%02d.mkv", i+1)})
 			if err != nil {
 				t.Error(err)
 			}
@@ -204,12 +204,12 @@ func TestPlayMpvSerializesSessions(t *testing.T) {
 
 func TestSessionCopiesDontRace(t *testing.T) {
 	m, l := newTestManager(t, nil)
-	sess, err := m.PlayMpv(PlayRequest{MediaID: 1, Episode: 1, Source: "local", Target: "/anime/01.mkv"})
+	sess, err := m.PlayMpv(PlayRequest{MediaID: 1, Episode: 1001, Source: "local", Target: "/shows/S01E01.mkv"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := l.last()
-	waitFor(t, "the properties to be observed", func() bool { return f.count("observe_property") == 6 })
+	waitFor(t, "the properties to be observed", func() bool { return f.count("observe_property") == len(observed) })
 	go func() {
 		for i := range 300 {
 			f.prop("time-pos", float64(i+1))
@@ -238,9 +238,9 @@ func TestSessionCopiesDontRace(t *testing.T) {
 func TestAutoNextPlaysNextEpisode(t *testing.T) {
 	m, l := newTestManager(t, func(c *config.Settings) { c.Playback.AutoPlayNext = true })
 	m.NextResolver = func(_ context.Context, s *Session) (*PlayRequest, error) {
-		return &PlayRequest{MediaID: s.MediaID, Episode: s.Episode + 1, Source: "local", Target: "/anime/02.mkv"}, nil
+		return &PlayRequest{MediaID: s.MediaID, Episode: s.Episode + 1, Source: "local", Target: "/shows/S01E02.mkv"}, nil
 	}
-	if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 1, Source: "local", Target: "/anime/01.mkv"}); err != nil {
+	if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 1001, Source: "local", Target: "/shows/S01E01.mkv"}); err != nil {
 		t.Fatal(err)
 	}
 	f := l.last()
@@ -250,12 +250,12 @@ func TestAutoNextPlaysNextEpisode(t *testing.T) {
 	f.event("end-file", "reason", "eof")
 	f.exit()
 
-	waitFor(t, "episode 2 to play", func() bool {
+	waitFor(t, "S01E02 to play", func() bool {
 		st := m.Status()
-		return st != nil && st.Episode == 2
+		return st != nil && st.Episode == 1002
 	})
-	if e := m.history.Get(4, 1); e == nil || e.Position != e.Duration || e.Duration != 1420 {
-		t.Errorf("episode 1 history = %+v; want it marked finished", e)
+	if e := m.history.Get(4, 1001); e == nil || e.Position != e.Duration || e.Duration != 1420 {
+		t.Errorf("S01E01 history = %+v; want it marked finished", e)
 	}
 	if _, live, maxLive := l.stats(); live != 1 || maxLive != 1 {
 		t.Errorf("live=%d maxLive=%d; want a single mpv", live, maxLive)
@@ -265,7 +265,7 @@ func TestAutoNextPlaysNextEpisode(t *testing.T) {
 func TestAutoNextYields(t *testing.T) {
 	cases := map[string]func(t *testing.T, m *Manager) (wantID string){
 		"to a newer session": func(t *testing.T, m *Manager) string {
-			other, err := m.PlayMpv(PlayRequest{MediaID: 9, Episode: 5, Source: "local", Target: "/other/05.mkv"})
+			other, err := m.PlayMpv(PlayRequest{MediaID: 9, Episode: 1005, Source: "local", Target: "/other/S01E05.mkv"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -287,9 +287,9 @@ func TestAutoNextYields(t *testing.T) {
 			m.NextResolver = func(_ context.Context, s *Session) (*PlayRequest, error) {
 				close(resolving)
 				<-release
-				return &PlayRequest{MediaID: s.MediaID, Episode: s.Episode + 1, Source: "local", Target: "/anime/02.mkv"}, nil
+				return &PlayRequest{MediaID: s.MediaID, Episode: s.Episode + 1, Source: "local", Target: "/shows/S01E02.mkv"}, nil
 			}
-			if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 1, Source: "local", Target: "/anime/01.mkv"}); err != nil {
+			if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 1001, Source: "local", Target: "/shows/S01E01.mkv"}); err != nil {
 				t.Fatal(err)
 			}
 			f := l.last()
@@ -310,10 +310,10 @@ func TestAutoNextYields(t *testing.T) {
 				t.Fatalf("playing %+v; auto play next must not replace what the user did", st)
 			}
 			l.mu.Lock()
-			launchedNext := slices.Contains(l.targets, "/anime/02.mkv")
+			launchedNext := slices.Contains(l.targets, "/shows/S01E02.mkv")
 			l.mu.Unlock()
 			if launchedNext {
-				t.Fatal("auto play next launched episode 2")
+				t.Fatal("auto play next launched S01E02")
 			}
 		})
 	}
@@ -323,16 +323,16 @@ func TestBuiltinRewatchUpdatesProgressAgain(t *testing.T) {
 	m, _ := newTestManager(t, nil)
 	var updates atomic.Int32
 	m.viewed = func(mediaID, episode int) {
-		if mediaID == 3 && episode == 2 {
+		if mediaID == 3 && episode == 1002 {
 			updates.Add(1)
 		}
 	}
 	watch := func() {
-		m.ResetBuiltinProgress(3, 2) // the in-app player opens the episode
+		m.ResetBuiltinProgress(3, 1002) // the in-app player opens the episode
 		for _, pos := range []float64{600, 1250, 1300, 1390} {
-			m.ReportProgress(ProgressReport{MediaID: 3, Episode: 2, Position: pos, Duration: 1400, Source: "local"})
+			m.ReportProgress(ProgressReport{MediaID: 3, Episode: 1002, Position: pos, Duration: 1400, Source: "local"})
 		}
-		m.ReportProgress(ProgressReport{MediaID: 3, Episode: 2, Position: 1400, Duration: 1400, Source: "local", Ended: true})
+		m.ReportProgress(ProgressReport{MediaID: 3, Episode: 1002, Position: 1400, Duration: 1400, Source: "local", Ended: true})
 	}
 
 	watch()
@@ -343,12 +343,12 @@ func TestBuiltinRewatchUpdatesProgressAgain(t *testing.T) {
 	if n := updates.Load(); n != 2 {
 		t.Fatalf("%d progress updates; want one per viewing", n)
 	}
-	if e := m.history.Get(3, 2); e == nil || e.Position != 1400 {
+	if e := m.history.Get(3, 1002); e == nil || e.Position != 1400 {
 		t.Errorf("history = %+v; want the episode marked finished", e)
 	}
 }
 
-// The in-app player reports every few seconds from 3 s in: the anime goes
+// The in-app player reports every few seconds from 3 s in: the show goes
 // on the watching list once per viewing, from 10 s in.
 func TestBuiltinStartsWatchingOncePerViewing(t *testing.T) {
 	m, _ := newTestManager(t, nil)
@@ -372,37 +372,37 @@ func TestBuiltinStartsWatchingOncePerViewing(t *testing.T) {
 		}
 	}
 
-	m.ResetBuiltinProgress(3, 1) // the in-app player opens the episode
-	report(3, 1, 3, 8)
-	if n := count(3, 1); n != 0 {
+	m.ResetBuiltinProgress(3, 1001) // the in-app player opens the episode
+	report(3, 1001, 3, 8)
+	if n := count(3, 1001); n != 0 {
 		t.Fatalf("%d starts 8 s in; want none before 10 s", n)
 	}
-	report(3, 1, 13, 18, 600, 1250, 1300)
-	m.ReportProgress(ProgressReport{MediaID: 3, Episode: 1, Position: 1400, Duration: 1400, Source: "stream", Ended: true})
-	if n := count(3, 1); n != 1 {
+	report(3, 1001, 13, 18, 600, 1250, 1300)
+	m.ReportProgress(ProgressReport{MediaID: 3, Episode: 1001, Position: 1400, Duration: 1400, Source: "stream", Ended: true})
+	if n := count(3, 1001); n != 1 {
 		t.Fatalf("%d starts; want one per viewing", n)
 	}
 
-	m.ResetBuiltinProgress(3, 1) // watched again
-	report(3, 1, 4, 9, 14, 19)
-	if n := count(3, 1); n != 2 {
+	m.ResetBuiltinProgress(3, 1001) // watched again
+	report(3, 1001, 4, 9, 14, 19)
+	if n := count(3, 1001); n != 2 {
 		t.Fatalf("%d starts after watching it again; want 2", n)
 	}
 
-	m.ResetBuiltinProgress(3, 2) // resumed halfway
-	report(3, 2, 700, 705)
-	if n := count(3, 2); n != 1 {
+	m.ResetBuiltinProgress(3, 1002) // resumed halfway
+	report(3, 1002, 700, 705)
+	if n := count(3, 1002); n != 1 {
 		t.Fatalf("%d starts of a resumed episode; want 1", n)
 	}
 
-	report(3, 0, 30, 60) // no episode (creditless opening, extra)
-	report(0, 1, 30, 60) // not matched to an anime
+	report(3, 0, 30, 60) // no episode (an extra)
+	report(0, 1, 30, 60) // not matched to a movie or show
 	if n := count(3, 0) + count(0, 1); n != 0 {
-		t.Fatalf("%d starts without an anime episode", n)
+		t.Fatalf("%d starts without a movie or show episode", n)
 	}
 }
 
-// mpv reports the position all the time: the anime goes on the watching
+// mpv reports the position all the time: the title goes on the watching
 // list once per viewing (mpv session), from 10 s in. A resumed session
 // starts out at its resume position, which counts once mpv has loaded the
 // file (it knows the duration), not before.
@@ -430,7 +430,7 @@ func TestMpvStartsWatchingOncePerViewing(t *testing.T) {
 		}
 	}
 
-	if _, err := m.PlayMpv(PlayRequest{MediaID: 5, Episode: 1, Source: "anicli", Target: "https://cdn.example/1.m3u8"}); err != nil {
+	if _, err := m.PlayMpv(PlayRequest{MediaID: 5, Episode: 1001, Source: "stream", Target: "https://cdn.example/1.m3u8"}); err != nil {
 		t.Fatal(err)
 	}
 	f := l.last()
@@ -446,12 +446,12 @@ func TestMpvStartsWatchingOncePerViewing(t *testing.T) {
 		f.prop("time-pos", pos)
 	}
 	waitFor(t, "the position to reach 1419", at(1419))
-	if s := got(); !slices.Equal(s, []string{"5/1 at 10 of 1420"}) {
+	if s := got(); !slices.Equal(s, []string{"5/1001 at 10 of 1420"}) {
 		t.Fatalf("starts %v; want one, at 10 s", s)
 	}
 
 	resume := 142.0
-	if _, err := m.PlayMpv(PlayRequest{MediaID: 5, Episode: 1, Source: "anicli", Target: "https://cdn.example/1.m3u8", Start: &resume}); err != nil {
+	if _, err := m.PlayMpv(PlayRequest{MediaID: 5, Episode: 1001, Source: "stream", Target: "https://cdn.example/1.m3u8", Start: &resume}); err != nil {
 		t.Fatal(err)
 	}
 	f = l.last()
@@ -461,73 +461,172 @@ func TestMpvStartsWatchingOncePerViewing(t *testing.T) {
 	f.prop("time-pos", 142.0)
 	f.prop("time-pos", 150.0)
 	waitFor(t, "the position to reach 150", at(150))
-	if s := got(); !slices.Equal(s, []string{"5/1 at 10 of 1420", "5/1 at 142 of 1420"}) {
+	if s := got(); !slices.Equal(s, []string{"5/1001 at 10 of 1420", "5/1001 at 142 of 1420"}) {
 		t.Fatalf("starts %v; want the resumed viewing to start once, after the file loaded", s)
 	}
 }
 
-func TestMpvSkipsWhatTheSettingsSay(t *testing.T) {
-	// Recaps play: the one at the start, and the next episode's preview
-	// after the ending, which AniSkip calls a recap too.
-	skips := []SkipInterval{{Type: "recap", Start: 5, End: 60}, {Type: "op", Start: 90, End: 180}, {Type: "mixed-ed", Start: 1290, End: 1380}, {Type: "recap", Start: 1385, End: 1415}}
+// chapterList is how mpv reports chapters (name and start).
+func chapterList(chapters ...Chapter) []map[string]any {
+	out := []map[string]any{}
+	for _, c := range chapters {
+		out = append(out, map[string]any{"title": c.Title, "time": c.Start})
+	}
+	return out
+}
+
+// told is what mpv was told to do: "<new position> <osd text>".
+func told(f *fakeMpv) []string {
+	var out []string
+	seeks, texts := f.sent("set_property time-pos"), f.sent("show-text")
+	for i := range min(len(seeks), len(texts)) {
+		out = append(out, fmt.Sprint(seeks[i][0], " ", texts[i][0]))
+	}
+	return out
+}
+
+func TestMpvSkipsChaptersTheSettingsSay(t *testing.T) {
+	episode := []Chapter{{"Previously On", 0, 0}, {"Opening", 50, 0}, {"Episode", 110, 0}, {"End Credits", 1300, 0}, {"Preview", 1390, 0}}
+	movie := []Chapter{{"Chapter 1", 0, 0}, {"Chapter 2", 2500, 0}, {"End Credits", 5000, 0}, {"Post-Credits Scene", 5600, 0}}
 	cases := []struct {
-		name         string
-		intro, outro bool
-		want         []string // what mpv was told: "<new position> <text>"
+		name            string
+		chapters        []Chapter
+		duration        float64
+		intro, credits  bool
+		autoNext, other bool  // auto play next on; another episode to play
+		visit           []int // the chapters played, in order
+		want            []string
 	}{
-		{"openings", true, false, []string{"180 Skipped opening"}},
-		{"endings", false, true, []string{"1380 Skipped ending"}},
-		{"both", true, true, []string{"180 Skipped opening", "1380 Skipped ending"}},
+		{"recap and intro in one go", episode, 1420, true, false, false, false,
+			[]int{0, 2, 3, 4}, []string{"110 Skipped recap and intro"}},
+		{"resumed in the intro", episode, 1420, true, false, false, false,
+			[]int{1, 2}, []string{"110 Skipped intro"}},
+		{"going back plays it", episode, 1420, true, true, false, false,
+			[]int{1, 2, 1, 2}, []string{"110 Skipped intro"}},
+		// Credits and preview go on to the end: skipped only when the next
+		// episode plays then.
+		{"credits at the end, no auto play next", episode, 1420, false, true, false, true,
+			[]int{2, 3, 4}, nil},
+		{"credits at the end, auto play next", episode, 1420, false, true, true, true,
+			[]int{2, 3}, []string{"1420 Skipped credits and preview"}},
+		{"credits of the last episode", episode, 1420, false, true, true, false,
+			[]int{2, 3, 4}, nil},
+		{"settings off", episode, 1420, false, false, true, true,
+			[]int{0, 1, 2, 3, 4}, nil},
+		// The scene after the credits plays.
+		{"credits before a post-credits scene", movie, 5700, true, true, false, false,
+			[]int{0, 2, 3}, []string{"5600 Skipped credits"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m, l := newTestManager(t, func(c *config.Settings) {
-				c.Playback.SkipIntroAniSkip, c.Playback.SkipOutroAniSkip = tc.intro, tc.outro
+				c.Playback.SkipIntro, c.Playback.SkipCredits, c.Playback.AutoPlayNext = tc.intro, tc.credits, tc.autoNext
 			})
-			m.skipTimes = func(_ context.Context, mediaID, episode int, length float64) []SkipInterval {
-				if mediaID != 6 || episode != 2 || length != 1420 {
-					t.Errorf("skip times asked for %d/%d, %vs long", mediaID, episode, length)
+			m.NextResolver = func(context.Context, *Session) (*PlayRequest, error) { return nil, nil }
+			m.HasNext = func(s *Session) bool {
+				if s.MediaID != 6 || s.Episode != 1002 {
+					t.Errorf("asked about the episode after %d/%d", s.MediaID, s.Episode)
 				}
-				return skips
+				return tc.other
 			}
-			if _, err := m.PlayMpv(PlayRequest{MediaID: 6, Episode: 2, Source: "local", Target: "/anime/02.mkv"}); err != nil {
+			if _, err := m.PlayMpv(PlayRequest{MediaID: 6, Episode: 1002, Source: "local", Target: "/shows/S01E02.mkv"}); err != nil {
 				t.Fatal(err)
 			}
 			f := l.last()
-			// The times are asked for once the length is known.
+			f.prop("chapter-list", chapterList(tc.chapters...))
+			f.prop("chapter", tc.visit[0])
+			// Nothing is skipped before mpv knows the length (where the last
+			// chapter ends).
 			time.Sleep(50 * time.Millisecond)
-			if st := m.Status(); st == nil || len(st.Skips) != 0 {
-				t.Fatal("skip times before the length was known")
+			if got := told(f); len(got) != 0 {
+				t.Fatalf("skipped %q before the length was known", got)
 			}
-			f.prop("duration", 1420.0)
-			waitFor(t, "the skip times", func() bool {
+			f.prop("duration", tc.duration)
+			waitFor(t, "the skips", func() bool {
 				st := m.Status()
-				return st != nil && len(st.Skips) == len(skips)
+				return st != nil && st.Duration == tc.duration && len(st.Skips) > 0
 			})
-			told := func() []string {
-				var out []string
-				seeks, texts := f.sent("set_property time-pos"), f.sent("show-text")
-				for i := range min(len(seeks), len(texts)) {
-					out = append(out, fmt.Sprint(seeks[i][0], " ", texts[i][0]))
-				}
-				return out
+			// A seek doesn't move to the next chapter here: the test does.
+			for _, n := range tc.visit {
+				f.prop("chapter", n)
+				time.Sleep(20 * time.Millisecond)
 			}
-			// The recap, the opening, then the ending and the preview; a seek
-			// here doesn't move the position, as no time-pos comes back.
-			for i, pos := range []float64{10, 95, 600, 1300, 1390} {
-				f.prop("time-pos", pos)
-				waitFor(t, fmt.Sprint("the position to reach ", pos), func() bool {
-					st := m.Status()
-					return st != nil && st.Position == pos
-				})
-				if i == 1 && tc.intro {
-					waitFor(t, "the opening to be skipped", func() bool { return len(told()) == 1 })
-				}
-			}
-			waitFor(t, "the skips", func() bool { return len(told()) >= len(tc.want) })
+			waitFor(t, "the skips", func() bool { return len(told(f)) >= len(tc.want) })
 			time.Sleep(100 * time.Millisecond) // a wrong skip would arrive by now
-			if got := told(); !slices.Equal(got, tc.want) {
+			if got := told(f); !slices.Equal(got, tc.want) {
 				t.Errorf("mpv was told %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The status lists the chapters' skips, for the Now Playing bar.
+func TestMpvStatusHasChapterSkips(t *testing.T) {
+	m, l := newTestManager(t, nil)
+	if _, err := m.PlayMpv(PlayRequest{MediaID: 6, Episode: 1002, Source: "local", Target: "/shows/S01E02.mkv"}); err != nil {
+		t.Fatal(err)
+	}
+	f := l.last()
+	f.prop("duration", 1420.0)
+	f.prop("chapter-list", chapterList(Chapter{"Intro", 0, 0}, Chapter{"Episode", 60, 0}, Chapter{"Credits", 1380, 0}))
+	want := []SkipInterval{{"intro", 0, 60}, {"credits", 1380, 1420}}
+	waitFor(t, "the skips", func() bool {
+		st := m.Status()
+		return st != nil && slices.Equal(st.Skips, want)
+	})
+	f.prop("chapter-list", nil) // no chapters (any more)
+	waitFor(t, "no skips", func() bool {
+		st := m.Status()
+		return st != nil && len(st.Skips) == 0
+	})
+}
+
+// Without a choice remembered for the title, the settings choose the tracks
+// once the file is loaded.
+func TestMpvChoosesTracksBySettings(t *testing.T) {
+	cases := []struct {
+		name      string
+		edit      func(*config.Settings)
+		aid, sid  any // set by KumoBox; nil: not set
+		wantNotes []string
+	}{
+		// Japanese audio (the file's first) isn't the user's language:
+		// English subtitles, the full ones.
+		{"foreign audio", nil, nil, 1.0, nil},
+		// English audio: only its forced (signs) subtitles.
+		{"preferred audio", func(c *config.Settings) { c.Playback.PreferredAudioLang = "eng,en" }, 2.0, 2.0, nil},
+		{"the dub version", func(c *config.Settings) { c.OnlineStream.PreferDub = true }, 2.0, 2.0, []string{"Dub: English audio"}},
+		// Subtitles whenever there are some in the preferred language.
+		{"subtitles always", func(c *config.Settings) {
+			c.Playback.SubtitlesForForeign, c.Playback.PreferredSubLang, c.Playback.PreferredAudioLang = false, "spa,es", "eng"
+		}, 2.0, 3.0, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, l := newTestManager(t, tc.edit)
+			if _, err := m.PlayMpv(PlayRequest{MediaID: 8, Episode: 1001, Source: "local", Target: "/shows/S01E01.mkv"}); err != nil {
+				t.Fatal(err)
+			}
+			f := l.last()
+			f.event("file-loaded")
+			waitFor(t, "the tracks to be chosen", func() bool { return f.received("set_property sid") })
+			time.Sleep(50 * time.Millisecond)
+			last := func(cmd string) any {
+				sent := f.sent(cmd)
+				if len(sent) == 0 {
+					return nil
+				}
+				return sent[len(sent)-1][0]
+			}
+			if aid, sid := last("set_property aid"), last("set_property sid"); aid != tc.aid || sid != tc.sid {
+				t.Errorf("aid %v, sid %v; want %v, %v", aid, sid, tc.aid, tc.sid)
+			}
+			var notes []string
+			for _, s := range f.sent("show-text") {
+				notes = append(notes, fmt.Sprint(s[0]))
+			}
+			if !slices.Equal(notes, tc.wantNotes) {
+				t.Errorf("mpv showed %q; want %q", notes, tc.wantNotes)
 			}
 		})
 	}
@@ -558,5 +657,14 @@ func TestStatusHooksRunOneAtATime(t *testing.T) {
 	waitFor(t, "the newest status to reach the hook", func() bool { return last.Load() == 999.0 })
 	if n := overlaps.Load(); n != 0 {
 		t.Fatalf("status hooks overlapped %d times", n)
+	}
+}
+
+func TestProgressMessage(t *testing.T) {
+	if got := progressMessage(catalog.ShowID(1396), 2005); got != "Progress updated — S02E05" {
+		t.Errorf("show: %q", got)
+	}
+	if got := progressMessage(catalog.MovieID(155), catalog.MovieEpisode); got != "Marked as watched" {
+		t.Errorf("movie: %q", got)
 	}
 }

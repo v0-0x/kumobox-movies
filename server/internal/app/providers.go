@@ -177,14 +177,8 @@ func (a *App) resolveStreamDownload(ctx context.Context, it *downloads.Item) (*d
 	if err != nil {
 		return nil, err
 	}
-	r := &downloads.Resolved{URL: s.URL, Headers: map[string]string{}}
-	for k, v := range s.Headers {
-		if strings.EqualFold(k, "referer") {
-			r.Referrer = v
-			continue
-		}
-		r.Headers[k] = v
-	}
+	r := &downloads.Resolved{URL: s.URL}
+	r.Headers, r.Referrer = stream.SplitReferrer(s.Headers)
 	// One subtitle file goes along: the stream's own, else an addon's, in
 	// the preferred language.
 	subs := append(append([]providers.Subtitle(nil), s.Subtitles...), res.Subtitles...)

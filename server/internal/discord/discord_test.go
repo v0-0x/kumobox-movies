@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeDiscord answers like the Discord app's IPC socket and keeps the
@@ -95,12 +96,12 @@ func startFakeDiscord(t *testing.T, d *fakeDiscord) {
 	}()
 }
 
-func TestSetActivityShowsWatchingTheAnime(t *testing.T) {
+func TestSetActivityShowsWatchingTheTitle(t *testing.T) {
 	d := &fakeDiscord{}
 	startFakeDiscord(t, d)
 	c := &Client{}
 	defer c.Clear()
-	if err := c.SetActivity("123", Activity{Details: "Frieren", State: "Episode 3"}); err != nil {
+	if err := c.SetActivity("123", Activity{Details: "Breaking Bad", State: "S01E03"}); err != nil {
 		t.Fatal(err)
 	}
 	acts := d.activities()
@@ -112,7 +113,7 @@ func TestSetActivityShowsWatchingTheAnime(t *testing.T) {
 	if got["type"] != float64(typeWatching) || got["status_display_type"] != float64(statusShowsDetails) {
 		t.Errorf("type %v, status_display_type %v: want Watching (3), with the details in the status (2)", got["type"], got["status_display_type"])
 	}
-	if got["details"] != "Frieren" || got["state"] != "Episode 3" {
+	if got["details"] != "Breaking Bad" || got["state"] != "S01E03" {
 		t.Errorf("details %q, state %q", got["details"], got["state"])
 	}
 }
@@ -123,7 +124,7 @@ func TestSetActivityOnAnOldDiscord(t *testing.T) {
 	c := &Client{}
 	defer c.Clear()
 	for range 2 {
-		if err := c.SetActivity("123", Activity{Details: "Frieren", State: "Episode 3"}); err != nil {
+		if err := c.SetActivity("123", Activity{Details: "Breaking Bad", State: "S01E03"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -132,11 +133,41 @@ func TestSetActivityOnAnOldDiscord(t *testing.T) {
 		t.Fatalf("Discord got %d activities, want 2", len(acts))
 	}
 	for _, a := range acts {
-		if a["type"] != float64(typeWatching) || a["details"] != "Frieren" {
+		if a["type"] != float64(typeWatching) || a["details"] != "Breaking Bad" {
 			t.Errorf("got %v", a)
 		}
 	}
 	if !c.noStatusDisplay {
 		t.Error("the client keeps sending status_display_type to a Discord that refuses it")
+	}
+}
+
+func TestSetActivitySendsThePresence(t *testing.T) {
+	d := &fakeDiscord{}
+	startFakeDiscord(t, d)
+	c := &Client{}
+	defer c.Clear()
+	poster := "https://image.tmdb.org/t/p/w500/poster.jpg"
+	w := Watching{Title: "Breaking Bad", Show: true, Episode: 1002, EpisodeTitle: "Cat's in the Bag...", Poster: poster, Position: 60, Duration: 2880}
+	if err := c.SetActivity("123", Presence(w, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	acts := d.activities()
+	if len(acts) != 1 {
+		t.Fatalf("Discord got %d activities, want 1", len(acts))
+	}
+	got := acts[0]
+	assets, _ := got["assets"].(map[string]any)
+	ts, _ := got["timestamps"].(map[string]any)
+	if got["details"] != "Breaking Bad" || got["state"] != "S01E02 · Cat's in the Bag..." {
+		t.Errorf("details %q, state %q", got["details"], got["state"])
+	}
+	if assets["large_image"] != poster || assets["small_text"] != "KumoBox" || assets["small_image"] != AppAsset {
+		t.Errorf("assets %v", assets)
+	}
+	start, _ := ts["start"].(float64)
+	end, _ := ts["end"].(float64)
+	if end-start != 2880*1000 {
+		t.Errorf("timestamps %v: want the episode's length between them", ts)
 	}
 }

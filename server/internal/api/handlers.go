@@ -1,24 +1,19 @@
 package api
 
 import (
-	"context"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
-	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
-	"github.com/v0-0x/kumobox-movies/server/internal/torrent"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -187,35 +182,6 @@ func (s *Server) match(r *http.Request) (any, error) {
 	return nil, nil
 }
 
-// torrentFolder is where a torrent for a title is saved: the folder that
-// already holds its files (inside the library), else the usual new folder
-// of its own.
-func (s *Server) torrentFolder(mediaID int, title string) string {
-	def := s.app.Torrents.SavePathFor(title)
-	cfg := s.app.Settings.Get()
-	lib := filepath.Clean(config.ExpandHome(cfg.Library.Dir))
-	if mediaID <= 0 || cfg.Library.Dir == "" || !cfg.Torrent.CreateSubfolder {
-		return def
-	}
-	files, _ := s.app.Files.ByMedia(mediaID)
-	counts := map[string]int{}
-	best := ""
-	for _, f := range files {
-		d := filepath.Clean(f.Dir)
-		if d == lib || !util.IsSubPath(lib, d) || strings.HasPrefix(filepath.Base(d), ".") {
-			continue
-		}
-		counts[d]++
-		if counts[d] > counts[best] {
-			best = d
-		}
-	}
-	if best != "" {
-		return best
-	}
-	return def
-}
-
 // naturalLess compares file names with numbers in numeric order
 // ("Ep 2" < "Ep 10").
 func naturalLess(a, b string) bool {
@@ -365,14 +331,6 @@ type playLocalBody struct {
 	Caps    []string `json:"caps"` // video formats the in-app player decodes
 }
 
-func (s *Server) episodeTitle(ctx context.Context, mediaID, episode int, fallback string) string {
-	media, err := s.app.Platform.MediaLite(ctx, mediaID)
-	if err != nil {
-		return fallback
-	}
-	return app.EpisodeTitle(media, episode)
-}
-
 func (s *Server) playLocal(r *http.Request) (any, error) {
 	var body playLocalBody
 	if err := decode(r, &body); err != nil {
@@ -396,10 +354,11 @@ func (s *Server) playLocal(r *http.Request) (any, error) {
 	if !isTrusted(r) {
 		playerName = "builtin"
 	}
-	title := s.episodeTitle(r.Context(), body.MediaID, body.Episode, f.Name)
+	t := s.app.PlayTitles(r.Context(), body.MediaID, body.Episode, f.Name)
 	if playerName == "mpv" {
 		sess, err := s.app.Player.PlayMpv(player.PlayRequest{
-			MediaID: body.MediaID, Episode: body.Episode, Title: title, Source: "local", Target: f.Path, Start: body.Start,
+			MediaID: body.MediaID, Episode: body.Episode, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
+			Source: "local", Target: f.Path, Start: body.Start,
 		})
 		if err != nil {
 			return nil, err
@@ -410,11 +369,13 @@ func (s *Server) playLocal(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.builtinPlay(body, probe, title), nil
+	return s.builtinPlay(body, probe, t), nil
 }
 
-// builtinPlay is what the in-app player needs to open an episode.
-func (s *Server) builtinPlay(body playLocalBody, probe *stream.Probe, title string) map[string]any {
+// builtinPlay is what the in-app player needs to open an episode: the file's
+// probe, where to resume, the tracks to start with (choice) and the parts
+// its chapters say to skip.
+func (s *Server) builtinPlay(body playLocalBody, probe *stream.Probe, t app.Titles) map[string]any {
 	s.app.Local.Decide(probe, stream.CapsOf(body.Caps))
 	// The in-app player opens the episode: a new viewing, which may update
 	// progress again (rewatch).
@@ -424,8 +385,9 @@ func (s *Server) builtinPlay(body playLocalBody, probe *stream.Probe, title stri
 		resume = *body.Start
 	}
 	return map[string]any{
-		"player": "builtin", "probe": probe, "title": title, "resumeAt": resume,
+		"player": "builtin", "probe": probe, "title": t.Window, "mediaTitle": t.Media, "episodeTitle": t.Episode, "resumeAt": resume,
 		"mediaId": body.MediaID, "episode": body.Episode, "tracks": s.app.Player.Tracks.Get(body.MediaID),
+		"choice": s.builtinTracks(body.MediaID, probe), "skips": chapterSkips(probe),
 	}
 }
 
@@ -439,6 +401,10 @@ type playStreamBody struct {
 	Title     string            `json:"title"`
 	Source    string            `json:"source"`
 	Start     *float64          `json:"start"`
+	// The streaming provider and version (the next episode comes from
+	// them), when the in-app player hands a stream over to mpv.
+	Provider string `json:"provider"`
+	Dub      bool   `json:"dub"`
 }
 
 func (s *Server) playStream(r *http.Request) (any, error) {
@@ -452,12 +418,14 @@ func (s *Server) playStream(r *http.Request) (any, error) {
 	if body.URL == "" {
 		return nil, badRequest("missing url")
 	}
+	t := s.app.PlayTitles(r.Context(), body.MediaID, body.Episode, "Stream")
 	if body.Title == "" {
-		body.Title = s.episodeTitle(r.Context(), body.MediaID, body.Episode, "Stream")
+		body.Title = t.Window
 	}
 	return s.app.Player.PlayMpv(player.PlayRequest{
-		MediaID: body.MediaID, Episode: body.Episode, Title: body.Title, Source: util2(body.Source, "stream"),
-		Target: body.URL, Headers: body.Headers, Referrer: body.Referrer, SubFiles: body.Subtitles, Start: body.Start,
+		MediaID: body.MediaID, Episode: body.Episode, Title: body.Title, MediaTitle: t.Media, EpisodeTitle: t.Episode,
+		Source: util2(body.Source, "stream"), Target: body.URL, Headers: body.Headers, Referrer: body.Referrer,
+		SubFiles: body.Subtitles, Start: body.Start, Provider: body.Provider, Dub: body.Dub,
 	})
 }
 
@@ -516,12 +484,75 @@ func (s *Server) saveTracks(r *http.Request) (any, error) {
 	return nil, s.app.Player.Tracks.Save(p)
 }
 
-// skips are the parts of an episode the in-app player offers to skip.
-// AniSkip only knows anime (by MyAnimeList id): none for TMDB titles, until
-// skipping by chapter names replaces it.
+// skips are the parts of a file (?path=, of the library or shared by
+// another KumoBox) that its chapters name as an intro, a recap, the credits
+// or a preview: the players offer to skip them. Streams have none.
 func (s *Server) skips(r *http.Request) (any, error) {
-	return []player.SkipInterval{}, nil
+	path := r.URL.Query().Get("path")
+	var probe *stream.Probe
+	var err error
+	switch {
+	case path == "":
+		return []player.SkipInterval{}, nil
+	case share.IsRemote(path):
+		probe, err = s.app.Share.Probe(r.Context(), path)
+	default:
+		probe, err = s.app.Local.Probe(r.Context(), path)
+	}
+	if err != nil {
+		return []player.SkipInterval{}, nil
+	}
+	return chapterSkips(probe), nil
 }
+
+// chapterSkips are the parts of a probed file its chapters say to skip.
+func chapterSkips(p *stream.Probe) []player.SkipInterval {
+	chapters := make([]player.Chapter, 0, len(p.Chapters))
+	for _, c := range p.Chapters {
+		chapters = append(chapters, player.Chapter{Title: c.Title, Start: c.Start, End: c.End})
+	}
+	if out := player.ChapterSkips(chapters, p.Duration); out != nil {
+		return out
+	}
+	return []player.SkipInterval{}
+}
+
+// builtinTracks are the tracks the in-app player opens a file with, as the
+// settings and the choice remembered for the title say (player.ChooseTracks):
+// audio is the index of the audio track (-1: the file's default), sub the
+// subtitles' key in the player ("e<n>" the n-th embedded track, "x<n>" the
+// n-th external file, "off"; "": the player's own pick).
+func (s *Server) builtinTracks(mediaID int, p *stream.Probe) map[string]any {
+	var tracks []player.Track
+	for _, a := range p.Audio {
+		tracks = append(tracks, player.Track{ID: a.TypeIndex + 1, Type: "audio", Lang: a.Language, Title: a.Title, Codec: a.Codec, Default: a.Default, Forced: a.Forced})
+	}
+	for _, sub := range p.Subtitles {
+		if !sub.Bitmap { // images: mpv only
+			tracks = append(tracks, player.Track{ID: sub.TypeIndex + 1, Type: "sub", Lang: sub.Language, Title: sub.Title, Codec: sub.Codec, Default: sub.Default, Forced: sub.Forced})
+		}
+	}
+	for i, x := range p.ExternalSubs {
+		tracks = append(tracks, player.Track{ID: externalSub + i, Type: "sub", Lang: x.Language, Title: x.Name, External: true})
+	}
+	c := s.app.Player.ChooseTracks(mediaID, "local", false, tracks)
+	audio, sub := -1, ""
+	if c.HasAudio {
+		audio = c.Audio - 1
+	}
+	switch {
+	case c.HasSub && c.Sub >= externalSub:
+		sub = fmt.Sprintf("x%d", c.Sub-externalSub)
+	case c.HasSub:
+		sub = fmt.Sprintf("e%d", c.Sub-1)
+	case c.SubOff:
+		sub = "off"
+	}
+	return map[string]any{"audio": audio, "sub": sub, "restored": c.Restored, "note": c.Note}
+}
+
+// externalSub numbers the external subtitle files after the embedded tracks.
+const externalSub = 10001
 
 func (s *Server) clearHistory(r *http.Request) (any, error) {
 	return nil, s.app.History.Clear(queryInt(r, "mediaId"), queryInt(r, "episode"))
@@ -529,187 +560,6 @@ func (s *Server) clearHistory(r *http.Request) (any, error) {
 
 // ---------------------------------------------------------------------------
 // Streaming providers: see providers_routes.go.
-
-// ---------------------------------------------------------------------------
-// Torrents
-
-func (s *Server) torrentSearch(r *http.Request) (any, error) {
-	var body struct {
-		Provider   string `json:"provider"`
-		MediaID    int    `json:"mediaId"`
-		Query      string `json:"query"`
-		Episode    int    `json:"episode"`
-		Batch      bool   `json:"batch"`
-		Resolution string `json:"resolution"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	var search func(ctx context.Context, p torrent.Provider) ([]*torrent.SearchResult, error)
-	if body.MediaID <= 0 {
-		if body.Query == "" {
-			return nil, badRequest("type something to search")
-		}
-		search = func(ctx context.Context, p torrent.Provider) ([]*torrent.SearchResult, error) {
-			return p.Search(ctx, body.Query)
-		}
-	} else {
-		media, err := s.app.Platform.MediaLite(r.Context(), body.MediaID)
-		if err != nil {
-			return nil, err
-		}
-		q := torrent.SmartQuery{Media: media, Query: body.Query, Episode: body.Episode, Batch: body.Batch, Resolution: body.Resolution}
-		search = func(ctx context.Context, p torrent.Provider) ([]*torrent.SearchResult, error) {
-			return p.SmartSearch(ctx, q)
-		}
-	}
-	if body.Provider == allProviders {
-		return s.searchAllProviders(r.Context(), search)
-	}
-	p, err := s.app.Torrents.Provider(body.Provider)
-	if err != nil {
-		return nil, err
-	}
-	res, err := search(r.Context(), p)
-	if err != nil {
-		return nil, err
-	}
-	if res == nil {
-		res = []*torrent.SearchResult{}
-	}
-	return res, nil
-}
-
-func (s *Server) torrentDownload(r *http.Request) (any, error) {
-	var body struct {
-		Provider string                  `json:"provider"`
-		MediaID  int                     `json:"mediaId"`
-		Results  []*torrent.SearchResult `json:"results"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	title := ""
-	if body.MediaID > 0 {
-		if media, err := s.app.Platform.MediaLite(r.Context(), body.MediaID); err == nil {
-			title = media.PreferredTitle()
-		}
-	}
-	var uris []string
-	for _, res := range body.Results {
-		// Results of a multi-provider search each come from their own provider.
-		id := body.Provider
-		if res.Provider != "" && (id == allProviders || id == "") {
-			id = res.Provider
-		}
-		p, err := s.app.Torrents.Provider(id)
-		if err != nil {
-			return nil, err
-		}
-		m, err := p.Magnet(r.Context(), res)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", res.Name, err)
-		}
-		uris = append(uris, m)
-	}
-	if len(uris) == 0 {
-		return nil, badRequest("nothing to download")
-	}
-	save := s.torrentFolder(body.MediaID, title)
-	if err := s.app.Torrents.Add(r.Context(), uris, save); err != nil {
-		return nil, err
-	}
-	s.app.Hub.Success(fmt.Sprintf("Sent %d torrent(s) to the torrent client", len(uris)))
-	return map[string]any{"savePath": save}, nil
-}
-
-func (s *Server) torrentList(r *http.Request) (any, error) {
-	c, err := s.app.Torrents.Client()
-	if err != nil {
-		return nil, badRequest(err.Error())
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	list, err := c.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if list == nil {
-		list = []torrent.Torrent{}
-	}
-	return list, nil
-}
-
-func (s *Server) torrentAction(r *http.Request) (any, error) {
-	var body struct {
-		Hashes []string `json:"hashes"`
-		Action string   `json:"action"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	c, err := s.app.Torrents.Client()
-	if err != nil {
-		return nil, badRequest(err.Error())
-	}
-	switch body.Action {
-	case "pause":
-		return nil, c.Pause(r.Context(), body.Hashes)
-	case "resume":
-		return nil, c.Resume(r.Context(), body.Hashes)
-	case "remove":
-		return nil, c.Remove(r.Context(), body.Hashes, false)
-	case "removeData":
-		return nil, c.Remove(r.Context(), body.Hashes, true)
-	case "open":
-		if !isTrusted(r) {
-			return nil, forbidden("only available on this computer")
-		}
-		list, err := c.List(r.Context())
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range list {
-			if len(body.Hashes) > 0 && t.Hash == body.Hashes[0] {
-				target := t.ContentPath
-				if st, err := os.Stat(target); err != nil || !st.IsDir() {
-					target = filepath.Dir(target)
-				}
-				return nil, util.Open(target)
-			}
-		}
-		return nil, notFound("torrent not found")
-	}
-	return nil, badRequest("unknown action")
-}
-
-func (s *Server) torrentAdd(r *http.Request) (any, error) {
-	var body struct {
-		Magnet  string `json:"magnet"`
-		MediaID int    `json:"mediaId"`
-	}
-	if err := decode(r, &body); err != nil {
-		return nil, err
-	}
-	if !strings.HasPrefix(body.Magnet, "magnet:") && !strings.HasPrefix(body.Magnet, "http") {
-		return nil, badRequest("enter a magnet link or a .torrent URL")
-	}
-	title := ""
-	if body.MediaID > 0 {
-		if media, err := s.app.Platform.MediaLite(r.Context(), body.MediaID); err == nil {
-			title = media.PreferredTitle()
-		}
-	}
-	return nil, s.app.Torrents.Add(r.Context(), []string{body.Magnet}, s.app.Torrents.SavePathFor(title))
-}
-
-func (s *Server) saveRule(r *http.Request) (any, error) {
-	var rule torrent.Rule
-	if err := decode(r, &rule); err != nil {
-		return nil, err
-	}
-	return s.app.AutoDL.SaveRule(rule)
-}
 
 // ---------------------------------------------------------------------------
 // Extensions

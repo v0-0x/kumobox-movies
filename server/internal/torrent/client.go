@@ -1,5 +1,6 @@
 // Package torrent integrates torrent clients (qBittorrent, Transmission),
-// torrent search providers and the RSS auto downloader.
+// the torrent search sources for movies and shows (sources.go), and the
+// auto downloader that keeps shows downloaded (autodownloader.go).
 package torrent
 
 import (

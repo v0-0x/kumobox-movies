@@ -165,9 +165,11 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 	if res != nil {
 		addonSubs = res.Subtitles
 	}
-	title := app.EpisodeTitle(media, episode)
+	// The session records the provider and the episode key: auto play
+	// next asks the same provider for the next episode (app/playback.go).
+	t := s.app.PlayTitles(r.Context(), media.ID, episode, media.PreferredTitle())
 	if playerName == "mpv" {
-		headers, referrer := splitReferrer(st.Headers)
+		headers, referrer := stream.SplitReferrer(st.Headers)
 		// mpv loads every subtitle file it's given when it starts: only a
 		// few, in the preferred languages.
 		subs := append(append([]providers.Subtitle(nil), st.Subtitles...), stream.SortSubtitles(addonSubs, cfg.Playback.PreferredSubLang, 4)...)
@@ -176,8 +178,9 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 			files = append(files, sub.URL)
 		}
 		sess, err := s.app.Player.PlayMpv(player.PlayRequest{
-			MediaID: media.ID, Episode: episode, Title: title, Source: "stream", Target: st.URL,
-			Headers: headers, Referrer: referrer, SubFiles: files, Start: body.Start,
+			MediaID: media.ID, Episode: episode, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
+			Source: "stream", Target: st.URL, Headers: headers, Referrer: referrer, SubFiles: files, Start: body.Start,
+			Provider: st.Provider,
 		})
 		if err != nil {
 			return nil, err
@@ -213,7 +216,7 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 		resume = *body.Start
 	}
 	return map[string]any{
-		"action": "builtin", "player": "builtin", "sources": sources, "title": title, "resumeAt": resume,
+		"action": "builtin", "player": "builtin", "sources": sources, "title": t.Window, "mediaTitle": t.Media, "episodeTitle": t.Episode, "resumeAt": resume,
 		"tracks": s.app.Player.Tracks.Get(media.ID), "mediaId": media.ID, "episode": episode, "key": episode, "provider": st.Provider,
 	}, nil
 }
@@ -239,21 +242,6 @@ func (s *Server) pickStream(ctx context.Context, media *catalog.Media, episode i
 	return s.app.Stream.Best(ctx, media, episode, body.Provider)
 }
 
-// splitReferrer takes the Referer out of a stream's headers (mpv has an
-// option of its own for it).
-func splitReferrer(h map[string]string) (map[string]string, string) {
-	out := map[string]string{}
-	referrer := ""
-	for k, v := range h {
-		if strings.EqualFold(k, "referer") {
-			referrer = v
-			continue
-		}
-		out[k] = v
-	}
-	return out, referrer
-}
-
 // playerSource is a direct link as the in-app player takes it: through the
 // proxy (headers, CORS, HLS playlists rewritten), subtitles converted to
 // WebVTT. Those of subtitle addons come after the stream's own, the
@@ -263,7 +251,7 @@ func playerSource(st stream.Stream, addonSubs []providers.Subtitle, cfg config.S
 	for k, v := range st.Headers {
 		headers[k] = v
 	}
-	_, referrer := splitReferrer(st.Headers)
+	_, referrer := stream.SplitReferrer(st.Headers)
 	subs := []map[string]any{}
 	all := append(append([]providers.Subtitle(nil), st.Subtitles...), stream.SortSubtitles(addonSubs, cfg.Playback.PreferredSubLang, 30)...)
 	for i, sub := range all {
@@ -296,7 +284,7 @@ func firstLine(s string) string {
 }
 
 // sendStreamTorrent hands a torrent stream to the torrent client, saved
-// into the library (the movie's or show's folder).
+// into the library (the movie's folder, the show's season folder).
 func (s *Server) sendStreamTorrent(ctx context.Context, media *catalog.Media, episode int, st stream.Stream) (any, error) {
 	magnet := st.Magnet
 	if magnet == "" {
@@ -309,7 +297,11 @@ func (s *Server) sendStreamTorrent(ctx context.Context, media *catalog.Media, ep
 	if magnet == "" {
 		return nil, badRequest("this torrent has no info hash")
 	}
-	save := s.torrentFolder(media.ID, media.PreferredTitle())
+	season := -1
+	if media.IsShow() {
+		season, _ = catalog.SplitKey(episode)
+	}
+	save := s.app.Torrents.SavePath(media, season, s.mediaFiles(media.ID))
 	if err := s.app.Torrents.Add(ctx, []string{magnet}, save); err != nil {
 		return nil, err
 	}

@@ -1,9 +1,6 @@
 package torrent
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -43,22 +40,5 @@ func TestSplitCommand(t *testing.T) {
 		if _, _, err := splitCommand(in); err == nil {
 			t.Errorf("%q: no error", in)
 		}
-	}
-}
-
-// A blank executable used to index an empty slice: a panic in the auto
-// downloader's goroutine, which took the whole app down.
-func TestStartClientBlankExecutable(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	a := newTestAutoDownloader(t, srv)
-	srv.Close() // not running
-	s := a.torrents.settings.Get()
-	s.Qbittorrent.Executable = "   "
-	if _, err := a.torrents.settings.Save(s); err != nil {
-		t.Fatal(err)
-	}
-	err := a.torrents.StartClient(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "no executable") {
-		t.Fatalf("got %v", err)
 	}
 }

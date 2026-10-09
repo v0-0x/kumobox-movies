@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/downloads"
+	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
 
@@ -95,10 +97,7 @@ func newProvidersServer(t *testing.T) *Server {
 	return s
 }
 
-const (
-	local = "127.0.0.1:5000"
-	lan   = "192.168.1.20:5000"
-)
+// local and lan (the clients' addresses) are letterboxd_test.go's.
 
 func jsonBody(t *testing.T, v any) string {
 	t.Helper()
@@ -305,7 +304,7 @@ func TestProviderPlay(t *testing.T) {
 			player = "mpv"
 		}
 		decodeBody(t, do(s, "POST", "/api/providers/play", remote, jsonBody(t, map[string]any{"mediaId": 155, "streamId": direct.ID, "player": player}), nil), &played)
-		if played.Action != "builtin" || played.Title != "The Dark Knight" || played.Episode != 1 || len(played.Sources) != 1 {
+		if played.Action != "builtin" || played.Title != "The Dark Knight (2008)" || played.Episode != 1 || len(played.Sources) != 1 {
 			t.Fatalf("builtin (%s): %+v", remote, played)
 		}
 		src := played.Sources[0]
@@ -384,7 +383,7 @@ func TestProviderPlay(t *testing.T) {
 	decodeBody(t, do(s, "POST", "/api/providers/play", local, jsonBody(t, map[string]any{"mediaId": 155, "streamId": torrent.ID}), nil), &sent)
 	addedMu.Lock()
 	defer addedMu.Unlock()
-	if sent.Action != "torrent" || sent.SavePath != filepath.Join(lib, "The Dark Knight") || len(added) != 1 ||
+	if sent.Action != "torrent" || sent.SavePath != filepath.Join(lib, "The Dark Knight (2008)") || len(added) != 1 ||
 		!strings.Contains(added[0]["filename"].(string), testInfoHash) || added[0]["download-dir"] != sent.SavePath {
 		t.Fatalf("torrent: %+v, added %+v", sent, added)
 	}
@@ -437,6 +436,25 @@ func TestProviderDownload(t *testing.T) {
 	}
 	if w := do(s, "POST", "/api/providers/download", local, jsonBody(t, map[string]any{"mediaId": catalog.ShowID(1396), "episodes": []int{1000}}), nil); w.Code != http.StatusBadRequest {
 		t.Fatalf("invalid episode: %d", w.Code)
+	}
+}
+
+// Auto play next: a stream session records its provider and episode key;
+// the next episode is that provider's best link for the next key.
+func TestProviderNextEpisode(t *testing.T) {
+	s := newProvidersServer(t)
+	installTestAddon(t, s)
+	show := catalog.ShowID(1396)
+	next, err := s.app.Player.NextResolver(context.Background(), &player.Session{MediaID: show, Episode: 1001, Source: "stream", Provider: "stremio:test.addon"})
+	if err != nil || next == nil {
+		t.Fatalf("next: %+v %v", next, err)
+	}
+	if next.Episode != 1002 || next.Target != "https://cdn.example/bb.s01e02.m3u8" || next.Provider != "stremio:test.addon" || next.Source != "stream" ||
+		!strings.Contains(next.Title, "S01E02") {
+		t.Fatalf("next: %+v", next)
+	}
+	if !s.app.Player.HasNext(&player.Session{MediaID: show, Episode: 1001, Source: "stream", Provider: "stremio:test.addon"}) {
+		t.Fatal("no next episode")
 	}
 }
 

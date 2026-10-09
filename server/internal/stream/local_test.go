@@ -45,8 +45,12 @@ func newTestLocal(t *testing.T, ffmpeg string) (*Local, string) {
 	if err := files.Save(&library.LocalFile{Path: video, Dir: dir, Name: filepath.Base(video), Kind: "main"}); err != nil {
 		t.Fatal(err)
 	}
+	st, err := os.Stat(video)
+	if err != nil {
+		t.Fatal(err)
+	}
 	d.SetCache(probeKey(video), Probe{
-		Path: video, Container: "matroska,webm", Duration: 60, Size: int64(len("not really a video")),
+		Path: video, Container: "matroska,webm", Duration: 60, Size: st.Size(), ModTime: st.ModTime().UnixNano(),
 		Video: []ProbeStream{{Index: 0, Type: "video", Codec: "h264"}},
 		Audio: []ProbeStream{{Index: 1, Type: "audio", Codec: "aac", Channels: 2}},
 	}, time.Hour)
