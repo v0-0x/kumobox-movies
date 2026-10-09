@@ -51,6 +51,33 @@ export const api = {
     upload: <T>(path: string, form: FormData) => request<T>("POST", path, form),
 }
 
+// Saves a file the API makes (a CSV) the way the browser saves downloads,
+// and returns the response's headers (which entries a CSV has…).
+export async function download(path: string): Promise<Headers> {
+    const res = await fetch(path, { credentials: "same-origin" })
+    if (!res.ok) {
+        let data: any = null
+        try {
+            data = await res.json()
+        } catch {
+            /* not JSON */
+        }
+        if (res.status === 401 && data?.passwordRequired) authListeners.forEach(fn => fn())
+        throw new ApiError(data?.error || res.statusText, res.status, data)
+    }
+    const blob = await res.blob()
+    const name = /filename="?([^";]+)"?/i.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "download.csv"
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    return res.headers
+}
+
 export function qs(params: Record<string, string | number | boolean | undefined | null>) {
     const sp = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {

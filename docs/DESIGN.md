@@ -92,10 +92,22 @@ hosts (tests, offline demos).
 | — | `GET /api/catalog/genres` |
 | `POST /api/auth/anilist` | `POST /api/letterboxd/connect` `{username}` |
 | `POST /api/auth/logout` | `POST /api/letterboxd/disconnect` |
-| — | `POST /api/letterboxd/sync`, `POST /api/letterboxd/import` (multipart ZIP/CSV), `GET /api/letterboxd/export.csv`, `GET /api/letterboxd/status`, `GET /api/letterboxd/diary`, `POST /api/letterboxd/api-login` |
+| — | `POST /api/letterboxd/sync`, `POST /api/letterboxd/import` (multipart ZIP/CSV), `GET /api/letterboxd/export.csv` + `POST /api/letterboxd/mark-exported`, `GET /api/letterboxd/watchlist.csv`, `GET /api/letterboxd/status`, `GET /api/letterboxd/diary`, `DELETE /api/letterboxd/diary/{id}`, `POST /api/letterboxd/push`, `POST`/`DELETE /api/letterboxd/api-login` |
 | `/api/onlinestream/*` | `/api/providers/*` (providers, sources, play, download, stremio install/uninstall, nuvio repos) |
 | `/api/anicli/status` | removed |
 | `/api/manga/*` | removed |
+
+The Letterboxd routes are in `api/letterboxd.go`. Devices on the LAN read
+the status and the diary, sync, export and send; connecting or
+disconnecting the account, importing files and the API sign-in are done on
+this computer. The account is only changed by connect/disconnect (or an API
+sign-in with none connected), never by `PUT /api/settings`. A movie that
+becomes Watched (played to the end, marked watched, or put on the Watched
+list: `App.UpdateEntry`) is logged in the diary once a day
+(`app/letterboxd.go`), and a rating given afterwards goes to that entry
+while it isn't on Letterboxd yet; shows aren't logged, nor what another
+KumoBox on the account finished. Events: `letterboxd-status` (with the
+status), `diary-updated`, `collection-updated`.
 
 ## Conventions
 

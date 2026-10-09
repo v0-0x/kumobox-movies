@@ -57,6 +57,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/catalog/schedule", h(s.schedule))
 	m.HandleFunc("GET /api/catalog/list", h(s.rawList))
 	m.HandleFunc("GET /api/catalog/genres", h(func(r *http.Request) (any, error) { return s.app.Platform.Genres(r.Context()) }))
+	s.letterboxdRoutes()
 
 	// --- library
 	m.HandleFunc("POST /api/library/scan", h(s.scan))
@@ -310,6 +311,10 @@ func (s *Server) saveSettings(r *http.Request) (any, error) {
 	if err := decode(r, &next); err != nil {
 		return nil, err
 	}
+	// The Letterboxd account is connected and disconnected on its own
+	// (letterboxd.go), not with the other settings: a page opened before
+	// would put back the account it saw.
+	next.Letterboxd.Username = cur.Letterboxd.Username
 	// Devices on the LAN may not change network/security settings or
 	// anything that decides which programs run or which folders are read
 	// on this computer.
@@ -573,7 +578,7 @@ func (s *Server) updateEntry(r *http.Request) (any, error) {
 		return nil, err
 	}
 	u.MediaID = id
-	return nil, s.app.Platform.UpdateEntry(r.Context(), u)
+	return nil, s.app.UpdateEntry(r.Context(), u)
 }
 
 func (s *Server) deleteEntry(r *http.Request) (any, error) {

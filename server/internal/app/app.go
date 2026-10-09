@@ -25,6 +25,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/extensions"
 	"github.com/v0-0x/kumobox-movies/server/internal/history"
 	"github.com/v0-0x/kumobox-movies/server/internal/images"
+	"github.com/v0-0x/kumobox-movies/server/internal/letterboxd"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/lifecycle"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
@@ -39,6 +40,7 @@ type App struct {
 	Settings   *config.Store
 	Hub        *events.Hub
 	Platform   *catalog.Platform
+	Letterboxd *letterboxd.Sync
 	Files      *library.Store
 	Scanner    *library.Scanner
 	Library    *library.Service
@@ -65,6 +67,7 @@ type App struct {
 	DataDir    string
 
 	prefetch *prefetcher
+	diary    diaryLog
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -166,6 +169,7 @@ func (a *App) WriteShellToken() string {
 }
 
 func (a *App) wire() {
+	a.wireLetterboxd()
 	// Titles with files get all their data, also those shared with this
 	// KumoBox (prefetch.go).
 	a.Scanner.OnScanned = a.prefetchLibrary
@@ -326,6 +330,7 @@ func pickSource(srcs []stream.Source, quality string) stream.Source {
 // Start runs the background jobs.
 func (a *App) Start() {
 	a.Share.Start()
+	a.Letterboxd.Start(a.ctx)
 	go a.runPrefetch(a.ctx)
 	a.Extensions.LoadAll()
 	a.Downloads.Start()
@@ -390,7 +395,7 @@ func (a *App) progressFromHistory(finished []history.Entry) {
 	sort.SliceStable(finished, func(i, j int) bool { return finished[i].UpdatedAt < finished[j].UpdatedAt })
 	for _, h := range finished {
 		if h.MediaID > 0 && h.Episode > 0 {
-			_, _ = a.Platform.UpdateProgress(ctx, h.MediaID, h.Episode)
+			a.progressElsewhere(ctx, h.MediaID, h.Episode)
 		}
 	}
 }
