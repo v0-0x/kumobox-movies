@@ -202,7 +202,11 @@ func (s *Server) torrentDownload(r *http.Request) (any, error) {
 		}
 		n += len(byPath[p])
 	}
-	s.app.Hub.Success(fmt.Sprintf("Sent %d torrent(s) to the torrent client", n))
+	where := ""
+	if len(paths) == 1 && paths[0] != "" {
+		where = ", saving to " + paths[0]
+	}
+	s.app.Hub.Success(fmt.Sprintf("Sent %d torrent(s) to the torrent client%s", n, where))
 	return map[string]any{"added": n, "savePaths": paths}, nil
 }
 

@@ -3,6 +3,7 @@ import { toast } from "@/lib/toast"
 import { api, qs } from "./api"
 import { formatKey, mediaIsShow } from "./ids"
 import type {
+    AutoItem,
     AutoRule,
     CollectionView,
     DiaryEntry,
@@ -31,7 +32,8 @@ import type {
     Status,
     StreamEpisodes,
     Torrent,
-    TorrentResult,
+    TorrentProviderInfo,
+    TorrentSearchResponse,
     UpdateStatus,
 } from "./types"
 
@@ -51,6 +53,8 @@ export function useSaveSettings() {
         onSuccess: s => {
             qc.setQueryData<Status>(["status"], old => (old ? { ...old, settings: s } : old))
             qc.invalidateQueries({ queryKey: ["status"] })
+            // Torrent sources may have been turned on or off.
+            qc.invalidateQueries({ queryKey: ["torrent-providers"] })
             toast.success("Settings saved")
         },
         onError: (e: Error) => toast.error(e.message),
@@ -338,13 +342,28 @@ export function useTorrentList(enabled = true) {
     })
 }
 
+// A torrent search. episode is a key; batch asks for the pack of season, or
+// of the whole show when season is 0; query replaces the searches made
+// from the title; provider is a source id or "all".
+export type TorrentSearchBody = {
+    provider: string
+    mediaId?: number
+    query?: string
+    episode?: number
+    season?: number
+    batch?: boolean
+    resolution?: string
+}
+
 export function useTorrentSearch() {
     return useMutation({
-        // episode: a key; season: the season of a pack (batch).
-        mutationFn: (body: { provider: string; mediaId?: number; query?: string; episode?: number; season?: number; batch?: boolean; resolution?: string }) =>
-            api.post<TorrentResult[]>("/api/torrents/search", body),
-        onError: (e: Error) => toast.error(e.message),
+        mutationFn: (body: TorrentSearchBody) => api.post<TorrentSearchResponse>("/api/torrents/search", body),
     })
+}
+
+// The torrent search sources: indexers, public sites, extensions.
+export function useTorrentProviders() {
+    return useQuery({ queryKey: ["torrent-providers"], queryFn: () => api.get<TorrentProviderInfo[]>("/api/torrents/providers"), staleTime: 60_000 })
 }
 
 export function useExtensions() {
@@ -366,6 +385,22 @@ export function usePluginStates() {
 
 export function useAutoRules() {
     return useQuery({ queryKey: ["auto-rules"], queryFn: () => api.get<AutoRule[]>("/api/autodownloader/rules") })
+}
+
+// What the auto downloader grabbed, newest first.
+export function useAutoItems() {
+    return useQuery({ queryKey: ["auto-items"], queryFn: () => api.get<AutoItem[]>("/api/autodownloader/items") })
+}
+
+// The episodes (keys) a rule looks for now.
+export function useRuleWanted(id: number | undefined, enabled = true) {
+    return useQuery({
+        queryKey: ["auto-rules", id, "wanted"],
+        queryFn: () => api.get<{ episodes: number[] }>(`/api/autodownloader/rules/${id}/wanted`),
+        enabled: enabled && !!id,
+        retry: false,
+        staleTime: 60_000,
+    })
 }
 
 // ---------------------------------------------------------------------------
