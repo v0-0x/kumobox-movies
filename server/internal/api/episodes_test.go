@@ -1,8 +1,10 @@
 package api
 
 import (
+	"net/http"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 )
@@ -48,6 +50,17 @@ func TestMarkedProgress(t *testing.T) {
 		{"paused resumes", long, "PAUSED", 1004, 0, 1005, true, 1005, "CURRENT", 0},
 		{"movie watched", movie, "PLANNING", 0, 0, 1, true, 1, "COMPLETED", 0},
 		{"movie unwatched", movie, "COMPLETED", 1, 0, 1, false, 0, "CURRENT", 0},
+		// Its progress kept: put back on the watchlist, or on another list.
+		{"movie back on the watchlist", movie, "PLANNING", 1, 0, 1, true, 1, "COMPLETED", 0},
+		{"movie paused", movie, "PAUSED", 1, 0, 1, true, 1, "COMPLETED", 0},
+		{"movie being watched", movie, "CURRENT", 1, 0, 1, true, 1, "COMPLETED", 0},
+		{"movie rewatched", movie, "REPEATING", 1, 1, 1, true, 1, "COMPLETED", 2},
+		{"movie watched already", movie, "COMPLETED", 1, 0, 1, true, 1, "COMPLETED", 0},
+		{"finished show back on the watchlist", ended, "PLANNING", 1012, 0, 1012, true, 1012, "COMPLETED", 0},
+		{"finished show dropped at the end", ended, "DROPPED", 1012, 0, 1012, true, 1012, "COMPLETED", 0},
+		{"finished show rewatched to the end", ended, "REPEATING", 1012, 1, 1012, true, 1012, "COMPLETED", 2},
+		{"planned show: an earlier episode", ended, "PLANNING", 1012, 0, 1003, true, 1012, "PLANNING", 0},
+		{"airing show: no last episode", airing, "PLANNING", 2004, 0, 2004, true, 2004, "PLANNING", 0},
 	} {
 		p, st, r := markedProgress(c.status, c.progress, c.repeat, c.media, c.ep, c.watched)
 		if p != c.wantProg || st != c.wantStatus || r != c.wantRepeat {
@@ -64,5 +77,43 @@ func TestNaturalLess(t *testing.T) {
 		if names[i] != want[i] {
 			t.Fatalf("got %q", names)
 		}
+	}
+}
+
+// A movie put back on the watchlist keeps its progress: marking it watched
+// again makes it Watched once more, logged in the diary once a day.
+func TestMarkWatchedFromWatchlist(t *testing.T) {
+	s := newLetterboxdServer(t)
+	type marked struct {
+		Changed  bool   `json:"changed"`
+		Progress int    `json:"progress"`
+		Status   string `json:"status"`
+	}
+	var res marked
+	decodeBody(t, do(s, "POST", "/api/media/155/episode", local, `{"episode":1,"watched":true}`, nil), &res)
+	if !res.Changed || res.Status != "COMPLETED" || res.Progress != 1 {
+		t.Fatalf("marked watched: %+v", res)
+	}
+	wantCode(t, do(s, "POST", "/api/media/155/entry", local, `{"status":"PLANNING"}`, nil), http.StatusOK, "back on the watchlist")
+
+	decodeBody(t, do(s, "POST", "/api/media/155/episode", local, `{"episode":1,"watched":true}`, nil), &res)
+	if !res.Changed || res.Status != "COMPLETED" || res.Progress != 1 {
+		t.Fatalf("marked watched from the watchlist: %+v", res)
+	}
+	var list catalog.Collection
+	decodeBody(t, do(s, "GET", "/api/catalog/list", local, "", nil), &list)
+	if e := list.Find(155); e == nil || e.Status != "COMPLETED" || e.Progress != 1 {
+		t.Fatalf("list entry: %+v", e)
+	} else if y, m, d := time.Now().Date(); e.CompletedAt.Year == nil || *e.CompletedAt.Year != y || *e.CompletedAt.Month != int(m) || *e.CompletedAt.Day != d {
+		// Watched today, as when it's played to the end.
+		t.Errorf("finish date: %+v", e.CompletedAt)
+	}
+	// The same day: one viewing.
+	if d := diaryOf(t, s, 155); len(d) != 1 || d[0].Source != "kumobox" {
+		t.Errorf("diary: %+v", d)
+	}
+	decodeBody(t, do(s, "POST", "/api/media/155/episode", local, `{"episode":1,"watched":true}`, nil), &res)
+	if res.Changed || res.Status != "COMPLETED" {
+		t.Errorf("marked watched again: %+v", res)
 	}
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 )
@@ -53,6 +54,13 @@ func (s *Server) markEpisode(r *http.Request) (any, error) {
 	if repeat != cur.Repeat {
 		u.Repeat = &repeat
 	}
+	// Watched to the end today, as when it's played to the end: the finish
+	// date is filled in when it's still empty.
+	if status == "COMPLETED" && cur.Status != "COMPLETED" && cur.CompletedAt.Year == nil {
+		y, m, d := time.Now().Date()
+		month := int(m)
+		u.CompletedAt = &catalog.FuzzyDate{Year: &y, Month: &month, Day: &d}
+	}
 	// Through the app: a movie marked watched is logged in the diary.
 	if err := s.app.UpdateEntry(r.Context(), u); err != nil {
 		return nil, err
@@ -78,8 +86,11 @@ func markedProgress(status string, progress, repeat int, media *catalog.Media, k
 		next = min(next, last)
 	}
 	switch {
-	case finishable && next >= last && next > progress:
-		// Finished: complete it (a rewatch counts once more).
+	case finishable && next >= last && (next > progress || watched && key >= last && status != "COMPLETED"):
+		// Finished: complete it (a rewatch counts once more). Also when the
+		// last episode is marked watched with the progress there already: a
+		// movie (or a show watched to the end) put back on the watchlist,
+		// paused or dropped.
 		if status == "REPEATING" {
 			repeat++
 		}
