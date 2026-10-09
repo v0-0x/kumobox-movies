@@ -172,3 +172,23 @@ func TestCompletedMovieNotLogged(t *testing.T) {
 	}
 	waitDiary(t, a, 155, 1)
 }
+
+// Marked watched by hand, a movie gets the dates playing it to the end
+// gives it, as its diary entry does.
+func TestMarkedWatchedDates(t *testing.T) {
+	a := newTestApp(t)
+	ctx := context.Background()
+	done := "COMPLETED"
+	if err := a.UpdateEntry(ctx, catalog.EntryUpdate{MediaID: 155, Status: &done}); err != nil {
+		t.Fatal(err)
+	}
+	coll, err := a.Platform.Collection(ctx, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := coll.Find(155)
+	y, m, d := time.Now().Date()
+	if e == nil || e.CompletedAt.Year == nil || *e.CompletedAt.Year != y || *e.CompletedAt.Month != int(m) || *e.CompletedAt.Day != d || e.StartedAt.Year == nil {
+		t.Fatalf("entry %+v, want watched today", e)
+	}
+}

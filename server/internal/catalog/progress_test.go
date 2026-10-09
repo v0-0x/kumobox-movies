@@ -221,6 +221,56 @@ func TestWatchingUpdate(t *testing.T) {
 	}
 }
 
+func TestFillDates(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 20, 30, 0, 0, time.Local)
+	someDate := FuzzyDate{Year: ptr(2025)}
+	e := func(status string, progress int) *ListEntry {
+		return &ListEntry{MediaID: 1, Status: status, Progress: progress}
+	}
+	cases := []struct {
+		name               string
+		entry              *ListEntry
+		status             string // "": the update keeps the status
+		given              bool   // the update has its own dates
+		started, completed bool   // dates set to today
+	}{
+		{"marked watched, not in list", nil, "COMPLETED", false, true, true},
+		{"marked watched from the watchlist", e("PLANNING", 0), "COMPLETED", false, true, true},
+		{"show finished", e("CURRENT", 2005), "COMPLETED", false, false, true},
+		{"finish date kept", &ListEntry{MediaID: 1, Status: "CURRENT", Progress: 1003, CompletedAt: someDate}, "COMPLETED", false, false, false},
+		{"put on Watching", nil, "CURRENT", false, true, false},
+		{"watchlist to Watching", e("PLANNING", 0), "CURRENT", false, true, false},
+		{"start date kept", &ListEntry{MediaID: 1, Status: "PLANNING", StartedAt: someDate}, "CURRENT", false, false, false},
+		{"paused show resumed", e("PAUSED", 1003), "CURRENT", false, false, false},
+		{"put on the watchlist", nil, "PLANNING", false, false, false},
+		{"dropped", e("CURRENT", 1003), "DROPPED", false, false, false},
+		{"watched already", e("COMPLETED", 1), "COMPLETED", false, false, false},
+		{"rated: no status", e("CURRENT", 0), "", false, false, false},
+		{"dates of the review dialog", nil, "COMPLETED", true, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := EntryUpdate{MediaID: 1}
+			if tc.status != "" {
+				u.Status = &tc.status
+			}
+			if tc.given {
+				u.StartedAt, u.CompletedAt = &someDate, &FuzzyDate{}
+			}
+			FillDates(&u, tc.entry, now)
+			isToday := func(d *FuzzyDate) bool {
+				return d != nil && d.Year != nil && *d.Year == 2026 && *d.Month == 10 && *d.Day == 6
+			}
+			if isToday(u.StartedAt) != tc.started || isToday(u.CompletedAt) != tc.completed {
+				t.Errorf("started today %v, completed today %v; want %v, %v", isToday(u.StartedAt), isToday(u.CompletedAt), tc.started, tc.completed)
+			}
+			if !tc.started && !tc.given && u.StartedAt != nil || !tc.completed && !tc.given && u.CompletedAt != nil {
+				t.Errorf("update %+v sets a date", u)
+			}
+		})
+	}
+}
+
 // End to end on the list: starting a show puts it on the watching list
 // keeping its progress, and tells the UI; a completed one stays so.
 func TestStartWatchingLocalList(t *testing.T) {

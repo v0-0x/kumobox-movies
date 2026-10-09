@@ -192,6 +192,26 @@ func watchingUpdate(entry *ListEntry, mediaID int, now time.Time) (u EntryUpdate
 	return u, true
 }
 
+// FillDates gives a change the user makes to the list (marking a title
+// watched, putting it on Watching or Watched) the dates watching would give
+// it (progressUpdate): today as the start date of a title started now, and
+// as the finish date of one finished now, when the change sets none and
+// the entry (nil when it isn't in the list) has none yet.
+func FillDates(u *EntryUpdate, entry *ListEntry, now time.Time) {
+	if u.Status == nil || (entry != nil && entry.Status == *u.Status) {
+		return
+	}
+	switch *u.Status {
+	case "CURRENT", "COMPLETED":
+		if u.StartedAt == nil && needsStartDate(entry) {
+			u.StartedAt = fuzzyDate(now)
+		}
+	}
+	if *u.Status == "COMPLETED" && u.CompletedAt == nil && (entry == nil || entry.CompletedAt.Year == nil) {
+		u.CompletedAt = fuzzyDate(now)
+	}
+}
+
 // needsStartDate reports whether a title the user starts watching now gets
 // today as its start date: it has none, and wasn't being watched already
 // (progress without a start date means it started on an unknown day).
