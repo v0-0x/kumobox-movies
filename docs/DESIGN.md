@@ -55,7 +55,7 @@ parts:
 | `release` | parses movie/TV file and release names: title, year, season, episode(s), resolution, source, codec, HDR, audio, group, edition, extras |
 | `providers` | streaming providers: `archive` (Internet Archive), `stremio` (addon protocol client + catalogs), Nuvio JS providers (run in `extensions`' sandbox) |
 | `torrent` | clients (qBittorrent, Transmission — unchanged), search sources (Torznab, YTS, EZTV, apibay, Torrents-CSV, Internet Archive), auto downloader for shows |
-| `library` | scanner/matcher using `release` + `catalog` (folders like `Movie (2010)/`, `Show/Season 01/S01E02.mkv`): files matched by movie/show folder (earlier matches, `{tmdb-…}`/`{imdb-…}` tags, the list, then a remembered TMDB search); kinds `main`, `part` (a movie's later part), `special`, `extra`; a multi-episode file's last key in `episodeEnd` |
+| `library` | scanner/matcher using `release` + `catalog` (folders like `Movie (2010)/`, `Show/Season 01/S01E02.mkv`): files matched by movie/show folder (earlier matches, `{tmdb-…}`/`{imdb-…}`/`{tvdb-…}` tags, the list, then a remembered TMDB search); kinds `main`, `part` (a movie's later part), `special`, `extra`; a multi-episode file's last key in `episodeEnd` |
 | `stream` | in-app player helpers (unchanged) + `Service` aggregating the providers |
 | `player` | mpv/in-app sessions; chapter-based intro/credits skip |
 | everything else | as in Kumo (share, update, downloads, discord, images, extensions, winsetup, macsetup, util) |

@@ -28,7 +28,7 @@ import (
 //  1. the files already matched in its folder (a new episode of a show
 //     matched before, a folder matched by hand);
 //  2. the ids in its names (Plex/Jellyfin/Emby tags: {tmdb-603},
-//     [imdbid-tt0133093]);
+//     [imdbid-tt0133093], {tvdb-81189});
 //  3. the user's list, a title alike enough (release.Similarity);
 //  4. a TMDB search, for a show when the files have episodes or sit in
 //     season folders, for a movie otherwise, with the year. What it finds
@@ -127,6 +127,7 @@ type group struct {
 	mains  int  // files that aren't extras
 	tmdbID int
 	imdbID string
+	tvdbID int
 	files  []*LocalFile
 }
 
@@ -246,6 +247,9 @@ func newGroup(folder, title string, show bool, year int, files []*LocalFile) *gr
 		}
 		if g.imdbID == "" {
 			g.imdbID = f.Parsed.IMDbID
+		}
+		if g.tvdbID == 0 {
+			g.tvdbID = f.Parsed.TVDBID
 		}
 	}
 	return g
@@ -376,6 +380,20 @@ func (m *Matcher) resolve(ctx context.Context, g *group, sib map[string]int, poo
 	}
 	if g.imdbID != "" && m.platform != nil {
 		media, err := m.platform.FindByIMDb(ctx, g.imdbID)
+		if err == nil {
+			return media, 1
+		}
+		if !errors.Is(err, catalog.ErrNotFound) {
+			m.fail()
+			return nil, 0
+		}
+	}
+	if g.tvdbID > 0 && m.platform != nil {
+		kind := catalog.TypeMovie
+		if g.show {
+			kind = catalog.TypeTV
+		}
+		media, err := m.platform.FindByTVDB(ctx, g.tvdbID, kind)
 		if err == nil {
 			return media, 1
 		}

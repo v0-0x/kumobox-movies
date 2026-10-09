@@ -198,6 +198,41 @@ func TestMatchLibrary(t *testing.T) {
 	}
 }
 
+// A {tvdb-…} tag (Plex, Jellyfin, Emby) names the show whatever the
+// folder's title says: TMDB finds it by that id, without a search, once.
+func TestMatchByTVDBTag(t *testing.T) {
+	f := testCatalog(t)
+	f.show(1438, "The Wire", "2002-06-02").season(1, 13, "2002-06-02").specials("2002-06-02", "Behind the Wire").tvdb = 79126
+	lib := t.TempDir()
+	tree(t, lib,
+		"Baltimore Stories {tvdb-79126}/Season 1/01 - The Target.mkv",
+		"Baltimore Stories {tvdb-79126}/Season 1/Baltimore.Stories.S01E02.mkv",
+		"Baltimore Stories {tvdb-79126}/Specials/Baltimore Stories - S00E01.mkv",
+	)
+	s, _ := newMatchingScanner(t, f, lib)
+	f.reset()
+	if _, err := s.Scan(context.Background(), ScanOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	got := matches(t, s, lib)
+	show := catalog.ShowID(1438)
+	for path, want := range map[string]string{
+		"Baltimore Stories {tvdb-79126}/Season 1/01 - The Target.mkv":            fmt.Sprintf("%d/1001/main", show),
+		"Baltimore Stories {tvdb-79126}/Season 1/Baltimore.Stories.S01E02.mkv":   fmt.Sprintf("%d/1002/main", show),
+		"Baltimore Stories {tvdb-79126}/Specials/Baltimore Stories - S00E01.mkv": fmt.Sprintf("%d/1/special", show),
+	} {
+		if got[path] != want {
+			t.Errorf("%s: %s, want %s", path, got[path], want)
+		}
+	}
+	if n := f.count("/search/"); n != 0 {
+		t.Errorf("%d searches", n)
+	}
+	if n := f.count("/find/79126"); n != 1 {
+		t.Errorf("%d requests for the TVDB id, want 1", n)
+	}
+}
+
 // Files matched by hand (locked) keep their match, and new files in their
 // folder follow it.
 func TestMatchFollowsFoldersMatchedByHand(t *testing.T) {

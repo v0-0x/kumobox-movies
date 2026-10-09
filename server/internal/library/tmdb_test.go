@@ -23,7 +23,7 @@ import (
 )
 
 // A stand-in for TMDB, serving a small catalog of movies and shows built
-// by the tests (search, details, seasons, find by IMDb id), and a Platform
+// by the tests (search, details, seasons, find by IMDb or TVDB id), and a Platform
 // talking to it.
 
 const fakeKey = "0123456789abcdef0123456789abcdef"
@@ -43,6 +43,7 @@ type fakeTitle struct {
 	title      string
 	date       string // release or first air date
 	imdb       string
+	tvdb       int
 	popularity float64
 	seasons    []fakeSeason // shows
 }
@@ -203,13 +204,19 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 		notFound()
 	case len(parts) == 2 && parts[0] == "find":
 		out := map[string]any{"movie_results": []any{}, "tv_results": []any{}}
+		ids := func(t *fakeTitle) bool {
+			if q.Get("external_source") == "tvdb_id" {
+				return t.tvdb > 0 && strconv.Itoa(t.tvdb) == parts[1]
+			}
+			return t.imdb == parts[1]
+		}
 		for _, m := range f.movies {
-			if m.imdb == parts[1] {
+			if ids(m) {
 				out["movie_results"] = []any{m.json("movie", false)}
 			}
 		}
 		for _, s := range f.shows {
-			if s.imdb == parts[1] {
+			if ids(s) {
 				out["tv_results"] = []any{s.json("tv", false)}
 			}
 		}
