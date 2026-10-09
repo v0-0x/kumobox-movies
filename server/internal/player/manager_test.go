@@ -328,7 +328,7 @@ func TestBuiltinRewatchUpdatesProgressAgain(t *testing.T) {
 		}
 	}
 	watch := func() {
-		m.ResetBuiltinProgress(3, 1002) // the in-app player opens the episode
+		m.ResetBuiltinProgress(3, 1002, 0) // the in-app player opens the episode
 		for _, pos := range []float64{600, 1250, 1300, 1390} {
 			m.ReportProgress(ProgressReport{MediaID: 3, Episode: 1002, Position: pos, Duration: 1400, Source: "local"})
 		}
@@ -345,6 +345,54 @@ func TestBuiltinRewatchUpdatesProgressAgain(t *testing.T) {
 	}
 	if e := m.history.Get(3, 1002); e == nil || e.Position != 1400 {
 		t.Errorf("history = %+v; want the episode marked finished", e)
+	}
+}
+
+// A file holding several episodes (S01E01E02) moves the list on to its last
+// one, in mpv (at the completion threshold or when it ends) as in the in-app
+// player.
+func TestMultiEpisodeFileProgress(t *testing.T) {
+	m, l := newTestManager(t, nil)
+	var (
+		mu     sync.Mutex
+		viewed []string
+	)
+	m.viewed = func(mediaID, episode int) {
+		mu.Lock()
+		viewed = append(viewed, fmt.Sprintf("%d/%d", mediaID, episode))
+		mu.Unlock()
+	}
+	got := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(viewed)
+	}
+
+	// mpv, past the completion threshold.
+	if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 1001, EpisodeEnd: 1002, Source: "local", Target: "/shows/S01E01E02.mkv"}); err != nil {
+		t.Fatal(err)
+	}
+	f := l.last()
+	f.prop("duration", 2800.0)
+	f.prop("time-pos", 2790.0)
+	waitFor(t, "the progress update", func() bool { return len(got()) == 1 })
+	// mpv, ended before the threshold was reported.
+	if _, err := m.PlayMpv(PlayRequest{MediaID: 4, Episode: 2003, EpisodeEnd: 2005, Source: "local", Target: "/shows/S02E03-E05.mkv"}); err != nil {
+		t.Fatal(err)
+	}
+	f = l.last()
+	f.event("end-file", "reason", "eof")
+	f.exit()
+	waitFor(t, "the progress update", func() bool { return len(got()) == 2 })
+	// The in-app player.
+	m.ResetBuiltinProgress(3, 1001, 1002)
+	m.ReportProgress(ProgressReport{MediaID: 3, Episode: 1001, Position: 2790, Duration: 2800, Source: "local"})
+	// An episode alone.
+	m.ResetBuiltinProgress(3, 1003, 0)
+	m.ReportProgress(ProgressReport{MediaID: 3, Episode: 1003, Position: 1400, Duration: 1400, Source: "local", Ended: true})
+
+	if v := got(); !slices.Equal(v, []string{"4/1002", "4/2005", "3/1002", "3/1003"}) {
+		t.Errorf("progress went to %v; want the last episode of each file", v)
 	}
 }
 
@@ -372,7 +420,7 @@ func TestBuiltinStartsWatchingOncePerViewing(t *testing.T) {
 		}
 	}
 
-	m.ResetBuiltinProgress(3, 1001) // the in-app player opens the episode
+	m.ResetBuiltinProgress(3, 1001, 0) // the in-app player opens the episode
 	report(3, 1001, 3, 8)
 	if n := count(3, 1001); n != 0 {
 		t.Fatalf("%d starts 8 s in; want none before 10 s", n)
@@ -383,13 +431,13 @@ func TestBuiltinStartsWatchingOncePerViewing(t *testing.T) {
 		t.Fatalf("%d starts; want one per viewing", n)
 	}
 
-	m.ResetBuiltinProgress(3, 1001) // watched again
+	m.ResetBuiltinProgress(3, 1001, 0) // watched again
 	report(3, 1001, 4, 9, 14, 19)
 	if n := count(3, 1001); n != 2 {
 		t.Fatalf("%d starts after watching it again; want 2", n)
 	}
 
-	m.ResetBuiltinProgress(3, 1002) // resumed halfway
+	m.ResetBuiltinProgress(3, 1002, 0) // resumed halfway
 	report(3, 1002, 700, 705)
 	if n := count(3, 1002); n != 1 {
 		t.Fatalf("%d starts of a resumed episode; want 1", n)

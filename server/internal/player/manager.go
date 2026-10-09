@@ -24,6 +24,10 @@ import (
 type PlayRequest struct {
 	MediaID int `json:"mediaId"`
 	Episode int `json:"episode"`
+	// EpisodeEnd is the last episode of a file holding several
+	// (S01E01E02: 1002), 0 otherwise: watching the file moves the list
+	// progress on to it.
+	EpisodeEnd int `json:"episodeEnd,omitempty"`
 	// Title is the window's: "Show — S01E02 · Pilot", "Movie (2010)".
 	Title string `json:"title"`
 	// MediaTitle is the movie's or show's title, EpisodeTitle the
@@ -50,7 +54,8 @@ type PlayRequest struct {
 type Session struct {
 	ID              string  `json:"id"`
 	MediaID         int     `json:"mediaId"`
-	Episode         int     `json:"episode"` // key
+	Episode         int     `json:"episode"`              // key
+	EpisodeEnd      int     `json:"episodeEnd,omitempty"` // a multi-episode file's last key
 	Title           string  `json:"title"`
 	MediaTitle      string  `json:"mediaTitle,omitempty"`
 	EpisodeTitle    string  `json:"episodeTitle,omitempty"`
@@ -161,6 +166,7 @@ type Manager struct {
 	builtinMu      sync.Mutex
 	builtinStarted map[episodeKey]bool // in-app player: list status already checked this viewing
 	builtinSent    map[episodeKey]bool // in-app player: progress already sent this viewing
+	builtinEnd     map[episodeKey]int  // in-app player: the last episode of the multi-episode file playing
 
 	// listMu serializes the list updates playback makes, so that the status
 	// set when an episode starts can't land after (and undo) the update made
@@ -182,7 +188,7 @@ type episodeKey struct{ mediaID, episode int }
 func NewManager(s *config.Store, h *history.Store, d *db.DB, p *catalog.Platform, hub *events.Hub) *Manager {
 	return &Manager{
 		settings: s, history: h, Tracks: NewTrackStore(d), platform: p, hub: hub, db: d,
-		builtinStarted: map[episodeKey]bool{}, builtinSent: map[episodeKey]bool{},
+		builtinStarted: map[episodeKey]bool{}, builtinSent: map[episodeKey]bool{}, builtinEnd: map[episodeKey]int{},
 		launch: LaunchMpv, trackGuard: defaultTrackGuard, trackSettle: defaultTrackSettle,
 	}
 }
@@ -288,7 +294,7 @@ func (m *Manager) playLocked(req PlayRequest) (*Session, error) {
 		return nil, err
 	}
 	s := &Session{
-		ID: uuid.NewString(), MediaID: req.MediaID, Episode: req.Episode, Title: req.Title,
+		ID: uuid.NewString(), MediaID: req.MediaID, Episode: req.Episode, EpisodeEnd: req.EpisodeEnd, Title: req.Title,
 		MediaTitle: req.MediaTitle, EpisodeTitle: req.EpisodeTitle, Source: req.Source, Provider: req.Provider, Dub: req.Dub,
 		Player: "mpv", Target: req.Target, Position: start, Active: true, chapter: -1,
 		StartedAt: time.Now().Unix(), skipped: map[float64]bool{}, loopDone: make(chan struct{}),
@@ -415,8 +421,17 @@ func (m *Manager) onProperty(s *Session, mpv *Mpv, w *trackWatch, ev MpvEvent) {
 		m.startWatching(s.MediaID, s.Episode)
 	}
 	if fire {
-		m.fireProgress(s.MediaID, s.Episode)
+		m.fireProgress(s.MediaID, lastKey(s.Episode, s.EpisodeEnd))
 	}
+}
+
+// lastKey is the last episode a file holds: end for a multi-episode file
+// (episode to end), episode otherwise.
+func lastKey(episode, end int) int {
+	if end > episode {
+		return end
+	}
+	return episode
 }
 
 // saveTrackChoice remembers the user's audio/subtitle choice once the change
@@ -657,6 +672,7 @@ func (m *Manager) finish(s *Session) {
 		s.ProgressUpdated = true
 	}
 	e := history.Entry{MediaID: s.MediaID, Episode: s.Episode, Position: s.Position, Duration: s.Duration, Source: s.Source}
+	last := lastKey(s.Episode, s.EpisodeEnd)
 	m.mu.Unlock()
 
 	// Save before announcing the end: the UI reloads the history then. The
@@ -670,7 +686,7 @@ func (m *Manager) finish(s *Session) {
 		}
 	}
 	if fire {
-		m.fireProgress(e.MediaID, e.Episode)
+		m.fireProgress(e.MediaID, last)
 	}
 
 	m.mu.Lock()
@@ -819,7 +835,10 @@ func (m *Manager) ReportProgress(r ProgressReport) {
 	}
 	if r.Episode > 0 && r.Duration > 0 && (r.Ended || r.Position/r.Duration >= cfg.Playback.CompletionThreshold) &&
 		m.claimBuiltin(m.builtinSent, r.MediaID, r.Episode) {
-		m.fireProgress(r.MediaID, r.Episode)
+		m.builtinMu.Lock()
+		end := m.builtinEnd[episodeKey{r.MediaID, r.Episode}]
+		m.builtinMu.Unlock()
+		m.fireProgress(r.MediaID, lastKey(r.Episode, end))
 	}
 	m.notifyStatus(&Session{MediaID: r.MediaID, Episode: r.Episode, Title: r.Title, Source: r.Source, Player: "builtin",
 		Position: r.Position, Duration: r.Duration, Paused: r.Paused, Active: !r.Ended})
@@ -841,11 +860,17 @@ func (m *Manager) claimBuiltin(claims map[episodeKey]bool, mediaID, episode int)
 
 // ResetBuiltinProgress starts a new viewing of an episode in the in-app
 // player, so a rewatch updates the list again. Call it when the player opens
-// the episode.
-func (m *Manager) ResetBuiltinProgress(mediaID, episode int) {
+// the episode; end is the last episode of the file when it holds several
+// (S01E01E02), 0 otherwise.
+func (m *Manager) ResetBuiltinProgress(mediaID, episode, end int) {
 	k := episodeKey{mediaID, episode}
 	m.builtinMu.Lock()
 	delete(m.builtinStarted, k)
 	delete(m.builtinSent, k)
+	if end > episode {
+		m.builtinEnd[k] = end
+	} else {
+		delete(m.builtinEnd, k)
+	}
 	m.builtinMu.Unlock()
 }

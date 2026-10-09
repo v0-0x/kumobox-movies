@@ -334,6 +334,19 @@ type playLocalBody struct {
 	Player  string   `json:"player"` // mpv | builtin ("" = settings)
 	Start   *float64 `json:"start"`
 	Caps    []string `json:"caps"` // video formats the in-app player decodes
+	// end is the last episode of the file when it holds several and the
+	// episode played is one of them (see fileEnd).
+	end int
+}
+
+// fileEnd is the last episode of a multi-episode file (S01E01E02: 1002)
+// when episode of mediaID is one of its episodes, 0 otherwise: watching it
+// moves the list progress on to its last episode.
+func fileEnd(f *library.LocalFile, mediaID, episode int) int {
+	if f.MediaID == mediaID && f.EpisodeEnd > episode && episode >= f.Episode {
+		return f.EpisodeEnd
+	}
+	return 0
 }
 
 func (s *Server) playLocal(r *http.Request) (any, error) {
@@ -351,6 +364,7 @@ func (s *Server) playLocal(r *http.Request) (any, error) {
 	if body.MediaID == 0 {
 		body.MediaID, body.Episode = f.MediaID, f.Episode
 	}
+	body.end = fileEnd(f, body.MediaID, body.Episode)
 	playerName := body.Player
 	if playerName == "" {
 		playerName = s.app.Settings.Get().Playback.DefaultPlayer
@@ -362,7 +376,7 @@ func (s *Server) playLocal(r *http.Request) (any, error) {
 	t := s.app.PlayTitles(r.Context(), body.MediaID, body.Episode, f.Name)
 	if playerName == "mpv" {
 		sess, err := s.app.Player.PlayMpv(player.PlayRequest{
-			MediaID: body.MediaID, Episode: body.Episode, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
+			MediaID: body.MediaID, Episode: body.Episode, EpisodeEnd: body.end, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
 			Source: "local", Target: f.Path, Start: body.Start,
 		})
 		if err != nil {
@@ -384,7 +398,7 @@ func (s *Server) builtinPlay(body playLocalBody, probe *stream.Probe, t app.Titl
 	s.app.Local.Decide(probe, stream.CapsOf(body.Caps))
 	// The in-app player opens the episode: a new viewing, which may update
 	// progress again (rewatch).
-	s.app.Player.ResetBuiltinProgress(body.MediaID, body.Episode)
+	s.app.Player.ResetBuiltinProgress(body.MediaID, body.Episode, body.end)
 	resume := s.app.History.ResumePosition(body.MediaID, body.Episode)
 	if body.Start != nil {
 		resume = *body.Start

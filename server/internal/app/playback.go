@@ -143,6 +143,9 @@ func (a *App) nextEpisode(ctx context.Context, s *player.Session) (*player.PlayR
 			return nil, nil
 		}
 		req.Target = f.Path
+		if f.EpisodeEnd > next {
+			req.EpisodeEnd = f.EpisodeEnd
+		}
 		if share.IsRemote(f.Path) {
 			if req.Target, req.Headers, err = a.Share.MediaURL(f.Path); err != nil {
 				return nil, err

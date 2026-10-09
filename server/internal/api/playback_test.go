@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
+	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 )
 
@@ -100,6 +101,22 @@ func TestPlaybackSkipsFromChapters(t *testing.T) {
 	decodeBody(t, do(s, "POST", "/api/playback/local", local, body, nil), &play)
 	if play.Choice.Audio != 1 || play.Choice.Sub != "e1" {
 		t.Errorf("tracks %+v; want the French audio (1) and English subtitles (e1)", play.Choice)
+	}
+}
+
+// A file holding several episodes (S01E01-E03) played for one of them
+// moves the list progress on to its last one.
+func TestFileEnd(t *testing.T) {
+	f := &library.LocalFile{MediaID: 7, Episode: 1001, EpisodeEnd: 1003}
+	for _, c := range []struct{ mediaID, episode, want int }{
+		{7, 1001, 1003}, {7, 1002, 1003}, {7, 1003, 0}, {7, 1004, 0}, {7, 1, 0}, {8, 1001, 0},
+	} {
+		if got := fileEnd(f, c.mediaID, c.episode); got != c.want {
+			t.Errorf("fileEnd(%d/%d) = %d, want %d", c.mediaID, c.episode, got, c.want)
+		}
+	}
+	if got := fileEnd(&library.LocalFile{MediaID: 7, Episode: 1001}, 7, 1001); got != 0 {
+		t.Errorf("one episode: %d", got)
 	}
 }
 

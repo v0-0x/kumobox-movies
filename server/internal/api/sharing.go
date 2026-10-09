@@ -227,6 +227,7 @@ func (s *Server) playShared(r *http.Request, body playLocalBody) (any, error) {
 	if body.MediaID == 0 {
 		body.MediaID, body.Episode = f.MediaID, f.Episode
 	}
+	body.end = fileEnd(f, body.MediaID, body.Episode)
 	playerName := body.Player
 	if playerName == "" {
 		playerName = s.app.Settings.Get().Playback.DefaultPlayer
@@ -241,7 +242,7 @@ func (s *Server) playShared(r *http.Request, body playLocalBody) (any, error) {
 			return nil, notFound(err.Error())
 		}
 		sess, err := s.app.Player.PlayMpv(player.PlayRequest{
-			MediaID: body.MediaID, Episode: body.Episode, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
+			MediaID: body.MediaID, Episode: body.Episode, EpisodeEnd: body.end, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
 			Source: "local", Target: target, Headers: headers, Start: body.Start,
 		})
 		if err != nil {

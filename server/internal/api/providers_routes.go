@@ -210,7 +210,7 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 		}
 	}
 	// A new viewing, which may update progress again (rewatch).
-	s.app.Player.ResetBuiltinProgress(media.ID, episode)
+	s.app.Player.ResetBuiltinProgress(media.ID, episode, 0)
 	resume := s.app.History.ResumePosition(media.ID, episode)
 	if body.Start != nil {
 		resume = *body.Start
