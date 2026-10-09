@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -69,6 +71,28 @@ type Resolved struct {
 	Referrer string
 	Headers  map[string]string
 	SubURL   string
+	// Container is the video's ("mp4", "mkv", "webm"), "" when unknown:
+	// the file is saved in it.
+	Container string
+}
+
+// container is the container a download is saved in: the resolver's, else
+// the one the URL's extension names, else MP4 (HLS streams are copied into
+// it).
+func container(res *Resolved) string {
+	switch c := strings.ToLower(res.Container); c {
+	case "mp4", "mkv", "webm":
+		return c
+	}
+	if u, err := url.Parse(res.URL); err == nil {
+		switch strings.ToLower(path.Ext(u.Path)) {
+		case ".mkv":
+			return "mkv"
+		case ".webm":
+			return "webm"
+		}
+	}
+	return "mp4"
 }
 
 // Resolver turns a queued item into a downloadable URL (e.g. through a
@@ -457,7 +481,8 @@ func (m *Manager) process(r *run) error {
 	if it.Mode != "" {
 		name = util.SanitizeFilename(fmt.Sprintf("%s [%s]", name, strings.ToUpper(it.Mode)))
 	}
-	out := filepath.Join(dir, name+".mp4")
+	ext := "." + container(res)
+	out := filepath.Join(dir, name+ext)
 
 	// Download into a hidden folder next to the destination (the library
 	// scanner skips it) and move only finished files into place: a failed or
@@ -489,7 +514,7 @@ func (m *Manager) process(r *run) error {
 		}
 	}
 
-	tmp := filepath.Join(work, name+".mp4")
+	tmp := filepath.Join(work, name+ext)
 	err = m.fetch(r, cfg, res, tmp)
 	if ctx.Err() != nil {
 		return errors.New("canceled")
@@ -640,7 +665,7 @@ func (m *Manager) ytdlp(r *run, res *Resolved, out string) error {
 		"--newline", "--no-colors", "--no-playlist", "--no-mtime",
 		"-N", "8", "--fragment-retries", "20", "--retries", "10",
 		"--progress-template", "download:KUMOBOX|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
-		"--merge-output-format", "mp4",
+		"--merge-output-format", strings.TrimPrefix(filepath.Ext(out), "."),
 		"-o", strings.ReplaceAll(out, "%", "%%"),
 	}
 	if res.Referrer != "" {
@@ -734,7 +759,14 @@ func (m *Manager) ffmpeg(r *run, res *Resolved, out, ffmpegPath, ffprobePath str
 		args = append(args, "-extension_picky", "0")
 	}
 	args = append(args, headerArgs()...)
-	args = append(args, "-i", res.URL, "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", out)
+	// The streams are copied as they are into the file's container. The MP4
+	// muxer fixes the AAC audio of HLS streams by itself (forcing
+	// aac_adtstoasc would refuse any other audio: Opus, AC-3, MP3...).
+	args = append(args, "-i", res.URL, "-map", "0:v?", "-map", "0:a?", "-c", "copy")
+	if strings.EqualFold(filepath.Ext(out), ".mp4") {
+		args = append(args, "-movflags", "+faststart")
+	}
+	args = append(args, out)
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 	cmd.WaitDelay = 10 * time.Second
 	progress := m.progress(r)

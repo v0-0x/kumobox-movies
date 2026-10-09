@@ -431,6 +431,12 @@ func TestProviderDownload(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	// The link comes with its container, which names the file.
+	res, err := s.app.Downloads.Resolvers["stream"](context.Background(), &downloads.Item{MediaID: 155, Episode: 1, Provider: "stremio:test.addon", Quality: "1080p"})
+	if err != nil || res.URL != "https://cdn.example/dk.1080p.mp4" || res.Container != "mp4" || res.Referrer != "https://cdn.example/" {
+		t.Fatalf("resolved %+v, %v", res, err)
+	}
+
 	if w := do(s, "POST", "/api/providers/download", local, jsonBody(t, map[string]any{"mediaId": 155, "provider": "nope"}), nil); w.Code != http.StatusBadRequest {
 		t.Fatalf("unknown provider: %d", w.Code)
 	}

@@ -178,6 +178,12 @@ func (a *App) resolveStreamDownload(ctx context.Context, it *downloads.Item) (*d
 		return nil, err
 	}
 	r := &downloads.Resolved{URL: s.URL}
+	switch s.Type {
+	case providers.StreamMKV, providers.StreamWebM:
+		r.Container = s.Type // kept as it is
+	case providers.StreamMP4, providers.StreamM3U8:
+		r.Container = "mp4"
+	}
 	r.Headers, r.Referrer = stream.SplitReferrer(s.Headers)
 	// One subtitle file goes along: the stream's own, else an addon's, in
 	// the preferred language.

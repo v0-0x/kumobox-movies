@@ -578,6 +578,105 @@ func TestDownloadFolder(t *testing.T) {
 	}
 }
 
+// A download keeps its stream's container: Matroska and WebM streams are
+// saved as .mkv and .webm, HLS and MP4 streams (and streams of an unknown
+// type) as .mp4.
+func TestDownloadContainer(t *testing.T) {
+	m, lib := newTestManager(t, nil)
+	m.fetch = func(_ *run, _ config.Settings, _ *Resolved, out string) error {
+		return os.WriteFile(out, []byte("video"), 0o644)
+	}
+	resolved := map[int]*Resolved{
+		1: {URL: "https://cdn.example/ep.m3u8"},
+		2: {URL: "https://cdn.example/play?id=2", Container: "mkv"},
+		3: {URL: "https://cdn.example/Show.S01E03.WEBM?token=x"},
+		4: {URL: "https://cdn.example/play?id=4"},
+	}
+	m.Resolvers["test"] = func(_ context.Context, it *Item) (*Resolved, error) {
+		return resolved[it.Episode%1000], nil
+	}
+	for _, c := range []struct {
+		episode int
+		url     string
+		want    string
+	}{
+		{1001, "", "Show - S01E01.mp4"},
+		{1002, "", "Show - S01E02.mkv"},
+		{1003, "", "Show - S01E03.webm"},
+		{1004, "", "Show - S01E04.mp4"},
+		{1005, "https://cdn.example/files/Show.S01E05.mkv", "Show - S01E05.mkv"},
+	} {
+		it, err := m.Enqueue(Item{MediaID: catalog.ShowID(1), Episode: c.episode, AnimeTitle: "Show", Source: "test", URL: c.url})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := waitFinal(t, m, it.ID, 15*time.Second)
+		want := filepath.Join(lib, "Show", "Season 01", c.want)
+		if got.Status != StatusCompleted || got.Output != want {
+			t.Errorf("S01E%02d: %s %q (%s), want %q", c.episode%1000, got.Status, got.Output, got.Error, want)
+		}
+	}
+}
+
+// ffmpeg copies the streams into the container of the file: the MP4 options
+// only go with an MP4 file, and nothing that only suits AAC audio (WebM has
+// Opus or Vorbis); yt-dlp merges into that container too.
+func TestDownloaderArgsFollowContainer(t *testing.T) {
+	bin := t.TempDir()
+	argsFile := filepath.Join(bin, "args")
+	script := `case "$*" in *"-h demuxer=hls"*) exit 0 ;; esac
+echo "$*" >> '` + argsFile + `'
+out=
+for last; do out="$last"; done
+while [ $# -gt 0 ]; do
+	case "$1" in -o) out="$2"; shift ;; esac
+	shift
+done
+printf 'video' > "$out"
+`
+	for _, name := range []string{"ffmpeg", "yt-dlp"} {
+		writeScript(t, bin, name, script)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, c := range []struct {
+		downloader, container string
+		want, not             []string
+	}{
+		{"ffmpeg", "mp4", []string{"-c copy", "-movflags +faststart"}, []string{"aac_adtstoasc"}},
+		{"ffmpeg", "webm", []string{"-c copy"}, []string{"aac_adtstoasc", "-movflags"}},
+		{"ffmpeg", "mkv", []string{"-c copy"}, []string{"aac_adtstoasc", "-movflags"}},
+		{"yt-dlp", "mkv", []string{"--merge-output-format mkv"}, []string{"--merge-output-format mp4"}},
+		{"yt-dlp", "mp4", []string{"--merge-output-format mp4"}, nil},
+	} {
+		_ = os.Remove(argsFile)
+		m, _ := newTestManager(t, func(cfg *config.Settings) {
+			cfg.Downloads.Downloader, cfg.Transcode.FfmpegPath = c.downloader, filepath.Join(bin, "ffmpeg")
+		})
+		m.Resolvers["test"] = func(context.Context, *Item) (*Resolved, error) {
+			return &Resolved{URL: "https://cdn.example/play", Container: c.container}, nil
+		}
+		it, err := m.Enqueue(Item{MediaID: 1, Episode: 1, AnimeTitle: "Film", Source: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := waitFinal(t, m, it.ID, 15*time.Second); got.Status != StatusCompleted || !strings.HasSuffix(got.Output, "."+c.container) {
+			t.Errorf("%s %s: %s %q (%s)", c.downloader, c.container, got.Status, got.Output, got.Error)
+		}
+		b, _ := os.ReadFile(argsFile)
+		args := string(b)
+		for _, w := range c.want {
+			if !strings.Contains(args, w) {
+				t.Errorf("%s %s: %q lacks %q", c.downloader, c.container, args, w)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(args, n) {
+				t.Errorf("%s %s: %q has %q", c.downloader, c.container, args, n)
+			}
+		}
+	}
+}
+
 // Finished downloads are named the way Plex, Jellyfin and the library read
 // them — "Movie (Year)/Movie (Year).mp4", "Show (Year)/Season 02/Show -
 // S02E05.mp4" — with names valid on every OS, in the show's folder when
