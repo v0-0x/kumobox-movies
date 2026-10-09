@@ -245,12 +245,19 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 }
                 // The next episode (across seasons): its file, or for a stream
                 // the one after, asked for as this one was (by key, or as the
-                // provider numbers them).
+                // provider numbers them). Like the server's auto play next
+                // (app.nextKey): none after a special or an extra, and past
+                // the episodes the file just played holds too (S01E01E02).
                 entryP
                     .then(e => {
-                        if (cancelled || !e || !mediaIsShow(e.media)) return
-                        const next = nextEpisode(e.media, key)
-                        const n = (e.episodes ?? []).find(x => keyOf(x) === next)
+                        if (cancelled || !e || !mediaIsShow(e.media) || key < 1000) return
+                        const episodes = e.episodes ?? []
+                        let next = nextEpisode(e.media, key)
+                        let n = episodes.find(x => keyOf(x) === next)
+                        if (req.kind === "local" && n?.file?.path === req.path && (n.file.episodeEnd ?? 0) >= next) {
+                            next = nextEpisode(e.media, n.file.episodeEnd!)
+                            n = episodes.find(x => keyOf(x) === next)
+                        }
                         if (!next || !n) return
                         if (req.kind === "local") n.file && setNextEp({ path: n.file.path, episode: next })
                         else if (n.aired) setNextEp({ episode: req.episode === key ? next : episodeIndex(e.media, next) })
