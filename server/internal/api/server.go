@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 )
 
@@ -337,8 +338,12 @@ func h(fn func(r *http.Request) (any, error)) http.HandlerFunc {
 		if err != nil {
 			status := http.StatusInternalServerError
 			var ae *apiError
-			if errors.As(err, &ae) {
+			switch {
+			case errors.As(err, &ae):
 				status = ae.status
+			case errors.Is(err, catalog.ErrNotFound):
+				// A title or season TMDB doesn't have: the UI doesn't ask again.
+				status = http.StatusNotFound
 			}
 			if errors.Is(err, context.Canceled) {
 				return
