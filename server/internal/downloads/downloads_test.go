@@ -247,6 +247,26 @@ printf 'video' > "$last"
 	}
 }
 
+// Movies' direct links often have AC-3, E-AC-3 or Opus audio, which
+// ffmpeg won't copy through the AAC-only aac_adtstoasc filter: it must not
+// be asked for (the MP4 muxer adds it by itself for AAC).
+func TestFfmpegCopiesAnyAudio(t *testing.T) {
+	ffmpeg := writeScript(t, t.TempDir(), "ffmpeg", `case "$*" in *"-h demuxer=hls"*) exit 0 ;; esac
+case "$*" in *aac_adtstoasc*)
+	echo "[aac_adtstoasc @ 0x5599] Codec 'ac3' (86019) is not supported by the bitstream filter 'aac_adtstoasc'. Supported codecs are: aac (86018)" >&2
+	echo 'Error opening output files: Invalid argument' >&2
+	exit 234 ;;
+esac
+for last; do :; done
+printf 'video' > "$last"
+`)
+	m, _ := newTestManager(t, func(c *config.Settings) { c.Transcode.FfmpegPath = ffmpeg })
+	it := enqueue(t, m, "Surround")
+	if got := waitFinal(t, m, it.ID, 15*time.Second); got.Status != StatusCompleted {
+		t.Fatalf("status = %s (%q), want completed", got.Status, got.Error)
+	}
+}
+
 // The error shown is ffmpeg's last stderr line, even after megabytes of
 // noise, and the half-written file doesn't stay in the library.
 func TestFfmpegFailureReportsLastErrorAndCleansUp(t *testing.T) {

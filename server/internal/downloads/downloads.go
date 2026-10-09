@@ -734,7 +734,10 @@ func (m *Manager) ffmpeg(r *run, res *Resolved, out, ffmpegPath, ffprobePath str
 		args = append(args, "-extension_picky", "0")
 	}
 	args = append(args, headerArgs()...)
-	args = append(args, "-i", res.URL, "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", out)
+	// No -bsf:a aac_adtstoasc: the MP4 muxer adds it by itself to AAC from
+	// HLS, and forcing it makes ffmpeg refuse every other audio (AC-3, E-AC-3,
+	// Opus... common in movies' direct links).
+	args = append(args, "-i", res.URL, "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart", out)
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 	cmd.WaitDelay = 10 * time.Second
 	progress := m.progress(r)
