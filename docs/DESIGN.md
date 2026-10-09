@@ -100,7 +100,8 @@ hosts (tests, offline demos).
   without it whenever `preferredSubLang` is set; otherwise off, except
   forced subtitles in the audio's language. The in-app player gets the
   same choice for local files (`choice` of `POST /api/playback/local`).
-* **Episodes**: sessions, history and progress use episode keys; auto
+* **Episodes**: sessions, history and progress use episode keys (a file
+  holding several episodes moves the progress on to its last one); auto
   play next (`app/playback.go`) is `Media.NextEpisode` across seasons,
   from the next file (this computer's or a shared one) or, for a stream,
   the same provider and version. Players title episodes
