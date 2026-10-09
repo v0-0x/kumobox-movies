@@ -45,7 +45,7 @@ export default function EntryPage() {
     const show = mediaIsShow(entry.media)
     const online = status?.settings.onlineStream.enabled !== false
     const tabs: { value: Tab; label: string; icon: React.ReactNode; count?: number }[] = [
-        ...(show ? [{ value: "episodes" as Tab, label: "Episodes", icon: <LayoutList className="size-4" />, count: entry.localCount + (entry.sharedCount ?? 0) || undefined }] : []),
+        ...(show ? [{ value: "episodes" as Tab, label: "Episodes", icon: <LayoutList className="size-4" />, count: (entry.episodes ?? []).filter(e => e.hasFile).length || undefined }] : []),
         { value: "overview", label: show ? "Details" : "Overview", icon: <Info className="size-4" /> },
         ...(online ? [{ value: "stream" as Tab, label: "Watch online", icon: <Tv className="size-4" /> }] : []),
         { value: "torrents", label: "Torrents", icon: <Magnet className="size-4" /> },
