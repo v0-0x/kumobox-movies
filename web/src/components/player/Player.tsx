@@ -23,7 +23,7 @@ import { toast } from "@/lib/toast"
 import { api, qs } from "@/lib/api"
 import { episodeIndex, formatKey, mediaIsShow, nextEpisode } from "@/lib/ids"
 import { prefersHls, randomId, videoCaps } from "@/lib/playback"
-import { useSettings } from "@/lib/queries"
+import { useSettings, useStatus } from "@/lib/queries"
 import { skipAt, skipName, skipOn, skipRun, isSkippable } from "@/lib/skips"
 import { playerStore, type PlayerRequest } from "@/lib/store"
 import type { EntryView, EpisodeView, PlayResult, Probe, Settings, SkipInterval, StreamSource, TrackPrefs } from "@/lib/types"
@@ -95,6 +95,9 @@ export function PlayerOverlay() {
 
 function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const settings = useSettings()
+    // A device on the network: mpv would open on the computer KumoBox runs
+    // on (the server refuses it, or plays the file here instead).
+    const remote = useStatus().data?.client === "lan"
     const videoRef = useRef<HTMLVideoElement>(null)
     const containerRef = useRef<HTMLDivElement>(null)
     const hlsRef = useRef<Hls | null>(null)
@@ -808,7 +811,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                             <button className="h-10 rounded-xl bg-white/10 px-4 text-sm font-medium hover:bg-white/15" onClick={close}>
                                 Close
                             </button>
-                            {(req.kind === "local" || sources.length > 0) && (
+                            {!remote && (req.kind === "local" || sources.length > 0) && (
                                 <button className="h-10 rounded-xl bg-brand px-4 text-sm font-medium text-white" onClick={openInMpv}>
                                     Open in mpv
                                 </button>
@@ -987,9 +990,11 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                                 ))}
                             </DropdownContent>
                         </Dropdown>
-                        <CtrlButton onClick={openInMpv} label="Continue in mpv">
-                            <MonitorPlay className="size-5" />
-                        </CtrlButton>
+                        {!remote && (
+                            <CtrlButton onClick={openInMpv} label="Continue in mpv">
+                                <MonitorPlay className="size-5" />
+                            </CtrlButton>
+                        )}
                         <CtrlButton onClick={toggleFullscreen} label="Fullscreen (f)">
                             {fullscreen ? <Minimize className="size-5" /> : <Maximize className="size-5" />}
                         </CtrlButton>
