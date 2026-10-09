@@ -81,6 +81,29 @@ func TestSetupRunsInTerminal(t *testing.T) {
 	}
 }
 
+// The script gets what KumoBox uses, nothing it no longer does, and parses
+// in bash (macOS has bash 3.2: the release workflow checks with that one).
+func TestScriptPrograms(t *testing.T) {
+	for _, want := range []string{"ffmpeg_tool ffmpeg", "ffmpeg_tool ffprobe", "yt-dlp_macos", "install mpv"} {
+		if !bytes.Contains(script, []byte(want)) {
+			t.Errorf("install-tools.command lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"ani-cli", "fzf"} {
+		if bytes.Contains(script, []byte(gone)) {
+			t.Errorf("install-tools.command still mentions %q, which KumoBox doesn't use", gone)
+		}
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash")
+	}
+	cmd := exec.Command("bash", "-n")
+	cmd.Stdin = bytes.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("bash -n install-tools.command: %v\n%s", err, out)
+	}
+}
+
 func TestSetupIsForMacOS(t *testing.T) {
 	tmp := t.TempDir()
 	dir, open, goos = func() string { return tmp }, func(string) error { t.Fatal("opened"); return nil }, "linux"

@@ -46,8 +46,8 @@ win:
   extraResources:
     - from: ../dist/windows/kumobox.exe
       to: kumobox.exe
-    # The setup that installs the programs KumoBox uses (Scoop, Git, ani-cli,
-    # ffmpeg, mpv...): the installer offers to run it (installer.nsh), and
+    # The setup that installs the programs KumoBox uses (ffmpeg, mpv, yt-dlp,
+    # with Scoop): the installer offers to run it (installer.nsh), and
     # kumobox.exe has the same script built in for Settings > App > Programs.
     - from: ../server/internal/winsetup/install-tools.ps1
       to: install-tools.ps1

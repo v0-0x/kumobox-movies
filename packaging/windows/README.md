@@ -1,9 +1,10 @@
 # KumoBox for Windows
 
-KumoBox runs on Windows 10 and 11 (64-bit). The Windows build is released on its
-own, as GitHub Releases named **KumoBox X.Y.Z for Windows** (tag `windows-vX.Y.Z`).
-None of it is for Linux: on Arch, keep installing KumoBox from source with
-[`packaging/arch`](../arch/PKGBUILD) as the [main README](../../README.md#install-arch-linux) says.
+KumoBox, the movies and TV shows app, runs on Windows 10 and 11 (64-bit). The
+Windows build is released on its own, as GitHub Releases named **KumoBox X.Y.Z
+for Windows** (tag `windows-vX.Y.Z`). None of it is for Linux: on Arch,
+install KumoBox from source with [`packaging/arch`](../arch/PKGBUILD) as the
+[main README](../../README.md#install-arch-linux) says.
 
 ## Install
 
@@ -18,18 +19,29 @@ newest **KumoBox X.Y.Z for Windows** and download one of:
 The builds aren't code-signed, so SmartScreen may show "Windows protected your
 PC": click **More info**, then **Run anyway**.
 
+Movie and show details (posters, seasons, episodes, cast) come from
+[TMDB](https://www.themoviedb.org): the first time, KumoBox asks for your free
+TMDB API key (**Settings › Metadata**). Letterboxd tracking needs only your
+Letterboxd username.
+
 ## Programs KumoBox uses
 
-Some features use other programs. **KumoBox installs them for you**: at the end of
-the install, the installer asks whether to install them (also later from
-**Settings › App › Programs › Install**, or the Install button KumoBox shows on
-the Home page while ffmpeg or ani-cli is missing). A PowerShell window then
-installs, with [Scoop](https://scoop.sh) and for your Windows user only (no
-administrator rights):
+| Program | For |
+|---|---|
+| ffmpeg (with ffprobe) | The in-app player, for most files (MKV, HEVC, AC3/DTS, several tracks…), stream downloads, and reading a file's audio and subtitle tracks |
+| mpv | The external player (optional: KumoBox has its own) |
+| yt-dlp | Faster, more reliable stream downloads |
+| qBittorrent or Transmission | Torrents (optional) |
 
-- Scoop itself and its extras bucket
-- Git for Windows (its bash runs ani-cli) and ani-cli
-- ffmpeg, mpv, yt-dlp, aria2 and fzf
+**KumoBox installs ffmpeg, mpv and yt-dlp for you**: at the end of the install,
+the installer asks whether to install them (also later from **Settings › App ›
+Programs › Install**). A PowerShell window then installs, with
+[Scoop](https://scoop.sh) and for your Windows user only (no administrator
+rights):
+
+- Scoop itself and its extras bucket (where mpv is), with Git for Windows,
+  which Scoop needs to add a bucket
+- ffmpeg, mpv and yt-dlp
 
 Programs you already have are skipped, so you can run it again whenever
 something is missing. KumoBox picks newly installed programs up by itself. The
@@ -42,11 +54,10 @@ your `PATH`, enter its full path there.
 
 | For | Install |
 |---|---|
-| The in-app player, for most files (MKV, HEVC, AC3/DTS, several tracks…), and episode downloads | ffmpeg: `winget install Gyan.FFmpeg` |
-| Faster, more reliable episode downloads | yt-dlp: `winget install yt-dlp.yt-dlp` |
-| mpv as the player (optional) | `scoop install mpv` ([Scoop](#scoop), extras bucket) or [mpv.io](https://mpv.io/installation/); then choose it in **Settings › Video Playback** |
-| Sub/dub streaming with ani-cli | Git for Windows and ani-cli, [see below](#ani-cli) |
-| Torrents | qBittorrent: `winget install qBittorrent.qBittorrent`, [then turn on its Web UI](#qbittorrent) |
+| ffmpeg | `winget install Gyan.FFmpeg` |
+| yt-dlp | `winget install yt-dlp.yt-dlp` |
+| mpv | `scoop install mpv` ([Scoop](#scoop), extras bucket) or [mpv.io](https://mpv.io/installation/); then choose it in **Settings › Video Playback** |
+| Torrents | qBittorrent: `winget install qBittorrent.qBittorrent`, [then turn on its Web UI](#qbittorrent); or Transmission: `winget install Transmission.Transmission` |
 
 Hardware encoding for the in-app player (**Settings › Transcoding / Direct
 Play**): NVENC (NVIDIA) and Quick Sync (Intel) work on Windows; VA-API is
@@ -60,25 +71,10 @@ PowerShell:
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
-scoop bucket add extras    # needs Git: winget install Git.Git
+scoop install git          # Scoop adds buckets with it
+scoop bucket add extras
+scoop install ffmpeg yt-dlp mpv
 ```
-
-### ani-cli
-
-ani-cli is a bash script, so it runs in the bash that comes with Git for
-Windows (which also brings the curl, sed and grep it uses). With
-[Scoop](#scoop) set up:
-
-```powershell
-winget install Git.Git
-scoop install ani-cli
-```
-
-Without Scoop, save the `ani-cli` script from the
-[ani-cli repository](https://github.com/pystardust/ani-cli) in a folder on your
-`PATH`, or anywhere and put its full path in **Settings › Online Streaming ›
-Executable**. KumoBox finds Git's bash in its usual places (`C:\Program Files\Git`,
-Scoop's `git`).
 
 ### qBittorrent
 
@@ -88,15 +84,17 @@ control)**, and set a username and password. Then in KumoBox, **Settings ›
 Torrent Client**: host `127.0.0.1`, the same port as qBittorrent's (8080
 unless you changed it), the same username and password. KumoBox can start
 qBittorrent when it's needed: the path (`C:\Program Files\qBittorrent\qbittorrent.exe`)
-is found by itself.
+is found by itself. Transmission works the same way through its remote
+access (**Edit › Preferences › Remote**).
 
 ## Where KumoBox keeps its files
 
 | Folder | What's in it |
 |---|---|
-| `%APPDATA%\KumoBox` | Your data: the database (lists, library matches, settings, watch progress), downloaded artwork, extension storage |
+| `%APPDATA%\KumoBox` | Your data: the database (your list, diary, library matches, settings, watch progress), downloaded artwork, extension storage |
 | `%LOCALAPPDATA%\KumoBox` | Cache and temporary files: the in-app player's segments (`hls`), the running server's address and token (`run`), the app window's browser data (`electron`), the last downloaded update (`update`) |
 | `%LOCALAPPDATA%\Programs\KumoBox` | The app, when installed with the installer |
+| `%USERPROFILE%\Videos` | The library folder, until you pick yours in **Settings › Local Library** |
 
 Uninstalling keeps your data; delete the first two folders to remove it too.
 
@@ -139,11 +137,10 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 ```
 
 [`build.ps1`](build.ps1) does what the release workflow does: builds the web
-UI, embeds it into the server, runs `go vet` and `go test` (the ani-cli tests
-use Git's bash; `-SkipTests` skips the tests), builds `dist\windows\kumobox.exe`,
-then packages the app with electron-builder
-([`desktop/electron-builder.yml`](../../desktop/electron-builder.yml)). The
-installer and the zip land in `dist\windows\release`. Unlike a release, a
+UI, embeds it into the server, runs `go vet` and `go test` (`-SkipTests`
+skips them), builds `dist\windows\kumobox.exe`, then packages the app with
+electron-builder ([`desktop/electron-builder.yml`](../../desktop/electron-builder.yml)).
+The installer and the zip land in `dist\windows\release`. Unlike a release, a
 build of your own keeps the version in `desktop/package.json` (1.0.0), so
 KumoBox offers it the newest release as an update.
 
@@ -154,9 +151,12 @@ For development, `cd desktop; npm ci; npx electron .` starts the window with
 ## How releases are made
 
 The [Windows release](../../.github/workflows/windows.yml) workflow builds,
-tests and packages everything on a Windows machine, then creates the release
-`windows-v<version>` on the commit it built. It runs on every push to the
-default branch (pushes that only change docs or the Arch packaging aside), so
+tests and packages everything on a Windows machine for every push, on any
+branch, and for every pull request: each run keeps the installer and the
+portable zip as downloadable workflow artifacts (the run's **Summary** page),
+so a branch can be tried before it's merged. Only pushes to the default
+branch (pushes that only change docs or the Arch or macOS packaging aside)
+publish the release `windows-v<version>` on the commit they built, so
 installed copies get every change as an update a few minutes later. It also
 runs from the repository's **Actions** tab (**Windows release**): with
 **publish** ticked it creates the release (running it again on the same

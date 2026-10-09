@@ -1,7 +1,7 @@
 post_install() {
     echo ">> KumoBox installed. Start it from your app menu or run: kumobox"
-    echo ">> For sub/dub streaming install ani-cli:   yay -S ani-cli"
-    echo ">> Optional:                                sudo pacman -S yt-dlp qbittorrent"
+    echo ">> Movie and show details come from TMDB: add your free API key in Settings › Metadata."
+    echo ">> Optional torrent client:                 sudo pacman -S qbittorrent   (or transmission-gtk)"
     echo ">> Headless/LAN server (no window):         systemctl --user enable --now kumobox-server"
 }
 

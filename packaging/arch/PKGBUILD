@@ -1,4 +1,4 @@
-# KumoBox — anime app for Arch Linux.
+# KumoBox — movies and TV shows app for Arch Linux.
 #
 # Build & install from a checkout of this repository:
 #     cd packaging/arch && makepkg -si      (after a git pull: makepkg -sif)
@@ -9,17 +9,15 @@
 pkgname=kumobox
 pkgver=1.0.0
 pkgrel=1
-pkgdesc="Anime library: AniList sync, auto matching, mpv & in-app player, ani-cli sub/dub streaming, torrents, extensions"
+pkgdesc="Movies & TV shows: local library with auto matching, TMDB metadata, Letterboxd tracking, mpv & in-app player, streaming providers, torrents, extensions"
 arch=('x86_64' 'aarch64')
 url="https://github.com/v0-0x/kumobox-movies"
 license=('GPL-3.0-or-later')
-depends=('electron' 'mpv' 'ffmpeg' 'hicolor-icon-theme' 'xdg-utils')
+depends=('electron' 'mpv' 'ffmpeg' 'yt-dlp' 'hicolor-icon-theme' 'xdg-utils')
 makedepends=('go' 'nodejs' 'npm')
 optdepends=(
-    'ani-cli: sub/dub online streaming and downloads (AUR)'
-    'yt-dlp: faster, more reliable stream downloads'
     'qbittorrent: torrent client (enable Tools › Options › Web UI)'
-    'transmission-gtk: alternative torrent client'
+    'transmission-gtk: alternative torrent client (or transmission-cli for its daemon)'
     'discord: rich presence'
 )
 options=('!lto' '!debug' '!strip' '!buildflags') # pure Go (CGO off): makepkg's C/LD flags don't apply
@@ -58,7 +56,7 @@ build() {
 
 check() {
     cd "${_root}/server"
-    go test ./internal/library/ ./internal/anicli/ ./internal/extensions/
+    go test ./internal/library/ ./internal/catalog/ ./internal/extensions/
 }
 
 package() {
@@ -74,17 +72,12 @@ package() {
     ln -s /usr/lib/kumobox/kumobox "${pkgdir}/usr/bin/kumobox-server"
 
     install -Dm644 packaging/kumobox.desktop "${pkgdir}/usr/share/applications/kumobox.desktop"
-    # The icon, by two names: kumobox, the menu entry's since the new logo
-    # (desktops cache icons by name, and kept showing the old one), and
-    # kumobox, which desktop shortcuts made before ask for (the app moves them
-    # to kumobox when it starts).
-    local s n
-    for n in kumobox kumobox; do
-        for s in 16 32 48 64 128 256 512; do
-            install -Dm644 "packaging/icons/kumobox-${s}.png" "${pkgdir}/usr/share/icons/hicolor/${s}x${s}/apps/${n}.png"
-        done
-        install -Dm644 packaging/icons/kumobox.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/${n}.svg"
+    # The icon "kumobox" (kumobox.desktop's), in every size.
+    local s
+    for s in 16 32 48 64 128 256 512; do
+        install -Dm644 "packaging/icons/kumobox-${s}.png" "${pkgdir}/usr/share/icons/hicolor/${s}x${s}/apps/kumobox.png"
     done
+    install -Dm644 packaging/icons/kumobox.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/kumobox.svg"
     install -Dm644 packaging/kumobox-server.service "${pkgdir}/usr/lib/systemd/user/kumobox-server.service"
     install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

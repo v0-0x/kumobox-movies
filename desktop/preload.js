@@ -3,7 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron")
 
 contextBridge.exposeInMainWorld("kumoboxDesktop", {
     platform: process.platform,
-    anilistLogin: url => ipcRenderer.invoke("kumobox:anilist-login", url),
+    // Opens a web page (TMDB, Letterboxd, a provider's site…) in the system
+    // browser.
     openExternal: url => ipcRenderer.send("kumobox:open-external", url),
     // The desktop app's own settings (Settings › App › Desktop app).
     getPrefs: () => ipcRenderer.invoke("kumobox:get-prefs"),

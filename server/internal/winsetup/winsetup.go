@@ -1,5 +1,5 @@
-// Package winsetup installs the programs KumoBox uses on Windows (Git and its
-// bash, ani-cli, ffmpeg, mpv, yt-dlp, ...) with Scoop: it runs
+// Package winsetup installs the programs KumoBox uses on Windows (ffmpeg and
+// ffprobe, mpv, yt-dlp) with Scoop: it runs
 // install-tools.ps1 in a PowerShell window, where the user follows it and
 // answers it. The Windows installer ships the same script and offers to run
 // it after installing KumoBox.

@@ -26,7 +26,7 @@ const EXIT_INSTALLING = 76
 const APP_ID = isWindows ? "app.kumobox.desktop" : "kumobox"
 app.setName("KumoBox")
 app.setAppUserModelId?.(APP_ID)
-// The window only talks to KumoBox's own server (and AniList's login page): run
+// The window mostly talks to KumoBox's own server, on this computer: run
 // Chromium's network service inside the app instead of a process of its
 // own, which saves about 80 MB.
 const features = ["NetworkServiceInProcess2"]
@@ -37,9 +37,9 @@ if (process.platform === "linux") {
 }
 app.commandLine.appendSwitch("enable-features", features.join(","))
 if (isWindows && process.env.LOCALAPPDATA) {
-    // Electron would keep the window's browser data (caches, the AniList
-    // login window's cookies) in %APPDATA%\KumoBox, which is the server's data
-    // folder on Windows: keep it apart, with KumoBox's other local files.
+    // Electron would keep the window's browser data (caches, local storage)
+    // in %APPDATA%\KumoBox, which is the server's data folder on Windows: keep
+    // it apart, with KumoBox's other local files.
     app.setPath("userData", path.join(process.env.LOCALAPPDATA, "KumoBox", "electron"))
 }
 if (isMac) {
@@ -229,11 +229,11 @@ function startServer() {
                   : "Could not find the KumoBox server binary (kumobox). Reinstall the package or set KUMOBOX_SERVER."
             return reject(new Error(msg))
         }
-        // windowsHide: on Windows the server, and the ffmpeg, ffprobe and bash
-        // processes it starts (they share its console), never pop up a console
-        // window. Elsewhere it does nothing. Windows has no signals to ask the
-        // server to stop: there it stops when its input closes (see
-        // before-quit).
+        // windowsHide: on Windows the server, and the ffmpeg, ffprobe and
+        // yt-dlp processes it starts (they share its console), never pop up a
+        // console window. Elsewhere it does nothing. Windows has no signals
+        // to ask the server to stop: there it stops when its input closes
+        // (see before-quit).
         const args = isWindows ? ["--desktop", "--exit-with-stdin"] : ["--desktop"]
         serverProc = spawn(bin, args, { stdio: [isWindows ? "pipe" : "ignore", "pipe", "pipe"], env: process.env, windowsHide: true })
         let resolved = false
@@ -370,53 +370,6 @@ function createWindow() {
     mainWindow.loadURL(baseUrl)
 }
 
-// AniList login: open the authorize page in a separate window and capture
-// the access token from the redirect (#access_token=…) or the PIN page.
-ipcMain.handle("kumobox:anilist-login", async (_e, url) => {
-    if (typeof url !== "string" || !url.startsWith("https://anilist.co/")) return null
-    return new Promise(resolve => {
-        const win = new BrowserWindow({
-            width: 520,
-            height: 760,
-            parent: mainWindow ?? undefined,
-            modal: false,
-            title: "Log in with AniList",
-            backgroundColor: "#0b1622",
-            autoHideMenuBar: true,
-            webPreferences: { partition: "persist:anilist", contextIsolation: true, sandbox: true },
-        })
-        let done = false
-        const finish = token => {
-            if (done) return
-            done = true
-            resolve(token)
-            if (!win.isDestroyed()) win.close()
-        }
-        const check = u => {
-            const m = /access_token=([^&#\s]+)/.exec(u || "")
-            if (m) finish(decodeURIComponent(m[1]))
-        }
-        win.webContents.on("will-redirect", (_ev, u) => check(u))
-        win.webContents.on("did-navigate", (_ev, u) => check(u))
-        win.webContents.on("did-navigate-in-page", (_ev, u) => check(u))
-        win.webContents.on("did-finish-load", async () => {
-            check(win.webContents.getURL())
-            // The PIN page shows the token in a text box.
-            try {
-                const t = await win.webContents.executeJavaScript(
-                    "(document.querySelector('textarea')?.value || document.querySelector('.token, input[readonly]')?.value || '').trim()",
-                )
-                if (t && t.length > 100) finish(t)
-            } catch {
-                /* ignore */
-            }
-        })
-        win.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
-        win.on("closed", () => finish(null))
-        win.loadURL(url)
-    })
-})
-
 ipcMain.on("kumobox:open-external", (_e, url) => {
     if (typeof url === "string" && /^https?:\/\//.test(url)) shell.openExternal(url)
 })
@@ -548,8 +501,7 @@ function wentToBackground() {
 
 // Locked computer: after a few minutes the window lets go of its page (the
 // app's memory, cached images…) and loads it again when the computer is
-// unlocked. Not while the player, the manga reader or Settings are open, so
-// nothing is lost.
+// unlocked. Not while a video or Settings are open, so nothing is lost.
 const PARK_AFTER = 5 * 60_000
 const PARKED_PAGE = "data:text/html,<body style='background:%230a0a0b'></body>"
 let lockTimer = null
@@ -560,7 +512,7 @@ async function parkPage() {
     const wc = mainWindow.webContents
     let busy = true
     try {
-        busy = await wc.executeJavaScript("!!document.querySelector('video') || /^\\/(manga\\/read|settings|webview)/.test(location.pathname)")
+        busy = await wc.executeJavaScript("!!document.querySelector('video') || /^\\/(settings|webview)/.test(location.pathname)")
     } catch {
         /* keep it */
     }
@@ -575,34 +527,6 @@ function unparkPage() {
     const url = parkedUrl
     parkedUrl = null
     if (mainWindow && isInternal(url)) mainWindow.loadURL(url)
-}
-
-// Desktop shortcuts are copies of kumobox.desktop: those made before the icon
-// was renamed kumobox (with the new logo) ask for "kumobox", which desktops
-// keep showing as the old logo. Point them at the new icon, in place, so
-// they keep their permissions and the desktop's trust.
-function updateDesktopShortcuts() {
-    if (process.platform !== "linux") return
-    let dir, names
-    try {
-        dir = app.getPath("desktop")
-        names = fs.readdirSync(dir)
-    } catch {
-        return
-    }
-    for (const name of names) {
-        if (!name.endsWith(".desktop")) continue
-        const file = path.join(dir, name)
-        try {
-            if (!fs.lstatSync(file).isFile()) continue // never through a link
-            const text = fs.readFileSync(file, "utf8")
-            const icon = /^Icon=kumobox[ \t]*\r?$/m
-            if (!/^Exec=(\/usr\/bin\/)?kumobox(\s|$)/m.test(text) || !icon.test(text)) continue
-            fs.writeFileSync(file, text.replace(icon, "Icon=kumobox"))
-        } catch {
-            // someone else's file, or one we can't write: leave it
-        }
-    }
 }
 
 async function boot() {
@@ -620,7 +544,6 @@ async function boot() {
     // its window (the tray icon or the Dock opens it).
     if (!(startedAtLogin() && prefs.keepRunning)) createWindow()
     updateTray()
-    updateDesktopShortcuts()
     powerMonitor.on("lock-screen", () => {
         clearTimeout(lockTimer)
         lockTimer = setTimeout(parkPage, PARK_AFTER)

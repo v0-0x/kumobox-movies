@@ -1,7 +1,7 @@
-# Builds, tests and packages KumoBox for Windows on a real Windows machine, then
-# publishes the installer and the portable zip as the GitHub Release
-# "KumoBox <version> for Windows", tagged windows-v<version> on the commit it
-# built.
+# Builds, tests and packages KumoBox (movies and TV shows) for Windows on a real
+# Windows machine, then publishes the installer and the portable zip as the
+# GitHub Release "KumoBox <version> for Windows", tagged windows-v<version> on
+# the commit it built.
 #
 # The version is 1.0.<number of commits> (the first two numbers come from
 # desktop/package.json): each commit has its own, later commits higher ones.
@@ -9,11 +9,15 @@
 # offer it on the Home page (server/internal/update), so the version is also
 # built into kumobox.exe, with the commit.
 #
-# Runs on every push to the repository's default branch (except pushes that
-# only change docs or the Arch packaging), so Windows copies get every
-# change, and by hand from the Actions tab. Running it again on the same
-# commit updates that commit's release. Only the newest 10 Windows releases
-# are kept: older ones are deleted, tags included.
+# Builds, tests and packages on every push to any branch and for pull
+# requests (except changes to docs or to the other systems' packaging only),
+# and keeps the installer and the zip as workflow artifacts: a branch can be
+# tried on Windows before it's merged. Only pushes to the repository's
+# default branch publish the release (and delete old ones), so Windows copies
+# get every change once it's merged; run by hand from the Actions tab,
+# "publish" decides. Running it again on the same commit updates that
+# commit's release. Only the newest 10 Windows releases are kept: older ones
+# are deleted, tags included.
 #
 # Windows only: the Arch Linux package is built from source with
 # packaging/arch/PKGBUILD and has nothing to do with this workflow, and the
@@ -26,8 +30,16 @@
 name: Windows release
 
 on:
-  # Pushes to other branches are skipped (see the job's condition).
+  # Branches only: the tags the releases create don't start it again.
   push:
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "packaging/arch/**"
+      - "packaging/macos/**"
+  # Pull requests from forks: a branch of this repository is built by its
+  # pushes already (see the job's condition).
+  pull_request:
     paths-ignore:
       - "**.md"
       - "packaging/arch/**"
@@ -42,14 +54,16 @@ on:
 permissions:
   contents: write
 
+# A newer push to a branch or a pull request cancels the run still going on
+# it; on the default branch every run finishes, as each publishes a release.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
 
 jobs:
   windows:
     name: Build, test and package (Windows x64)
-    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-latest
     timeout-minutes: 60
     defaults:
@@ -57,6 +71,9 @@ jobs:
         shell: pwsh
     env:
       CGO_ENABLED: "0"
+      # "true" when this run publishes the release: a push to the default
+      # branch, or a run by hand with "publish" ticked.
+      PUBLISH: ${{ (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
     steps:
       # The whole history: the version counts its commits.
       - name: Check out
@@ -110,8 +127,7 @@ jobs:
           New-Item -ItemType File -Force "$dist/.keep" | Out-Null
 
       # The stream tests need ffmpeg and skip themselves without it, so a
-      # failed install doesn't stop the build. (The ani-cli tests use the Git
-      # Bash that the runner already has.)
+      # failed install doesn't stop the build.
       - name: Install ffmpeg for the tests
         continue-on-error: true
         run: |
@@ -119,9 +135,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ffmpeg -hide_banner -version
 
-      # The setup that installs the programs KumoBox uses (Scoop, Git, ani-cli,
-      # ffmpeg...) only runs on users' computers, in Windows PowerShell 5.1:
-      # check here that it parses there.
+      # The setup that installs the programs KumoBox uses (ffmpeg, mpv and
+      # yt-dlp, with Scoop) only runs on users' computers, in Windows
+      # PowerShell 5.1: check here that it parses there.
       - name: Check the programs setup script
         shell: powershell
         run: |
@@ -179,7 +195,8 @@ jobs:
           npx electron-builder --win --x64 --publish never
 
       # archive: false uploads the files as they are (no zip around them),
-      # named after the file.
+      # named after the file: the run's Summary page lists them for download,
+      # on every branch.
       - name: Upload the installer
         uses: actions/upload-artifact@v7
         with:
@@ -200,7 +217,7 @@ jobs:
       # exist yet), or updates it: new title and notes, and files of the same
       # name replaced.
       - name: Publish the GitHub Release
-        if: github.event_name == 'push' || inputs.publish
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -212,7 +229,7 @@ jobs:
           $repo = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
           $title = "KumoBox $env:VERSION for Windows"
           $notes = @'
-          **KumoBox {version} for Windows 10 and 11 (64-bit).** These files are for Windows only: on Arch Linux, build and install KumoBox from source with `packaging/arch`, as [the README]({readme}) explains.
+          **KumoBox {version} for Windows 10 and 11 (64-bit)**, the app for your movies and TV shows. These files are for Windows only: on Arch Linux, build and install KumoBox from source with `packaging/arch`, as [the README]({readme}) explains.
 
           | File | What it is |
           |---|---|
@@ -223,7 +240,9 @@ jobs:
 
           KumoBox finds newer releases by itself: the installed app updates from its Home page (**Update**); for the portable build, download the newest zip.
 
-          Some features use other programs: ffmpeg (needed by the in-app player for most files), mpv, yt-dlp, ani-cli and qBittorrent. What to install for what, and where KumoBox keeps its data: [packaging/windows/README.md]({guide}).
+          Movie and show details come from TMDB: the first time, KumoBox asks for your free TMDB API key. Letterboxd tracking only needs your Letterboxd username.
+
+          Some features use other programs: ffmpeg (needed by the in-app player for most files), mpv (the external player) and yt-dlp (stream downloads); for torrents, qBittorrent or Transmission (optional). The installer offers to install ffmpeg, mpv and yt-dlp for you (with Scoop, no admin rights), and so does KumoBox's **Settings > App > Programs**. What to install for what, and where KumoBox keeps its data: [packaging/windows/README.md]({guide}).
 
           Built from {sha} by [workflow run {run}]({runurl}).
           '@
@@ -250,7 +269,7 @@ jobs:
       # releases, by version (numbers compared as numbers: 1.0.10 is newer
       # than 1.0.9), and delete the older ones with their tags.
       - name: Delete old releases
-        if: github.event_name == 'push' || inputs.publish
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

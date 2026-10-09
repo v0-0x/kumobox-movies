@@ -2,7 +2,7 @@
 
 // Package macsetup installs the programs KumoBox uses on macOS: it opens
 // install-tools.command in Terminal, where the user follows it. The script
-// downloads ready-made ffmpeg, ffprobe, yt-dlp and ani-cli for this Mac
+// downloads ready-made ffmpeg, ffprobe and yt-dlp for this Mac
 // (Apple silicon or Intel) into KumoBox's own folder (util.ToolsDir), with no
 // Homebrew and no password, and installs mpv with Homebrew on Apple silicon
 // when Homebrew is there.

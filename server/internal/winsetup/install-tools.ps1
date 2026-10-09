@@ -1,13 +1,11 @@
 # KumoBox setup for Windows: installs the programs KumoBox uses, for this Windows
 # user (no administrator rights), with Scoop (https://scoop.sh):
 #
-#   git      Git for Windows: its bash runs ani-cli, with the curl, sed and
-#            grep that ani-cli uses
-#   ani-cli  sub/dub streaming and episode downloads (Scoop's extras bucket)
-#   ffmpeg   the in-app player (most files) and episode downloads
-#   mpv      the external player (extras bucket)
-#   yt-dlp   episode downloads; aria2 too (ani-cli downloads with it)
-#   fzf      ani-cli checks for it (KumoBox answers ani-cli's menus itself)
+#   ffmpeg   ffmpeg and ffprobe: the in-app player (most files), stream
+#            downloads and reading the tracks of video files
+#   mpv      the external player (Scoop's extras bucket)
+#   yt-dlp   faster, more reliable stream downloads
+#   git      only because Scoop needs it to add its extras bucket
 #   gh       the GitHub CLI, only if KumoBox's repository is private: signed in
 #            to GitHub, KumoBox can then check for and download its updates
 #
@@ -91,22 +89,18 @@ try {
         }
     }
 
-    # Scoop needs git for its buckets: it comes first.
-    Install "git" "git" "its bash runs ani-cli"
+    # Scoop needs git to add buckets: it comes first.
+    Install "git" "git" "Scoop adds its extras bucket with it"
     if (-not (Test-Path (Join-Path $scoopDir "buckets\extras"))) {
-        Step "Adding Scoop's extras bucket (ani-cli and mpv are in it)"
+        Step "Adding Scoop's extras bucket (mpv is in it)"
         scoop bucket add extras
         if (-not (Test-Path (Join-Path $scoopDir "buckets\extras"))) {
             $script:failed += "Scoop's extras bucket"
         }
     }
     Install "ffmpeg" "ffmpeg" "the in-app player and downloads"
-    Install "yt-dlp" "yt-dlp" "downloads"
-    Install "aria2" "aria2c" "ani-cli's downloads"
-    Install "fzf" "fzf" "ani-cli checks for it"
+    Install "yt-dlp" "yt-dlp" "stream downloads"
     Install "mpv" "mpv" "the external player"
-    # A bash script: KumoBox finds it in Scoop's folder.
-    Install "ani-cli" $null "sub/dub streaming"
 
     # KumoBox checks GitHub for its updates. Were its repository private, that
     # would take a GitHub sign-in, which the GitHub CLI keeps.

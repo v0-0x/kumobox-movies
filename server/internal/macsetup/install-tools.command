@@ -4,9 +4,9 @@
 # password. KumoBox opens it in Terminal from Settings > App > Programs
 # (server/internal/macsetup), with KUMOBOX_BIN set to that folder.
 #
-#   ffmpeg, ffprobe  the in-app player (most files) and episode downloads
-#   yt-dlp           faster, more reliable episode downloads
-#   ani-cli          sub/dub streaming and downloads (a shell script)
+#   ffmpeg, ffprobe  the in-app player (most files), stream downloads and
+#                    reading the tracks of video files
+#   yt-dlp           faster, more reliable stream downloads
 #   mpv              the external player: with Homebrew, on Apple silicon
 #                    (Homebrew has no ready-made mpv for Intel Macs)
 #
@@ -103,17 +103,6 @@ if have yt-dlp; then
 else
 	title "Downloading yt-dlp"
 	fetch https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos "$tmp/yt-dlp" && put "$tmp/yt-dlp" yt-dlp || failed="$failed yt-dlp"
-fi
-
-if have ani-cli; then
-	echo "ani-cli: there already"
-else
-	title "Downloading ani-cli"
-	if fetch https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli "$tmp/ani-cli" && head -1 "$tmp/ani-cli" | grep -q '^#!'; then
-		chmod 755 "$tmp/ani-cli" && mv -f "$tmp/ani-cli" "$KUMOBOX_BIN/ani-cli" || failed="$failed ani-cli"
-	else
-		failed="$failed ani-cli"
-	fi
 fi
 
 mpv_note=""

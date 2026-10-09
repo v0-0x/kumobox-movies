@@ -1,5 +1,5 @@
 [Unit]
-Description=KumoBox anime server (headless, web UI on 127.0.0.1:43311)
+Description=KumoBox movies & TV server (headless, web UI on 127.0.0.1:43311)
 After=network-online.target
 Wants=network-online.target
 
