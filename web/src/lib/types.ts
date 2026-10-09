@@ -355,9 +355,12 @@ export type CollectionItem = {
     lastWatched: number
 }
 
+// A title of "Continue watching": episode is the key of the episode to
+// watch, index its place among the regular episodes ("13 / 24").
 export type ContinueItem = {
     media: Media
     episode: number
+    index: number
     total: number
     title: string
     image: string
@@ -706,7 +709,7 @@ export type DownloadItem = {
     mediaId: number
     episode: number // key
     title?: string
-    animeTitle?: string // older servers
+    animeTitle?: string // the title, as the server still names it (downloads.Item)
     image: string
     mode: string
     source: string

@@ -53,6 +53,7 @@ export function PluginTrays() {
                 <Tooltip key={plugin.id + view.id} content={view.options.sidebar?.label || plugin.name} side="right">
                     <NavLink
                         to={`/webview?plugin=${encodeURIComponent(plugin.id)}&id=${encodeURIComponent(view.id)}`}
+                        aria-label={view.options.sidebar?.label || plugin.name}
                         className={({ isActive }) => cn("grid size-9 place-items-center rounded-lg transition-colors hover:bg-white/[0.06]", isActive && "bg-white/[0.08]")}
                     >
                         {plugin.icon ? <img src={plugin.icon} alt="" className="size-5 rounded object-contain" /> : <Puzzle className="size-[18px] stroke-[1.75] text-muted" />}
@@ -63,6 +64,7 @@ export function PluginTrays() {
                 const isOpen = open?.pluginId === plugin.id && open?.trayId === tray.id
                 const icon = (
                     <button
+                        aria-label={tray.tooltipText || plugin.name}
                         className={cn(
                             "focus-ring relative grid size-9 place-items-center rounded-lg transition-colors hover:bg-white/[0.06]",
                             isOpen && "bg-white/[0.08]",

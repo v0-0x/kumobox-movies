@@ -467,7 +467,7 @@ function ContinueRow({ items, onFocus }: { items: ContinueItem[]; onFocus: (i: n
                                         {total > 0 && (
                                             <span className="text-subtle">
                                                 {" "}
-                                                · {episodeIndex(it.media, it.episode)} of {total}
+                                                · {it.index || episodeIndex(it.media, it.episode)} of {total}
                                             </span>
                                         )}
                                         <span className="text-subtle"> · {title(it.media)}</span>
@@ -511,7 +511,11 @@ function GenreBar({ genres, value, onChange }: { genres: string[]; value: string
                     </button>
                 ))}
             </div>
-            <button onClick={() => ref.current?.scrollBy({ left: 400, behavior: "smooth" })} className="ml-2 grid size-8 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-white/[0.06] hover:text-fg">
+            <button
+                aria-label="More genres"
+                onClick={() => ref.current?.scrollBy({ left: 400, behavior: "smooth" })}
+                className="ml-2 grid size-8 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-white/[0.06] hover:text-fg"
+            >
                 <ChevronRight className="size-4" />
             </button>
         </div>

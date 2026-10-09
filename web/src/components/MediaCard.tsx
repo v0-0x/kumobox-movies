@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Ellipsis, HardDrive, Star } from "lucide-react"
-import { useRef, useState } from "react"
+import { isValidElement, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { airedEpisodes, episodeIndex, formatKey, mediaIsShow, totalEpisodes } from "@/lib/ids"
 import type { ListEntry, Media } from "@/lib/types"
@@ -200,13 +200,16 @@ export function Carousel({ children, className, itemClassName }: { children: Rea
         <div className={cn("group/carousel relative", className)}>
             <div ref={ref} onScroll={update} className="no-scrollbar -mx-2 flex snap-x scroll-px-2 gap-4 overflow-x-auto scroll-smooth px-2 pt-1 pb-3">
                 {children.map((c, i) => (
-                    <div key={i} className={cn("w-[160px] shrink-0 snap-start", itemClassName)}>
+                    // The card's own key: a row that changes order (sorting,
+                    // filters) keeps each card's state with its card.
+                    <div key={(isValidElement(c) && c.key) || i} className={cn("w-[160px] shrink-0 snap-start", itemClassName)}>
                         {c}
                     </div>
                 ))}
             </div>
             {edges.left && (
                 <button
+                    aria-label="Scroll left"
                     onClick={() => scroll(-1)}
                     className="absolute top-[38%] -left-3 grid size-9 -translate-y-1/2 place-items-center rounded-full bg-surface-3 text-fg opacity-0 shadow-lg shadow-black/50 transition group-hover/carousel:opacity-100 hover:bg-surface-4"
                 >
@@ -215,6 +218,7 @@ export function Carousel({ children, className, itemClassName }: { children: Rea
             )}
             {edges.right && children.length > 4 && (
                 <button
+                    aria-label="Scroll right"
                     onClick={() => scroll(1)}
                     className="absolute top-[38%] -right-3 grid size-9 -translate-y-1/2 place-items-center rounded-full bg-surface-3 text-fg opacity-0 shadow-lg shadow-black/50 transition group-hover/carousel:opacity-100 hover:bg-surface-4"
                 >
