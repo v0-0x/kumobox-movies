@@ -173,6 +173,13 @@ func TestMediaRoutes(t *testing.T) {
 		t.Error("still on the list")
 	}
 
+	// What TMDB doesn't have is a 404 (the UI doesn't ask again).
+	for _, path := range []string{"/api/media/999999", "/api/media/1000999999", "/api/media/1000001396/season/9"} {
+		if w := do(s, "GET", path, local, "", nil); w.Code != http.StatusNotFound {
+			t.Errorf("%s: %d %s, want 404", path, w.Code, w.Body.String())
+		}
+	}
+
 	for _, path := range []string{"/api/anime/155", "/api/anilist/discover", "/api/manga/collection", "/api/anicli/status", "/api/onlinestream/providers", "/api/providers/providers"} {
 		if w := do(s, "GET", path, local, "", nil); w.Code != http.StatusNotFound {
 			t.Errorf("%s: %d, want gone", path, w.Code)

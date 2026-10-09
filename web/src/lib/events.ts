@@ -58,6 +58,7 @@ export function connectEvents(qc: QueryClient) {
                 qc.invalidateQueries({ queryKey: ["entry"] })
                 qc.invalidateQueries({ queryKey: ["list"] })
                 qc.invalidateQueries({ queryKey: ["library", "titles"] })
+                // The calendar has the shows on the list.
                 qc.invalidateQueries({ queryKey: ["schedule"] })
                 break
             case "diary-updated":

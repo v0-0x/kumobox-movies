@@ -73,15 +73,15 @@ func (a *App) logWatched(ctx context.Context, mediaID int) {
 // viewing still to send. Use it instead of Platform.UpdateEntry for changes
 // the user made.
 func (a *App) UpdateEntry(ctx context.Context, u catalog.EntryUpdate) error {
-	completes := false
-	if u.Status != nil && *u.Status == "COMPLETED" && catalog.IsMovie(u.MediaID) {
-		completes = true
+	var cur *catalog.ListEntry
+	if u.Status != nil {
 		if coll, err := a.Platform.Collection(ctx, "", false); err == nil && coll != nil {
-			if e := coll.Find(u.MediaID); e != nil && e.Status == "COMPLETED" {
-				completes = false // watched already: an edit of the entry
-			}
+			cur = coll.Find(u.MediaID)
 		}
 	}
+	// Watched already: an edit of the entry.
+	completes := u.Status != nil && *u.Status == "COMPLETED" && catalog.IsMovie(u.MediaID) && (cur == nil || cur.Status != "COMPLETED")
+	catalog.FillDates(&u, cur, time.Now())
 	if err := a.Platform.UpdateEntry(ctx, u); err != nil {
 		return err
 	}

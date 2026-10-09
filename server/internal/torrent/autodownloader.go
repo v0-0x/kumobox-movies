@@ -532,7 +532,15 @@ func (a *AutoDownloader) runRule(ctx context.Context, r *Rule, coll *catalog.Col
 		}
 		return res
 	}
-	for _, season := range seasonsOf(wanted) {
+	// The latest season first, then the others in order: episodes of older
+	// seasons that no source has (or none that passes the rule) would
+	// otherwise use up the searches of every run, and the new episodes
+	// would never be looked for.
+	seasons := seasonsOf(wanted)
+	if n := len(seasons); n > 1 {
+		seasons = append([]int{seasons[n-1]}, seasons[:n-1]...)
+	}
+	for _, season := range seasons {
 		eps := episodesOf(wanted, season)
 		if r.Packs && len(eps) >= packMinWanted && seasonAired(media, season, limit) && searches < maxSearches {
 			q := base

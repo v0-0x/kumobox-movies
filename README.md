@@ -125,7 +125,7 @@ cd web && npm run dev                # UI dev server on :43100 (proxies /api)
 cd desktop && npm i && npx electron .   # desktop window (uses ../dist/kumobox)
 ```
 
-`KUMOBOX_DATA_DIR` moves the data folder; `KUMOBOX_TMDB_URL` / `KUMOBOX_TMDB_IMAGE_URL` point the catalog at another TMDB-compatible host (tests, offline demos).
+`KUMOBOX_DATA_DIR` moves the data folder; `KUMOBOX_TMDB_URL` / `KUMOBOX_TMDB_IMAGE_URL` point the catalog at another TMDB-compatible host, and `KUMOBOX_LETTERBOXD_URL` / `KUMOBOX_LETTERBOXD_API_URL` the Letterboxd sync at another host serving the diary feeds (`<url>/<username>/rss/`) and the API (tests, offline demos).
 
 | Path | What |
 |---|---|

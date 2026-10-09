@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"sort"
@@ -18,11 +19,6 @@ const scheduleTTL = time.Hour
 // the shows on the list that the user hasn't finished or dropped, by air
 // time. TMDB only has air dates: an episode airs at 00:00 UTC that day.
 func (p *Platform) Schedule(ctx context.Context, start, end int64) ([]*AiringEpisode, error) {
-	key := fmt.Sprintf("schedule:%d:%d", start/3600, end/3600)
-	var out []*AiringEpisode
-	if p.db.GetCache(key, &out) {
-		return out, nil
-	}
 	coll, err := p.Collection(ctx, TypeTV, false)
 	if err != nil {
 		return nil, err
@@ -39,6 +35,17 @@ func (p *Platform) Schedule(ctx context.Context, start, end int64) ([]*AiringEpi
 		for _, s := range airingSeasons(e.Media, start, end) {
 			jobs = append(jobs, job{e.Media, s})
 		}
+	}
+	// The copy kept is of the same seasons: a show put on the list (or
+	// finished, dropped) since shows up (or goes) at once, not an hour later.
+	h := sha1.New()
+	for _, j := range jobs {
+		fmt.Fprintf(h, "%d/%d,", j.media.ID, j.season)
+	}
+	key := fmt.Sprintf("schedule:%d:%d:%x", start/3600, end/3600, h.Sum(nil)[:8])
+	var out []*AiringEpisode
+	if p.db.GetCache(key, &out) {
+		return out, nil
 	}
 
 	var (

@@ -271,14 +271,15 @@ func TestAutoDownloaderRun(t *testing.T) {
 	if rep.Added != 3 || rep.Wanted != 7 || len(rep.Errors) != 0 {
 		t.Fatalf("report %+v", rep)
 	}
-	if got := src.queries(); !reflect.DeepEqual(got, []string{"S01", "S02E01", "S02E02", "S02E03"}) {
+	// The latest season first.
+	if got := src.queries(); !reflect.DeepEqual(got, []string{"S02E01", "S02E02", "S02E03", "S01"}) {
 		t.Fatalf("searched %v", got)
 	}
 	folder := filepath.Join(at.lib, "Severance (2022)")
 	want := []fakeAdd{
-		{"magnet:?xt=urn:btih:" + hashOf("Severance.S01.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"), filepath.Join(folder, "Season 01")},
 		{"magnet:?xt=urn:btih:" + hashOf("Severance.S02E01.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"), filepath.Join(folder, "Season 02")},
 		{"magnet:?xt=urn:btih:" + hashOf("Severance S02E03 1080p WEB-DL x265-GRP2"), filepath.Join(folder, "Season 02")},
+		{"magnet:?xt=urn:btih:" + hashOf("Severance.S01.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"), filepath.Join(folder, "Season 01")},
 	}
 	if got := at.client.added(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("added\n%v\nwant\n%v", got, want)
@@ -329,12 +330,39 @@ func TestAutoDownloaderSearchBudget(t *testing.T) {
 	if err != nil || rep.Wanted != 19 || rep.Added != 0 {
 		t.Fatalf("%+v %v", rep, err)
 	}
-	if got := src.queries(); len(got) != maxSearches || got[0] != "S01E01" {
+	if got := src.queries(); len(got) != maxSearches || got[0] != "S02E01" {
 		t.Fatalf("searched %v", got)
 	}
 	// Not in the list: nothing was watched, everything is wanted.
 	if keys, _ := at.Wanted(context.Background(), &Rule{MediaID: show.ID, StartFrom: 2009}); !reflect.DeepEqual(keys, []int{2009, 2010}) {
 		t.Fatalf("start from S02E09: %v", keys)
+	}
+}
+
+// Earlier episodes that are never found don't keep the latest season from
+// being looked for, run after run.
+func TestAutoDownloaderLatestSeasonFirst(t *testing.T) {
+	src := &querySource{id: "src", answer: func(q MediaQuery) []*SearchResult {
+		if q.episodeTag() == "S02E03" {
+			return []*SearchResult{rel("Severance.S02E03.1080p.WEB.H264-GRP", 50)}
+		}
+		return nil // season 1 isn't on the sources
+	}}
+	at := newAutoTest(t, src)
+	show := severance()
+	at.cat.media[show.ID] = show
+	at.saveRule(t, Rule{MediaID: show.ID, Enabled: true, Resolution: "1080p"})
+	for run := 1; run <= 2; run++ {
+		rep, err := at.Run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := 2 - run; rep.Added != want {
+			t.Fatalf("run %d: %+v, want %d added", run, rep, want)
+		}
+	}
+	if keys := at.itemKeys(); len(keys) != 1 || keys[0] != itemKey(show.ID, 2003) {
+		t.Fatalf("items %v", keys)
 	}
 }
 

@@ -790,6 +790,10 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                         const v = videoRef.current
                         setOffset(v ? absTime(v) : offset)
                         setMethod("transcode")
+                    } else if (req.kind === "local" && !hlsRef.current) {
+                        // Converted and still not playable: say so rather
+                        // than spin forever.
+                        setError("This video could not be played, even converted.")
                     } else if (req.kind === "stream" && !hlsRef.current) {
                         if (sourceIdx + 1 < sources.length) setSourceIdx(i => i + 1)
                         else setError("This video could not be played.")
