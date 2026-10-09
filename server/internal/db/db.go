@@ -68,16 +68,46 @@ var schema = []string{
 		stream_mode TEXT NOT NULL DEFAULT '',
 		updated_at INTEGER NOT NULL
 	)`,
+	// The user's list of movies and shows (package catalog). type is MOVIE
+	// or TV, progress an episode key, score 0-100; the dates are YYYY-MM-DD
+	// (or YYYY-MM, YYYY), '' when unknown. media is the lite media, fetched
+	// from TMDB at media_updated.
 	`CREATE TABLE IF NOT EXISTS local_list (
 		media_id INTEGER PRIMARY KEY,
-		type TEXT NOT NULL DEFAULT 'ANIME',
+		type TEXT NOT NULL DEFAULT 'MOVIE',
 		status TEXT NOT NULL DEFAULT 'PLANNING',
 		progress INTEGER NOT NULL DEFAULT 0,
 		score REAL NOT NULL DEFAULT 0,
 		repeat INTEGER NOT NULL DEFAULT 0,
+		notes TEXT NOT NULL DEFAULT '',
+		liked INTEGER NOT NULL DEFAULT 0,
+		started_at TEXT NOT NULL DEFAULT '',
+		completed_at TEXT NOT NULL DEFAULT '',
+		letterboxd_uri TEXT NOT NULL DEFAULT '',
+		letterboxd_synced INTEGER NOT NULL DEFAULT 0,
 		media TEXT NOT NULL DEFAULT '{}',
+		media_updated INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL
 	)`,
+	`CREATE INDEX IF NOT EXISTS idx_local_list_type ON local_list(type)`,
+	// The diary: each viewing of a movie (or a show), logged here or
+	// imported from Letterboxd (letterboxd_id identifies those).
+	`CREATE TABLE IF NOT EXISTS diary (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		media_id INTEGER NOT NULL,
+		watched_date TEXT NOT NULL DEFAULT '',
+		rating INTEGER NOT NULL DEFAULT 0,
+		rewatch INTEGER NOT NULL DEFAULT 0,
+		liked INTEGER NOT NULL DEFAULT 0,
+		review TEXT NOT NULL DEFAULT '',
+		tags TEXT NOT NULL DEFAULT '',
+		source TEXT NOT NULL DEFAULT 'kumobox',
+		letterboxd_id TEXT NOT NULL DEFAULT '',
+		exported_at INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_diary_media ON diary(media_id)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_letterboxd ON diary(letterboxd_id) WHERE letterboxd_id != ''`,
 	`CREATE TABLE IF NOT EXISTS extensions (
 		id TEXT PRIMARY KEY,
 		manifest TEXT NOT NULL,
@@ -114,15 +144,6 @@ var schema = []string{
 		mode TEXT NOT NULL DEFAULT '',
 		value TEXT NOT NULL,
 		PRIMARY KEY (provider, media_id, mode)
-	)`,
-	`CREATE TABLE IF NOT EXISTS manga_progress (
-		media_id INTEGER NOT NULL,
-		provider TEXT NOT NULL,
-		chapter_id TEXT NOT NULL,
-		chapter_number TEXT NOT NULL DEFAULT '',
-		page INTEGER NOT NULL DEFAULT 0,
-		updated_at INTEGER NOT NULL,
-		PRIMARY KEY (media_id)
 	)`,
 }
 
