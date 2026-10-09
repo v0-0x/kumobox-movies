@@ -53,7 +53,8 @@ func (s *Server) markEpisode(r *http.Request) (any, error) {
 	if repeat != cur.Repeat {
 		u.Repeat = &repeat
 	}
-	if err := s.app.Platform.UpdateEntry(r.Context(), u); err != nil {
+	// Through the app: a movie marked watched is logged in the diary.
+	if err := s.app.UpdateEntry(r.Context(), u); err != nil {
 		return nil, err
 	}
 	return map[string]any{"changed": true, "progress": next, "status": status}, nil
