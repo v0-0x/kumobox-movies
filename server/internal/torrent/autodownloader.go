@@ -7,20 +7,21 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/5rahim/habari"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
-// Rule tells the auto downloader which releases to grab for an anime.
+// Rule tells the auto downloader which releases to grab for a show.
 type Rule struct {
 	ID              int      `json:"id"`
 	Enabled         bool     `json:"enabled"`
@@ -44,13 +45,13 @@ type AutoItem struct {
 type AutoDownloader struct {
 	db       *db.DB
 	torrents *Manager
-	platform *anilist.Platform
+	platform *catalog.Platform
 	files    *library.Store
 	hub      *events.Hub
 	mu       sync.Mutex
 }
 
-func NewAutoDownloader(d *db.DB, t *Manager, p *anilist.Platform, f *library.Store, hub *events.Hub) *AutoDownloader {
+func NewAutoDownloader(d *db.DB, t *Manager, p *catalog.Platform, f *library.Store, hub *events.Hub) *AutoDownloader {
 	return &AutoDownloader{db: d, torrents: t, platform: p, files: f, hub: hub}
 }
 
@@ -78,7 +79,7 @@ func (a *AutoDownloader) Rules() ([]*Rule, error) {
 
 func (a *AutoDownloader) SaveRule(r Rule) (*Rule, error) {
 	if r.MediaID <= 0 {
-		return nil, fmt.Errorf("a rule needs an anime")
+		return nil, fmt.Errorf("a rule needs a show")
 	}
 	if r.EpisodeType == "" {
 		r.EpisodeType = "recent"
@@ -118,6 +119,7 @@ func (a *AutoDownloader) Items() []AutoItem {
 	return out
 }
 
+// episodeKey is how a grabbed episode (by its key) is recorded.
 func episodeKey(mediaID, ep int) string { return fmt.Sprintf("%d:%d", mediaID, ep) }
 
 func (a *AutoDownloader) seen(key string) bool {
@@ -139,9 +141,9 @@ func (a *AutoDownloader) Run(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	coll, err := a.platform.Collection(ctx, "ANIME", false)
+	coll, err := a.platform.Collection(ctx, catalog.TypeTV, false)
 	if err != nil {
-		log.Printf("auto downloader: anime list: %v", err)
+		log.Printf("auto downloader: list: %v", err)
 	}
 	added := 0
 	for _, r := range rules {
@@ -158,13 +160,13 @@ func (a *AutoDownloader) Run(ctx context.Context) (int, error) {
 	return added, nil
 }
 
-func (a *AutoDownloader) runRule(ctx context.Context, r *Rule, coll *anilist.Collection) (int, error) {
+func (a *AutoDownloader) runRule(ctx context.Context, r *Rule, coll *catalog.Collection) (int, error) {
 	progress := 0
 	if r.EpisodeType != "all" {
 		if coll == nil {
 			// Without the progress every missing episode would look new,
 			// including the ones already watched.
-			return 0, errors.New("the anime list couldn't be loaded to check progress")
+			return 0, errors.New("the list couldn't be loaded to check progress")
 		}
 		if e := coll.Find(r.MediaID); e != nil {
 			progress = e.Progress
@@ -174,7 +176,7 @@ func (a *AutoDownloader) runRule(ctx context.Context, r *Rule, coll *anilist.Col
 	if err != nil {
 		return 0, err
 	}
-	title := util.FirstNonEmpty(r.Title, media.Title.Romaji, media.Title.English)
+	title := util.FirstNonEmpty(r.Title, media.Title.English, media.Title.Romaji)
 	if util.NormalizeTitle(title) == "" {
 		// Every release would match an empty title.
 		return 0, errors.New("the rule has no title to look for")
@@ -208,9 +210,10 @@ func (a *AutoDownloader) runRule(ctx context.Context, r *Rule, coll *anilist.Col
 	return a.grab(ctx, r, media, prov, a.pick(r, media, title, progress, have, results))
 }
 
-// pick chooses a release for each episode the rule wants: among the ones
-// that match, the one with the most seeders.
-func (a *AutoDownloader) pick(r *Rule, media *anilist.Media, title string, progress int, have map[int]bool, results []*SearchResult) map[int]*SearchResult {
+// pick chooses a release for each episode the rule wants (by key): among
+// the ones that match, the one with the most seeders. progress and have
+// (the episodes with a file) are keys too.
+func (a *AutoDownloader) pick(r *Rule, media *catalog.Media, title string, progress int, have map[int]bool, results []*SearchResult) map[int]*SearchResult {
 	best := map[int]*SearchResult{}
 	limit := episodeLimit(media, time.Now())
 	for _, res := range results {
@@ -244,7 +247,7 @@ func (a *AutoDownloader) pick(r *Rule, media *anilist.Media, title string, progr
 		if missingTerm {
 			continue
 		}
-		ep := res.EpisodeNumber
+		ep := releaseKey(md, res.EpisodeNumber, media)
 		if limit > 0 && ep > limit {
 			continue
 		}
@@ -261,14 +264,26 @@ func (a *AutoDownloader) pick(r *Rule, media *anilist.Media, title string, progr
 	return best
 }
 
-// episodeLimit returns the last episode number that can be out (0: unknown).
-// When the episode count isn't known it is the last aired episode, and the
-// media may come from a cache up to a day old: an episode whose airing time
-// has passed since counts as aired.
-func episodeLimit(m *anilist.Media, now time.Time) int {
-	limit := m.TotalEpisodes()
-	if next := m.NextAiringEpisode; (m.Episodes == nil || *m.Episodes <= 0) && next != nil &&
-		next.Episode > 0 && next.AiringAt > 0 && int64(next.AiringAt) <= now.Unix() {
+// releaseKey is the key of the episode a release has: its season and
+// episode, or an episode numbered from the start of the show.
+func releaseKey(md *habari.Metadata, ep int, media *catalog.Media) int {
+	if len(md.SeasonNumber) > 0 {
+		if s, err := strconv.Atoi(md.SeasonNumber[0]); err == nil && s > 0 {
+			return catalog.EpisodeKey(s, ep)
+		}
+	}
+	if k := media.KeyAtIndex(ep); k > 0 {
+		return k
+	}
+	return catalog.EpisodeKey(1, ep)
+}
+
+// episodeLimit returns the key of the last episode that can be out (0:
+// unknown): the last one aired. The media may come from a cache up to a day
+// old: an episode whose airing time has passed since counts as aired.
+func episodeLimit(m *catalog.Media, now time.Time) int {
+	limit := m.LatestAired()
+	if next := m.NextAiringEpisode; next != nil && next.Episode > 0 && next.AiringAt > 0 && int64(next.AiringAt) <= now.Unix() {
 		limit = max(limit, next.Episode)
 	}
 	return limit
@@ -278,7 +293,7 @@ func episodeLimit(m *anilist.Media, now time.Time) int {
 // first, and records each one so that it isn't grabbed again. A release that
 // fails is logged and skipped; the rule stops only when the client itself is
 // unavailable, as the other episodes would fail the same way.
-func (a *AutoDownloader) grab(ctx context.Context, r *Rule, media *anilist.Media, prov Provider, best map[int]*SearchResult) (int, error) {
+func (a *AutoDownloader) grab(ctx context.Context, r *Rule, media *catalog.Media, prov Provider, best map[int]*SearchResult) (int, error) {
 	eps := make([]int, 0, len(best))
 	for ep := range best {
 		eps = append(eps, ep)

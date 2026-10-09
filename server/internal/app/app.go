@@ -11,12 +11,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anicli"
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/discord"
@@ -27,8 +27,6 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/images"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/lifecycle"
-	"github.com/v0-0x/kumobox-movies/server/internal/manga"
-	"github.com/v0-0x/kumobox-movies/server/internal/metadata"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
@@ -40,14 +38,12 @@ type App struct {
 	DB         *db.DB
 	Settings   *config.Store
 	Hub        *events.Hub
-	Platform   *anilist.Platform
-	Meta       *metadata.Service
+	Platform   *catalog.Platform
 	Files      *library.Store
 	Scanner    *library.Scanner
 	Library    *library.Service
 	History    *history.Store
 	Player     *player.Manager
-	AniCli     *anicli.Driver
 	Downloads  *downloads.Manager
 	Torrents   *torrent.Manager
 	AutoDL     *torrent.AutoDownloader
@@ -56,7 +52,6 @@ type App struct {
 	Local      *stream.Local
 	HLS        *stream.HLS
 	Share      *share.Service
-	Manga      *manga.Service
 	Discord    *discord.Client
 	Images     *images.Cache
 	Logs       *LogBuffer
@@ -114,14 +109,12 @@ func New(dataDir string) (*App, error) {
 		return nil, err
 	}
 	hub := events.NewHub()
-	platform := anilist.NewPlatform(d, hub)
-	meta := metadata.NewService(d)
+	platform := catalog.NewPlatform(d, hub, settings)
 	files := library.NewStore(d)
 	scanner := library.NewScanner(files, platform, settings, hub)
 	hist := history.NewStore(d)
-	lib := &library.Service{Store: files, Scanner: scanner, Platform: platform, Meta: meta, History: hist, DB: d}
+	lib := &library.Service{Store: files, Scanner: scanner, Platform: platform, History: hist, DB: d}
 	pl := player.NewManager(settings, hist, d, platform, hub)
-	ani := anicli.New(settings)
 	dls := downloads.NewManager(settings, d, hub, files)
 	torrents := torrent.NewManager(settings, hub)
 	exts := extensions.NewManager(d, settings, hub)
@@ -129,11 +122,11 @@ func New(dataDir string) (*App, error) {
 	exits := lifecycle.NewExits()
 
 	a := &App{
-		DB: d, Settings: settings, Hub: hub, Platform: platform, Meta: meta, Files: files, Scanner: scanner,
-		Library: lib, History: hist, Player: pl, AniCli: ani, Downloads: dls, Torrents: torrents,
+		DB: d, Settings: settings, Hub: hub, Platform: platform, Files: files, Scanner: scanner,
+		Library: lib, History: hist, Player: pl, Downloads: dls, Torrents: torrents,
 		AutoDL:     torrent.NewAutoDownloader(d, torrents, platform, files, hub),
-		Extensions: exts, Stream: stream.NewService(d, exts, ani, platform), Local: stream.NewLocal(settings, files, d),
-		Manga: manga.NewService(d, exts, platform), Discord: &discord.Client{}, Logs: logs,
+		Extensions: exts, Stream: stream.NewService(d, exts, platform), Local: stream.NewLocal(settings, files, d),
+		Discord: &discord.Client{}, Logs: logs,
 		Images: images.New(filepath.Join(dataDir, "images")),
 		Update: update.New(hub, exits), Exits: exits,
 		ctx: ctx, cancel: cancel, DataDir: dataDir, prefetch: newPrefetcher(),
@@ -173,21 +166,16 @@ func (a *App) WriteShellToken() string {
 }
 
 func (a *App) wire() {
-	// Anime with files get all their data, also those shared with this
+	// Titles with files get all their data, also those shared with this
 	// KumoBox (prefetch.go).
 	a.Scanner.OnScanned = a.prefetchLibrary
 	a.Share.OnFiles = a.prefetchLibrary
-	// KumoBoxes on the same AniList account keep their watch histories in step,
-	// as positions are saved.
+	// KumoBoxes on the same Letterboxd account keep their watch histories
+	// in step, as positions are saved, and so their lists: an episode
+	// finished on another one moves this one's progress on too.
 	a.Share.History = a.History
 	a.History.OnChange = a.Share.HistoryChanged
-	a.Share.OnWatchedElsewhere = func() {
-		ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
-		defer cancel()
-		if _, err := a.Platform.Collection(ctx, "ANIME", true); err == nil {
-			a.Hub.Publish("collection-updated", nil)
-		}
-	}
+	a.Share.OnWatchedElsewhere = a.progressFromHistory
 	a.Share.User = func() int {
 		if v := a.Platform.Viewer(); v != nil {
 			return v.ID
@@ -198,29 +186,13 @@ func (a *App) wire() {
 	// Torrent search can use extension providers.
 	a.Torrents.ExtraProviders = a.Extensions.TorrentProviders
 
-	// Downloads resolved through ani-cli or an online streaming extension.
-	a.Downloads.Resolvers["anicli"] = func(ctx context.Context, it *downloads.Item) (*downloads.Resolved, error) {
-		media, err := a.Platform.MediaLite(ctx, it.MediaID)
-		if err != nil {
-			return nil, err
-		}
-		res, err := a.Stream.Sources(ctx, stream.AniCliProvider, media, float64(it.Episode), it.Mode == "dub", "", it.Quality)
-		if err != nil {
-			return nil, err
-		}
-		src := res.Sources[0]
-		r := &downloads.Resolved{URL: src.URL, Referrer: src.Referrer, Headers: src.Headers}
-		if len(src.Subtitles) > 0 {
-			r.SubURL = src.Subtitles[0].URL
-		}
-		return r, nil
-	}
+	// Downloads resolved through a streaming provider.
 	a.Downloads.Resolvers["stream"] = func(ctx context.Context, it *downloads.Item) (*downloads.Resolved, error) {
 		media, err := a.Platform.MediaLite(ctx, it.MediaID)
 		if err != nil {
 			return nil, err
 		}
-		res, err := a.Stream.Sources(ctx, it.Provider, media, float64(it.Episode), it.Mode == "dub", "", it.Quality)
+		res, err := a.Stream.Sources(ctx, it.Provider, media, stream.ProviderEpisode(media, it.Episode), it.Mode == "dub", "", it.Quality)
 		if err != nil {
 			return nil, err
 		}
@@ -244,23 +216,26 @@ func (a *App) wire() {
 		if err != nil {
 			return nil, err
 		}
-		f := library.EpisodeFile(files, s.Episode+1)
+		media, err := a.Platform.MediaLite(ctx, s.MediaID)
+		if err != nil {
+			return nil, err
+		}
+		next := media.NextEpisode(s.Episode)
+		if next == 0 {
+			return nil, nil // the last one, or a movie
+		}
+		f := library.EpisodeFile(files, next)
 		if f == nil {
 			return nil, nil
 		}
-		media, _ := a.Platform.MediaLite(ctx, s.MediaID)
-		title := f.Name
-		if media != nil {
-			title = fmt.Sprintf("%s — Episode %d", media.PreferredTitle(), f.Episode)
-		}
-		return &player.PlayRequest{MediaID: s.MediaID, Episode: f.Episode, Title: title, Source: "local", Target: f.Path}, nil
+		return &player.PlayRequest{MediaID: s.MediaID, Episode: f.Episode, Title: EpisodeTitle(media, f.Episode), Source: "local", Target: f.Path}, nil
 	}
 
 	// Plugins hooks after progress updates.
 	a.Player.OnProgress = append(a.Player.OnProgress, func(mediaID, episode int) {
 		a.Extensions.FireHook("onPostUpdateEntryProgress", map[string]any{"mediaId": mediaID, "progress": episode})
 	})
-	// And after playback put an anime on the watching list (a status change).
+	// And after playback put a title on the watching list (a status change).
 	a.Player.OnWatching = append(a.Player.OnWatching, func(mediaID int) {
 		a.Extensions.FireHook("onPostUpdateEntry", map[string]any{"mediaId": mediaID})
 	})
@@ -294,11 +269,16 @@ func (a *App) wire() {
 		lastPresence, showing = time.Now(), true
 		presenceMu.Unlock()
 		media, err := a.Platform.MediaLite(context.Background(), s.MediaID)
-		act := discord.Activity{Details: s.Title, State: fmt.Sprintf("Episode %d", s.Episode)}
+		act := discord.Activity{Details: s.Title}
 		if err == nil {
 			act.Details = media.PreferredTitle()
 			act.LargeImage = media.CoverImage.Large
 			act.LargeText = media.PreferredTitle()
+			if media.IsShow() && s.Episode > 0 {
+				act.State = catalog.FormatKey(s.Episode)
+			} else if y := media.Year(); y > 0 && !media.IsShow() {
+				act.State = fmt.Sprint(y)
+			}
 		}
 		if s.Duration > 0 && !s.Paused {
 			act.Start = time.Now().Add(-time.Duration(s.Position) * time.Second)
@@ -319,6 +299,14 @@ func (a *App) wire() {
 		// A new library folder: index it right away.
 		if fmt.Sprint(old.LibraryDirs()) != fmt.Sprint(cur.LibraryDirs()) && a.Scanner.HasLibrary() {
 			a.Scanner.ScanSoon()
+		}
+		// TMDB data in another language (or for another region): fetched
+		// again. A key added: the Discover page is ready before it's opened.
+		if old.TMDB.Language != cur.TMDB.Language || old.TMDB.Region != cur.TMDB.Region {
+			a.Platform.ResetCache()
+		}
+		if old.TMDB.APIKey != cur.TMDB.APIKey && cur.TMDB.APIKey != "" {
+			go a.warmDiscover()
 		}
 		a.Hub.Publish(events.SettingsUpdated, nil)
 	})
@@ -348,18 +336,10 @@ func (a *App) Start() {
 		cfg := a.Settings.Get()
 		return cfg.Torrent.AutoDownloader, time.Duration(cfg.Torrent.AutoDownloadMinutes) * time.Minute
 	})
-	go func() {
-		// The Discover page, ready before it's opened.
-		ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
-		defer cancel()
-		if d, err := a.Platform.WarmDiscover(ctx); err == nil {
-			a.PrefetchDiscoverArt(d)
-		}
-	}()
+	go a.warmDiscover()
 	go func() {
 		ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
 		defer cancel()
-		a.Platform.RefreshViewer(ctx)
 		if view, err := a.Library.Collection(ctx, false); err == nil {
 			a.PrefetchCollectionArt(view)
 		}
@@ -386,6 +366,43 @@ func (a *App) Shutdown() {
 }
 
 func (a *App) Context() context.Context { return a.ctx }
+
+// warmDiscover gets the Discover page ready before it's opened (when a TMDB
+// key is set).
+func (a *App) warmDiscover() {
+	if !a.Platform.Configured() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
+	defer cancel()
+	if d, err := a.Platform.WarmDiscover(ctx); err == nil {
+		a.PrefetchDiscoverArt(d)
+	}
+}
+
+// progressFromHistory moves the list on for the episodes another KumoBox
+// on the same account says were finished there (their positions came with
+// its watch history): each KumoBox keeps its own list.
+func (a *App) progressFromHistory(finished []history.Entry) {
+	ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
+	defer cancel()
+	// Oldest first: the list moves on in the order they were watched.
+	sort.SliceStable(finished, func(i, j int) bool { return finished[i].UpdatedAt < finished[j].UpdatedAt })
+	for _, h := range finished {
+		if h.MediaID > 0 && h.Episode > 0 {
+			_, _ = a.Platform.UpdateProgress(ctx, h.MediaID, h.Episode)
+		}
+	}
+}
+
+// EpisodeTitle is how the players title an episode: the movie's title, or
+// the show's with the episode (Show — S01E05).
+func EpisodeTitle(media *catalog.Media, episode int) string {
+	if !media.IsShow() || episode <= 0 {
+		return media.PreferredTitle()
+	}
+	return media.PreferredTitle() + " — " + catalog.FormatKey(episode)
+}
 
 // PrefetchCollectionArt downloads covers and banners of everything in the
 // list and library so they are available offline.
@@ -415,7 +432,7 @@ func (a *App) PrefetchCollectionArt(view *library.CollectionView) {
 // PrefetchDiscoverArt downloads what the Discover page shows first: the
 // banners of its header and the first covers of each row. The rest load as
 // they're scrolled to.
-func (a *App) PrefetchDiscoverArt(d *anilist.Discover) {
+func (a *App) PrefetchDiscoverArt(d *catalog.Discover) {
 	var urls []string
 	banners := 0
 	for _, m := range d.Trending {
@@ -424,7 +441,7 @@ func (a *App) PrefetchDiscoverArt(d *anilist.Discover) {
 			banners++
 		}
 	}
-	for _, row := range [][]*anilist.Media{d.Trending, d.ThisSeason, d.NextSeason, d.Popular, d.TopRated} {
+	for _, row := range [][]*catalog.Media{d.Trending, d.PopularMovies, d.PopularShows, d.NowPlaying, d.OnTheAir, d.TopRatedMovies, d.TopRatedShows, d.Upcoming} {
 		for _, m := range row[:min(len(row), 8)] {
 			urls = append(urls, m.CoverImage.ExtraLarge)
 		}
@@ -432,7 +449,7 @@ func (a *App) PrefetchDiscoverArt(d *anilist.Discover) {
 	a.Images.Prefetch(urls...)
 }
 
-// PrefetchEntryArt downloads an anime's artwork and episode thumbnails.
+// PrefetchEntryArt downloads a title's artwork and episode stills.
 func (a *App) PrefetchEntryArt(e *library.EntryView) {
 	if e == nil || e.Media == nil {
 		return

@@ -15,7 +15,6 @@ const (
 	AppName = "KumoBox"
 
 	DefaultPort           = 43311
-	DefaultAnilistClient  = "13985"
 	DefaultMarketplaceURL = "https://raw.githubusercontent.com/Bas1874/Seanime-Marketplace/refs/heads/main/Marketplace/Main.json"
 
 	// UpdateRepo is the GitHub repository KumoBox looks for updates in
@@ -60,13 +59,11 @@ type Settings struct {
 	Playback     PlaybackSettings     `json:"playback"`
 	Mpv          MpvSettings          `json:"mpv"`
 	Transcode    TranscodeSettings    `json:"transcode"`
-	AniCli       AniCliSettings       `json:"aniCli"`
+	Downloads    DownloadSettings     `json:"downloads"`
 	OnlineStream OnlineStreamSettings `json:"onlineStream"`
 	Torrent      TorrentSettings      `json:"torrent"`
 	Qbittorrent  TorrentClientConfig  `json:"qbittorrent"`
 	Transmission TorrentClientConfig  `json:"transmission"`
-	Manga        MangaSettings        `json:"manga"`
-	Anilist      AnilistSettings      `json:"anilist"`
 	Server       ServerSettings       `json:"server"`
 	Sharing      SharingSettings      `json:"sharing"`
 	UI           UISettings           `json:"ui"`
@@ -89,7 +86,7 @@ type LibrarySettings struct {
 	MatchThreshold float64 `json:"matchThreshold"`
 	// Glob patterns (matched against file/dir names) that the scanner skips.
 	IgnorePatterns []string `json:"ignorePatterns"`
-	// Also try to match against all of AniList, not only the user's list.
+	// Also try to match against all of TMDB, not only the user's list.
 	MatchOutsideList bool `json:"matchOutsideList"`
 }
 
@@ -125,29 +122,29 @@ type TranscodeSettings struct {
 	Preset    string `json:"preset"`
 }
 
-type AniCliSettings struct {
-	Enabled     bool   `json:"enabled"`
-	Path        string `json:"path"`
-	DefaultMode string `json:"defaultMode"` // sub | dub
-	Quality     string `json:"quality"`     // best | worst | 1080 | 720 ...
-	// Directory where ani-cli downloads are written. Empty = library directory.
-	DownloadDir string `json:"downloadDir"`
-	Downloader  string `json:"downloader"` // auto | yt-dlp | ffmpeg | aria2c
-	// Where streams open: "mpv" or "builtin".
-	Player string `json:"player"`
+// DownloadSettings: where movies and episodes downloaded from streaming
+// providers go, and the program that fetches them.
+type DownloadSettings struct {
+	// Dir is the download folder. Empty = the library folder.
+	Dir        string `json:"dir"`
+	Downloader string `json:"downloader"` // auto | yt-dlp | ffmpeg
 }
 
 type OnlineStreamSettings struct {
-	Enabled         bool   `json:"enabled"`
-	DefaultProvider string `json:"defaultProvider"` // "ani-cli" or an extension id
-	PreferDub       bool   `json:"preferDub"`
+	Enabled bool `json:"enabled"`
+	// DefaultProvider is the streaming provider a title page opens with:
+	// "archive" (the Internet Archive) or another provider's id.
+	DefaultProvider string `json:"defaultProvider"`
+	// PreferDub picks dubbed (English) audio over the original language
+	// when a provider or a file has both.
+	PreferDub bool `json:"preferDub"`
 }
 
 type TorrentSettings struct {
 	DefaultClient   string `json:"defaultClient"`   // qbittorrent | transmission | none
 	DefaultProvider string `json:"defaultProvider"` // nyaa | animetosho | extension id
 	ShowActiveCount bool   `json:"showActiveCount"`
-	// Create a sub folder per anime inside the library directory.
+	// Create a sub folder per movie or show inside the library directory.
 	CreateSubfolder     bool   `json:"createSubfolder"`
 	PreferredResolution string `json:"preferredResolution"`
 	AutoDownloader      bool   `json:"autoDownloader"`
@@ -163,19 +160,6 @@ type TorrentClientConfig struct {
 	Tags       string `json:"tags"`
 	Category   string `json:"category"`
 	UseHTTPS   bool   `json:"useHttps"`
-}
-
-type MangaSettings struct {
-	Enabled         bool   `json:"enabled"`
-	DefaultProvider string `json:"defaultProvider"`
-	ReadingMode     string `json:"readingMode"` // long-strip | paged | double
-	Direction       string `json:"direction"`   // ltr | rtl
-}
-
-type AnilistSettings struct {
-	ClientID string `json:"clientId"`
-	// Hide adult entries everywhere.
-	HideAdult bool `json:"hideAdult"`
 }
 
 // SharingSettings: library sharing with other KumoBox apps on the home network
@@ -255,15 +239,8 @@ func Defaults() Settings {
 			Preset:      "veryfast",
 			VaapiNode:   "/dev/dri/renderD128",
 		},
-		AniCli: AniCliSettings{
-			Enabled:     true,
-			Path:        "ani-cli",
-			DefaultMode: "sub",
-			Quality:     "best",
-			Downloader:  "auto",
-			Player:      "builtin",
-		},
-		OnlineStream: OnlineStreamSettings{Enabled: true, DefaultProvider: "ani-cli"},
+		Downloads:    DownloadSettings{Downloader: "auto"},
+		OnlineStream: OnlineStreamSettings{Enabled: true, DefaultProvider: "archive"},
 		Torrent: TorrentSettings{
 			DefaultClient:       "qbittorrent",
 			DefaultProvider:     "nyaa",
@@ -274,8 +251,6 @@ func Defaults() Settings {
 		},
 		Qbittorrent:  TorrentClientConfig{Host: "127.0.0.1", Port: 8081, Username: "admin", Executable: findQbittorrent(home)},
 		Transmission: TorrentClientConfig{Host: "127.0.0.1", Port: 9091, Executable: defaultTransmission()},
-		Manga:        MangaSettings{Enabled: true, ReadingMode: "double", Direction: "rtl"},
-		Anilist:      AnilistSettings{ClientID: DefaultAnilistClient, HideAdult: true},
 		Server:       ServerSettings{Host: "127.0.0.1", Port: DefaultPort, WebUI: true},
 		UI: UISettings{
 			AccentColor:      "#7c6cf2",
@@ -342,6 +317,9 @@ func (c Settings) clone() Settings {
 	c.Library.ExtraDirs = slices.Clone(c.Library.ExtraDirs)
 	c.Library.IgnorePatterns = slices.Clone(c.Library.IgnorePatterns)
 	c.UI.HomeSections = slices.Clone(c.UI.HomeSections)
+	c.Providers.StremioCatalogs = slices.Clone(c.Providers.StremioCatalogs)
+	c.Providers.NuvioRepos = slices.Clone(c.Providers.NuvioRepos)
+	c.TorrentSources.Torznab = slices.Clone(c.TorrentSources.Torznab)
 	return c
 }
 
@@ -371,31 +349,14 @@ func (s *Store) OnChange(fn func(old, new Settings)) {
 
 // schemaVersion is the current settings version; add a step to migrate when
 // changing a default that existing installs should pick up too.
-const schemaVersion = 5
+const schemaVersion = 1
 
+// migrate updates settings saved by an older version, and reports whether
+// it changed them. KumoBox starts at version 1: there is nothing to migrate
+// yet.
 func migrate(s *Settings) bool {
 	if s.SchemaVersion >= schemaVersion {
 		return false
-	}
-	if s.SchemaVersion < 2 {
-		// v2: the in-app player is the default for files and streams.
-		s.Playback.DefaultPlayer = "builtin"
-		s.AniCli.Player = "builtin"
-	}
-	if s.SchemaVersion < 3 && s.Manga.ReadingMode == "long-strip" {
-		// v3: manga reads two pages side by side, rather than the long
-		// strip that was the default.
-		s.Manga.ReadingMode = "double"
-	}
-	if s.SchemaVersion < 4 && s.Manga.Direction == "ltr" {
-		// v4: manga reads right to left, as printed (the first page of two
-		// on the right), rather than left to right, the default before.
-		s.Manga.Direction = "rtl"
-	}
-	if s.SchemaVersion < 5 {
-		// v5: endings can be skipped too, with a setting of their own; it
-		// starts out like the openings one.
-		s.Playback.SkipOutroAniSkip = s.Playback.SkipIntroAniSkip
 	}
 	s.SchemaVersion = schemaVersion
 	return true
@@ -437,20 +398,13 @@ func sanitize(s Settings) Settings {
 	if s.Transcode.Preset == "" {
 		s.Transcode.Preset = "veryfast"
 	}
-	if s.AniCli.Path == "" {
-		s.AniCli.Path = "ani-cli"
+	switch s.Downloads.Downloader {
+	case "auto", "yt-dlp", "ffmpeg":
+	default:
+		s.Downloads.Downloader = "auto"
 	}
-	if s.AniCli.DefaultMode != "dub" {
-		s.AniCli.DefaultMode = "sub"
-	}
-	if s.AniCli.Quality == "" {
-		s.AniCli.Quality = "best"
-	}
-	if s.AniCli.Player != "mpv" {
-		s.AniCli.Player = "builtin"
-	}
-	if s.Anilist.ClientID == "" {
-		s.Anilist.ClientID = DefaultAnilistClient
+	if s.OnlineStream.DefaultProvider == "" {
+		s.OnlineStream.DefaultProvider = d.OnlineStream.DefaultProvider
 	}
 	if s.Extensions.MarketplaceURL == "" {
 		s.Extensions.MarketplaceURL = DefaultMarketplaceURL

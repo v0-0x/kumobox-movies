@@ -1,5 +1,5 @@
-// Package extensions runs marketplace extensions (torrent, online
-// streaming and manga providers, plus a subset of the plugin API) inside a
+// Package extensions runs marketplace extensions (torrent and online
+// streaming providers, plus a subset of the plugin API) inside a
 // sandboxed goja JavaScript runtime, and manages installing them from the
 // community marketplace.
 package extensions
@@ -14,7 +14,6 @@ import (
 const (
 	TypeTorrent      = "anime-torrent-provider"
 	TypeOnlineStream = "onlinestream-provider"
-	TypeManga        = "manga-provider"
 	TypeCustomSource = "custom-source"
 	TypePlugin       = "plugin"
 )
@@ -111,7 +110,7 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("invalid extension id %q", m.ID)
 	}
 	switch m.Type {
-	case TypeTorrent, TypeOnlineStream, TypeManga, TypeCustomSource, TypePlugin:
+	case TypeTorrent, TypeOnlineStream, TypeCustomSource, TypePlugin:
 	default:
 		return fmt.Errorf("unsupported extension type %q", m.Type)
 	}

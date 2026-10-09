@@ -205,7 +205,7 @@ func splitCommand(exe string) (string, []string, error) {
 	return "", nil, fmt.Errorf("torrent client executable not found: %s", exe)
 }
 
-// SavePathFor returns where a torrent for an anime should be saved.
+// SavePathFor returns where a torrent for a movie or show should be saved.
 func (m *Manager) SavePathFor(title string) string {
 	cfg := m.settings.Get()
 	dir := config.ExpandHome(cfg.Library.Dir)

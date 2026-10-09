@@ -7,18 +7,19 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 )
 
-// The sub/dub choice is remembered per anime (the streamMode of its track
-// prefs) and used everywhere: streaming, "continue watching", next episode,
-// and the audio track of local files.
+// The sub/dub choice (original audio with subtitles, or dubbed in English)
+// is remembered per title (the streamMode of its track prefs) and used
+// everywhere: streaming, "continue watching", next episode, and the audio
+// track of local files.
 
 func (s *Server) defaultLanguageMode() string {
-	if s.app.Settings.Get().AniCli.DefaultMode == "dub" {
+	if s.app.Settings.Get().OnlineStream.PreferDub {
 		return "dub"
 	}
 	return "sub"
 }
 
-// languageMode is the remembered sub/dub choice for an anime, or the default.
+// languageMode is the remembered sub/dub choice for a title, or the default.
 func (s *Server) languageMode(mediaID int) (mode string, saved bool) {
 	if p := s.app.Player.Tracks.Get(mediaID); p != nil && (p.StreamMode == "sub" || p.StreamMode == "dub") {
 		return p.StreamMode, true
@@ -26,7 +27,7 @@ func (s *Server) languageMode(mediaID int) (mode string, saved bool) {
 	return s.defaultLanguageMode(), false
 }
 
-// setLanguageMode remembers the sub/dub choice for an anime. An audio track
+// setLanguageMode remembers the sub/dub choice for a title. An audio track
 // picked by hand that doesn't fit the new choice is forgotten, so switching
 // to dub really plays the dub next time (local files included).
 func (s *Server) setLanguageMode(mediaID int, mode string) error {

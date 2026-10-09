@@ -2,22 +2,27 @@ package app
 
 import (
 	"context"
-	"errors"
+	"strings"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/extensions"
 )
 
 // pluginServices exposes app data to plugins in the shapes marketplace
-// plugins expect.
+// plugins expect. Plugins written for Kumo's $anilist API keep working: its
+// methods are answered from the catalog and the list ("anime" are the
+// movies and shows). What only AniList could do (custom GraphQL queries,
+// its token, manga) isn't available.
 func (a *App) pluginServices() extensions.PluginHostServices {
 	return extensions.PluginHostServices{
 		GetAnime: func(ctx context.Context, id int) (any, error) { return a.Platform.MediaLite(ctx, id) },
 		GetAnimeDetails: func(ctx context.Context, id int) (any, error) {
 			return a.Platform.Media(ctx, id, false)
 		},
-		GetManga: func(ctx context.Context, id int) (any, error) { return a.Platform.MediaLite(ctx, id) },
 		Collection: func(ctx context.Context, mediaType string, refresh bool) (any, error) {
+			if strings.EqualFold(mediaType, "MANGA") {
+				return map[string]any{"MediaListCollection": &catalog.Collection{Lists: []*catalog.List{}}}, nil
+			}
 			c, err := a.Platform.Collection(ctx, mediaType, refresh)
 			if err != nil {
 				return nil, err
@@ -25,33 +30,16 @@ func (a *App) pluginServices() extensions.PluginHostServices {
 			return map[string]any{"MediaListCollection": c}, nil
 		},
 		UpdateEntry: func(ctx context.Context, mediaID int, status *string, score *float64, progress *int) error {
-			return a.Platform.UpdateEntry(ctx, anilist.EntryUpdate{MediaID: mediaID, Status: status, Score: score, Progress: progress})
+			return a.Platform.UpdateEntry(ctx, catalog.EntryUpdate{MediaID: mediaID, Status: status, Score: score, Progress: progress})
 		},
 		DeleteEntry: func(ctx context.Context, mediaID int) error { return a.Platform.DeleteEntry(ctx, mediaID) },
-		CustomQuery: func(ctx context.Context, body map[string]any, token string) (any, error) {
-			q, _ := body["query"].(string)
-			if q == "" {
-				return nil, errors.New("missing query")
-			}
-			vars, _ := body["variables"].(map[string]any)
-			var out any
-			// The query only carries the token it is given: without one it is
-			// anonymous, never the logged-in user's session (any GraphQL
-			// mutation would run as the user). The extension manager fills in
-			// the user's token for plugins granted "anilist-token".
-			c := anilist.NewClient()
-			c.SetToken(token)
-			err := c.Query(ctx, q, vars, &out)
-			return out, err
-		},
 		ListAnime: func(ctx context.Context, page int, search string, perPage int) (any, error) {
-			res, err := a.Platform.Search(ctx, anilist.SearchParams{Page: page, Search: search, PerPage: perPage})
+			res, err := a.Platform.Search(ctx, catalog.SearchParams{Page: page, Search: search, PerPage: perPage})
 			if err != nil {
 				return nil, err
 			}
 			return map[string]any{"Page": res}, nil
 		},
-		Token: func() string { return a.Platform.Client().Token() },
 		Viewer: func() (string, string) {
 			if v := a.Platform.Viewer(); v != nil {
 				return v.Name, v.Avatar.Large

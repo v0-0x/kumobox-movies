@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/5rahim/habari"
+
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
@@ -49,13 +51,18 @@ func (a *AutoDownloader) markSeen(t *testing.T, mediaID, ep int) {
 	}
 }
 
+// kaiju is a show of one 12-episode season, over.
+func kaiju() *catalog.Media {
+	return &catalog.Media{ID: catalog.ShowID(42), Type: catalog.TypeTV, Status: "FINISHED", Title: catalog.Title{English: "Kaiju No. 8"},
+		Seasons: []catalog.Season{{Number: 1, EpisodeCount: 12}}}
+}
+
 func TestAutoDownloaderPick(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 	a := newTestAutoDownloader(t, srv)
-	a.markSeen(t, 42, 3)
-	episodes := 12
-	media := &anilist.Media{ID: 42, Episodes: &episodes, Title: anilist.Title{Romaji: "Kaiju No. 8"}}
+	media := kaiju()
+	a.markSeen(t, media.ID, 1003)
 	var results []*SearchResult
 	for _, x := range []struct {
 		name    string
@@ -72,42 +79,63 @@ func TestAutoDownloaderPick(t *testing.T) {
 		{"[SubsPlease] Kaiju No. 8 - 06 (1080p) [AAAA0006].mkv", 5},     // picked (was taken for a batch)
 		{"[SubsPlease] Kaiju No. 8 - 06.5 (1080p) [AAAA0016].mkv", 99},  // recap, not episode 6
 		{"[SubsPlease] Kaiju No. 8 (01-12) (1080p) [Batch]", 99},
-		{"[SubsPlease] Kaiju No. 8 - 13 (1080p) [AAAA0013].mkv", 99}, // beyond the episode count
+		{"[SubsPlease] Kaiju No. 8 - 13 (1080p) [AAAA0013].mkv", 99}, // beyond the last episode
 		{"[SubsPlease] Ore dake Level Up na Ken - 07 (1080p) [AAAA0007].mkv", 99},
 	} {
 		r := &SearchResult{Name: x.name, Seeders: x.seeders}
 		enrich(r)
 		results = append(results, r)
 	}
-	rule := &Rule{ID: 1, MediaID: 42, ReleaseGroups: []string{"SubsPlease"}, Resolutions: []string{"1080"}, EpisodeType: "recent", MinSeeders: 1}
-	best := a.pick(rule, media, "Kaiju No. 8", 1, map[int]bool{2: true}, results)
-	if len(best) != 2 || best[4] == nil || !strings.Contains(best[4].Name, "04v2") || best[6] == nil || !strings.Contains(best[6].Name, "- 06 ") {
+	rule := &Rule{ID: 1, MediaID: media.ID, ReleaseGroups: []string{"SubsPlease"}, Resolutions: []string{"1080"}, EpisodeType: "recent", MinSeeders: 1}
+	best := a.pick(rule, media, "Kaiju No. 8", 1001, map[int]bool{1002: true}, results)
+	if len(best) != 2 || best[1004] == nil || !strings.Contains(best[1004].Name, "04v2") || best[1006] == nil || !strings.Contains(best[1006].Name, "- 06 ") {
 		for ep, r := range best {
 			t.Logf("picked %d: %s", ep, r.Name)
 		}
-		t.Fatalf("picked %d releases, want episodes 4 (v2) and 6", len(best))
+		t.Fatalf("picked %d releases, want S01E04 (v2) and S01E06", len(best))
 	}
 	// "Every missing episode" ignores the progress.
 	rule.EpisodeType = "all"
-	if best := a.pick(rule, media, "Kaiju No. 8", 1, map[int]bool{2: true}, results); len(best) != 3 || best[1] == nil {
+	if best := a.pick(rule, media, "Kaiju No. 8", 1001, map[int]bool{1002: true}, results); len(best) != 3 || best[1001] == nil {
 		t.Fatalf("all: picked %d releases", len(best))
+	}
+}
+
+// Releases of a later season, by season and episode or numbered from the
+// start of the show, are that season's episodes.
+func TestReleaseKey(t *testing.T) {
+	media := kaiju()
+	media.Seasons = append(media.Seasons, catalog.Season{Number: 2, EpisodeCount: 11})
+	for name, want := range map[string]int{
+		"[SubsPlease] Kaiju No. 8 - 05 (1080p) [AAAA0005].mkv":    1005,
+		"[SubsPlease] Kaiju No. 8 - 14 (1080p) [AAAA0014].mkv":    2002,
+		"[SubsPlease] Kaiju No. 8 S2 - 03 (1080p) [AAAA0023].mkv": 2003,
+	} {
+		r := &SearchResult{Name: name}
+		enrich(r)
+		if got := releaseKey(habari.Parse(name), r.EpisodeNumber, media); got != want {
+			t.Errorf("%s: %d, want %d", name, got, want)
+		}
 	}
 }
 
 func TestEpisodeLimit(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	twelve := 12
+	seasons := []catalog.Season{{Number: 1, EpisodeCount: 12}, {Number: 2, EpisodeCount: 10}}
+	airing := func(latest int, next *catalog.AiringEpisode) catalog.Media {
+		return catalog.Media{ID: catalog.ShowID(1), Type: catalog.TypeTV, Status: "RELEASING", Seasons: seasons, LatestEpisode: latest, NextAiringEpisode: next}
+	}
 	for _, tc := range []struct {
-		media anilist.Media
+		media catalog.Media
 		want  int
 	}{
-		{anilist.Media{Episodes: &twelve}, 12},
-		{anilist.Media{}, 0},
-		{anilist.Media{NextAiringEpisode: &anilist.AiringEpisode{Episode: 6, AiringAt: int(now.Unix()) + 3600}}, 5},
-		// Cached before episode 6 aired: it is out now.
-		{anilist.Media{NextAiringEpisode: &anilist.AiringEpisode{Episode: 6, AiringAt: int(now.Unix()) - 3600}}, 6},
-		{anilist.Media{NextAiringEpisode: &anilist.AiringEpisode{Episode: 6}}, 5},
-		{anilist.Media{Episodes: &twelve, NextAiringEpisode: &anilist.AiringEpisode{Episode: 13, AiringAt: int(now.Unix()) - 3600}}, 12},
+		{catalog.Media{ID: catalog.ShowID(1), Type: catalog.TypeTV, Status: "FINISHED", Seasons: seasons}, 2010},
+		{catalog.Media{ID: catalog.ShowID(1), Type: catalog.TypeTV, Status: "RELEASING"}, 0},
+		{airing(2005, &catalog.AiringEpisode{Episode: 2006, AiringAt: int(now.Unix()) + 3600}), 2005},
+		// Cached before S02E06 aired: it is out now.
+		{airing(2005, &catalog.AiringEpisode{Episode: 2006, AiringAt: int(now.Unix()) - 3600}), 2006},
+		{airing(2005, &catalog.AiringEpisode{Episode: 2006}), 2005},
+		{airing(1012, &catalog.AiringEpisode{Episode: 2001, AiringAt: int(now.Unix()) - 3600}), 2001},
 	} {
 		if got := episodeLimit(&tc.media, now); got != tc.want {
 			t.Errorf("%+v: limit %d, want %d", tc.media, got, tc.want)
@@ -146,7 +174,7 @@ func TestAutoDownloaderGrab(t *testing.T) {
 	}))
 	defer srv.Close()
 	a := newTestAutoDownloader(t, srv)
-	media := &anilist.Media{ID: 42, Title: anilist.Title{Romaji: "Kaiju No. 8"}}
+	media := kaiju()
 	best := map[int]*SearchResult{
 		6: {Name: "[SubsPlease] Kaiju No. 8 - 06 (1080p)", MagnetLink: "magnet:?xt=urn:btih:six"},
 		3: {Name: "[SubsPlease] Kaiju No. 8 - 03 (1080p)", MagnetLink: "magnet:?xt=urn:btih:dupe3"},
@@ -154,7 +182,7 @@ func TestAutoDownloaderGrab(t *testing.T) {
 		5: {Name: "[SubsPlease] Kaiju No. 8 - 05 (1080p)", MagnetLink: "magnet:?xt=urn:btih:five"},
 		7: {Name: "[SubsPlease] Kaiju No. 8 - 07 (1080p)"}, // no magnet
 	}
-	n, err := a.grab(context.Background(), &Rule{ID: 1, MediaID: 42}, media, &Nyaa{}, best)
+	n, err := a.grab(context.Background(), &Rule{ID: 1, MediaID: media.ID}, media, &Nyaa{}, best)
 	if err != nil || n != 3 {
 		t.Fatalf("grab: %d added, %v", n, err)
 	}
@@ -162,7 +190,7 @@ func TestAutoDownloaderGrab(t *testing.T) {
 		t.Fatalf("adds %v", adds)
 	}
 	for ep, want := range map[int]bool{3: true, 4: false, 5: true, 6: true, 7: false} {
-		if got := a.seen(episodeKey(42, ep)); got != want {
+		if got := a.seen(episodeKey(media.ID, ep)); got != want {
 			t.Errorf("episode %d recorded=%v, want %v", ep, got, want)
 		}
 	}
@@ -193,7 +221,7 @@ func TestAutoDownloaderGrabClientDown(t *testing.T) {
 		3: {Name: "c", MagnetLink: "magnet:?xt=urn:btih:3"},
 	}
 	p := &countingProvider{}
-	n, err := a.grab(context.Background(), &Rule{ID: 1, MediaID: 42}, &anilist.Media{ID: 42}, p, best)
+	n, err := a.grab(context.Background(), &Rule{ID: 1, MediaID: 42}, &catalog.Media{ID: 42}, p, best)
 	if err == nil || n != 0 || p.calls != 1 {
 		t.Fatalf("client down: %d added, %d tries, %v", n, p.calls, err)
 	}
@@ -206,6 +234,6 @@ func TestAutoDownloaderGrabClientDown(t *testing.T) {
 func TestAutoDownloaderNeedsProgress(t *testing.T) {
 	a := &AutoDownloader{}
 	if _, err := a.runRule(context.Background(), &Rule{ID: 1, MediaID: 42, EpisodeType: "recent"}, nil); err == nil {
-		t.Fatal("ran a 'recent' rule without the anime list")
+		t.Fatal("ran a 'recent' rule without the list")
 	}
 }

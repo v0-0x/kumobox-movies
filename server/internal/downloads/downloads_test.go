@@ -33,7 +33,7 @@ func newTestManager(t *testing.T, mutate func(*config.Settings)) (*Manager, stri
 	}
 	cfg := s.Get()
 	cfg.Library.Dir = filepath.Join(dir, "library")
-	cfg.AniCli.Downloader = "ffmpeg"
+	cfg.Downloads.Downloader = "ffmpeg"
 	cfg.Transcode.FfmpegPath = filepath.Join(dir, "missing-ffmpeg")
 	cfg.Transcode.FfprobePath = filepath.Join(dir, "missing-ffprobe")
 	if mutate != nil {
@@ -223,7 +223,7 @@ printf 'video' > "$last"
 	if got.Status != StatusCompleted {
 		t.Fatalf("status = %s (%s), want completed", got.Status, got.Error)
 	}
-	want := filepath.Join(lib, "Flood", "Flood - 01 [SUB].mp4")
+	want := filepath.Join(lib, "Flood", "Flood [SUB].mp4")
 	if got.Output != want {
 		t.Fatalf("output = %q, want %q", got.Output, want)
 	}
@@ -282,14 +282,14 @@ printf 'fragment' > "$out.part-Frag1"
 		writeScript(t, bin, "yt-dlp", head+`printf 'video' > "$out"
 `)
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-		m, lib := newTestManager(t, func(c *config.Settings) { c.AniCli.Downloader = "yt-dlp" })
+		m, lib := newTestManager(t, func(c *config.Settings) { c.Downloads.Downloader = "yt-dlp" })
 		rec := record(t, m.hub)
 		it := enqueue(t, m, "Chatty")
 		got := waitFinal(t, m, it.ID, 15*time.Second)
 		if got.Status != StatusCompleted {
 			t.Fatalf("status = %s (%s), want completed", got.Status, got.Error)
 		}
-		if names := dirEntries(t, filepath.Join(lib, "Chatty")); strings.Join(names, ",") != "Chatty - 01 [SUB].mp4" {
+		if names := dirEntries(t, filepath.Join(lib, "Chatty")); strings.Join(names, ",") != "Chatty [SUB].mp4" {
 			t.Fatalf("anime folder holds %v, want only the video", names)
 		}
 		var sawProgress bool
@@ -307,7 +307,7 @@ echo 'trailing noise' >&2
 exit 1
 `)
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-		m, lib := newTestManager(t, func(c *config.Settings) { c.AniCli.Downloader = "yt-dlp" })
+		m, lib := newTestManager(t, func(c *config.Settings) { c.Downloads.Downloader = "yt-dlp" })
 		it := enqueue(t, m, "Gone")
 		got := waitFinal(t, m, it.ID, 15*time.Second)
 		if got.Status != StatusFailed || got.Error != "ERROR: [generic] Unable to download webpage: HTTP Error 404: Not Found" {
@@ -343,10 +343,10 @@ while :; do sleep 0.05; done
 			script := writeScript(t, bin, tc.name, tc.script)
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			m, lib := newTestManager(t, func(c *config.Settings) {
-				c.AniCli.Downloader, c.Transcode.FfmpegPath = tc.name, script
+				c.Downloads.Downloader, c.Transcode.FfmpegPath = tc.name, script
 			})
 			it := enqueue(t, m, "Halt")
-			waitFile(t, filepath.Join(lib, "Halt", ".kumobox-download-"+it.ID, "Halt - 01 [SUB]"+tc.partial))
+			waitFile(t, filepath.Join(lib, "Halt", ".kumobox-download-"+it.ID, "Halt [SUB]"+tc.partial))
 			m.Cancel(it.ID)
 			waitIdleWithin(t, m, 5*time.Second)
 			if got := find(m, it.ID); got.Status != StatusCanceled {
@@ -571,7 +571,7 @@ func TestDownloadFolder(t *testing.T) {
 	if dir, _ := m.folderFor(cfg, 21, "One Piece"); dir != filepath.Join(lib, "One Piece") {
 		t.Fatalf("loose files: got %q", dir)
 	}
-	if dir, _ := m.folderFor(cfg, 99, "  "); filepath.Base(dir) != "AniList 99" {
+	if dir, _ := m.folderFor(cfg, 99, "  "); filepath.Base(dir) != "Title 99" {
 		t.Fatalf("no title: got %q", dir)
 	}
 }

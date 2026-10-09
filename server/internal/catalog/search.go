@@ -19,9 +19,8 @@ import (
 
 const (
 	searchTTL = 30 * time.Minute
-	// tmdbPageSize is the size of TMDB's pages, which it doesn't let change.
-	tmdbPageSize = 20
-	// tmdbMaxPage is the last page TMDB serves.
+	// tmdbMaxPage is the last page TMDB serves (of 20 results: TMDB doesn't
+	// let the page size change, PerPage only shortens a page).
 	tmdbMaxPage = 500
 )
 

@@ -44,7 +44,7 @@ type Library interface {
 }
 
 // History is the watch history (where each episode was stopped), which
-// KumoBoxes on the same AniList account keep in step (see syncHistory).
+// KumoBoxes on the same Letterboxd account keep in step (see syncHistory).
 type History interface {
 	Since(t int64, limit int) []*history.Entry
 	Merge(e history.Entry) (bool, error)
@@ -62,14 +62,15 @@ type Service struct {
 	// OnFiles runs when the files shared with this KumoBox change (in the
 	// background).
 	OnFiles func()
-	// User is the AniList account this KumoBox is logged into (0: none), and
-	// History its watch history: kept in step with the KumoBoxes it shares
-	// with on the same account. Both nil: not kept in step.
+	// User is the Letterboxd account this KumoBox is connected to (0: none),
+	// and History its watch history: kept in step with the KumoBoxes it
+	// shares with on the same account. Both nil: not kept in step.
 	User    func() int
 	History History
-	// OnWatchedElsewhere runs when another KumoBox on the account says an
-	// episode was finished there: AniList has the new progress.
-	OnWatchedElsewhere func()
+	// OnWatchedElsewhere runs with the episodes another KumoBox on the
+	// account says were finished there (each KumoBox keeps its own list:
+	// they move it on).
+	OnWatchedElsewhere func(finished []history.Entry)
 
 	pushMu    sync.Mutex
 	pending   map[[2]int]history.Entry
@@ -109,8 +110,8 @@ type peer struct {
 	fails    int
 	// historySince: the newest of its history entries this KumoBox has.
 	historySince int64
-	// user: the AniList account it's logged into, as it told (it shares
-	// with this KumoBox).
+	// user: the Letterboxd account it's connected to, as it told (it
+	// shares with this KumoBox).
 	user int
 }
 
@@ -390,7 +391,7 @@ func (s *Service) heard(b beacon, from net.IP) {
 type Caller struct {
 	// Allowed: this KumoBox shares its library with it.
 	Allowed bool
-	// SameUser: it's logged into the same AniList account as this one.
+	// SameUser: it's connected to the same Letterboxd account as this one.
 	SameUser bool
 }
 
@@ -470,7 +471,7 @@ type Hello struct {
 	Shares  bool   `json:"shares"`
 	// Files changes when the shared files do.
 	Files string `json:"files,omitempty"`
-	// User: the AniList account it's logged into, told to those it shares
+	// User: the Letterboxd account it's connected to, told to those it shares
 	// with (their watch histories are kept in step on the same account).
 	User int `json:"user,omitempty"`
 }
@@ -492,8 +493,8 @@ func (s *Service) Whoami() Hello {
 	return Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion}
 }
 
-// SharedFiles are the library's files this KumoBox shares: those matched to an
-// anime.
+// SharedFiles are the library's files this KumoBox shares: those matched to a
+// movie or show.
 func (s *Service) SharedFiles() ([]*library.LocalFile, error) {
 	all, err := s.library.All()
 	if err != nil {
@@ -618,7 +619,7 @@ func (s *Service) ask(ctx context.Context, p *peer) {
 }
 
 // HistoryChanged sends a position this KumoBox saved to the KumoBoxes that share
-// with it on the same AniList account (the one whose files are played,
+// with it on the same Letterboxd account (the one whose files are played,
 // most of all), as it happens: their Continue watching goes on from it.
 // Gathered for 2 seconds; at once when the episode is over.
 func (s *Service) HistoryChanged(e history.Entry) {
@@ -688,25 +689,37 @@ func (s *Service) TakeHistory(entries []history.Entry) {
 	if s.History == nil {
 		return
 	}
-	merged, finished := 0, false
+	merged := 0
+	var finished []history.Entry
 	for _, e := range entries {
 		if ok, err := s.History.Merge(e); err == nil && ok {
 			merged++
-			finished = finished || e.Percent() >= 0.85
+			if e.Percent() >= finishedAt {
+				finished = append(finished, e)
+			}
 		}
 	}
 	if merged > 0 {
 		s.hub.Publish("history-updated", nil)
 	}
-	if finished && s.OnWatchedElsewhere != nil {
-		go s.OnWatchedElsewhere()
+	s.watchedElsewhere(finished)
+}
+
+// finishedAt is how far into an episode it counts as finished.
+const finishedAt = 0.85
+
+// watchedElsewhere tells the app about episodes finished on another
+// KumoBox, if any.
+func (s *Service) watchedElsewhere(finished []history.Entry) {
+	if len(finished) > 0 && s.OnWatchedElsewhere != nil {
+		go s.OnWatchedElsewhere(finished)
 	}
 }
 
 // syncHistory takes what's newer in a host's watch history, both being
-// logged into the same AniList account: where each episode was stopped,
-// and when it was watched. Continue watching then goes on from there,
-// to the second; the list itself (progress) is AniList's.
+// connected to the same Letterboxd account: where each episode was
+// stopped, and when it was watched. Continue watching then goes on from
+// there, to the second, and the episodes finished there move the list on.
 func (s *Service) syncHistory(ctx context.Context, p *peer) {
 	if s.History == nil {
 		return
@@ -720,12 +733,16 @@ func (s *Service) syncHistory(ctx context.Context, p *peer) {
 	}
 	merged := 0
 	newest := since
+	var finished []history.Entry
 	for _, e := range entries {
 		if e == nil {
 			continue
 		}
 		if ok, err := s.History.Merge(*e); err == nil && ok {
 			merged++
+			if e.Percent() >= finishedAt {
+				finished = append(finished, *e)
+			}
 		}
 		newest = max(newest, e.UpdatedAt)
 	}
@@ -735,6 +752,7 @@ func (s *Service) syncHistory(ctx context.Context, p *peer) {
 	if merged > 0 {
 		s.hub.Publish("history-updated", nil)
 	}
+	s.watchedElsewhere(finished)
 }
 
 // publish tells the app the shared files changed.

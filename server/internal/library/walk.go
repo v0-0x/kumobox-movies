@@ -20,7 +20,7 @@ type walkResult struct {
 
 // walkLibrary walks a library root and returns its video files. Unlike
 // filepath.WalkDir it follows symlinks — a symlinked root
-// (~/Videos/Anime -> /mnt/hdd/Anime) and symlinked show folders — with
+// (~/Videos/Movies -> /mnt/hdd/Movies) and symlinked show folders — with
 // loop protection. Paths are reported under root as configured, not under
 // the symlink targets, so they stay stable.
 func walkLibrary(root string, ignorePatterns []string, progress func(found int)) (*walkResult, error) {

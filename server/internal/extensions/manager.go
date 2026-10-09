@@ -719,23 +719,6 @@ func (m *Manager) OnlineStreamProvider(id string) (*OnlineStreamProvider, error)
 	return nil, fmt.Errorf("online streaming extension %q is not installed or disabled", id)
 }
 
-func (m *Manager) MangaProviders() []*MangaProvider {
-	var out []*MangaProvider
-	for _, l := range m.byType(TypeManga) {
-		out = append(out, &MangaProvider{ext: l})
-	}
-	return out
-}
-
-func (m *Manager) MangaProvider(id string) (*MangaProvider, error) {
-	for _, p := range m.MangaProviders() {
-		if p.ID() == id {
-			return p, nil
-		}
-	}
-	return nil, fmt.Errorf("manga extension %q is not installed or disabled", id)
-}
-
 // Shutdown stops every runtime (in parallel: each stop is bounded, but a
 // few stuck extensions shouldn't add up).
 func (m *Manager) Shutdown() {

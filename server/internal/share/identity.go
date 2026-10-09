@@ -118,7 +118,7 @@ const (
 	headerName  = "X-KumoBox-Peer-Name"
 	headerPort  = "X-KumoBox-Peer-Port"
 	headerToken = "X-KumoBox-Peer-Token"
-	// The AniList account it's logged into (0: none).
+	// The Letterboxd account it's connected to (0: none).
 	headerUser = "X-KumoBox-Peer-User"
 )
 

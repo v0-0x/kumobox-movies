@@ -37,7 +37,7 @@ func main() {
 		fmt.Println(config.AppName, config.AppVersion)
 		return
 	}
-	// Whatever KumoBox starts (ffmpeg, ani-cli, mpv) ends with it, even when
+	// Whatever KumoBox starts (ffmpeg, yt-dlp, mpv) ends with it, even when
 	// it's killed.
 	if err := util.BindChildren(); err != nil {
 		log.Printf("child processes won't end with KumoBox: %v", err)

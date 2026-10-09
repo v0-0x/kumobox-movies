@@ -40,10 +40,10 @@ func (p *Platform) UpdateProgress(ctx context.Context, mediaID, episodeKey int) 
 	return true, nil
 }
 
-// canFinish reports whether watching up to the last known episode of m
+// Finishable reports whether watching up to the last known episode of m
 // means it's watched to the end: always for a movie, only when it's over
 // for a show (a show on the air gets more episodes).
-func canFinish(m *Media) bool {
+func (m *Media) Finishable() bool {
 	if !m.IsShow() {
 		return true
 	}
@@ -82,7 +82,7 @@ func progressUpdate(entry *ListEntry, media *Media, key int, now time.Time) (u E
 	} else {
 		key = MovieEpisode
 	}
-	finishable := canFinish(media)
+	finishable := media.Finishable()
 	last := MovieEpisode
 	if show {
 		last = media.LastEpisode()

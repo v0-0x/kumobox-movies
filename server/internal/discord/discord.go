@@ -1,4 +1,4 @@
-// Package discord shows "Watching <anime>" rich presence through the local
+// Package discord shows "Watching <title>" rich presence through the local
 // Discord client's IPC socket or named pipe (no network access needed).
 package discord
 

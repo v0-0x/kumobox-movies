@@ -4,61 +4,64 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/v0-0x/kumobox-movies/server/internal/anilist"
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
-// Matcher links parsed files to AniList entries.
+// Matcher links parsed files to TMDB movies and shows.
 type Matcher struct {
-	platform    *anilist.Platform
+	platform    *catalog.Platform
 	threshold   float64
 	outsideList bool
-	// searchFn searches AniList, listFn gives the anime of the user's list
-	// (tests replace them).
-	searchFn func(ctx context.Context, q string) ([]*anilist.Media, error)
-	listFn   func(ctx context.Context) []*anilist.Media
+	// searchFn searches TMDB, listFn gives the titles of the user's list,
+	// detailFn a title with its seasons (tests replace them).
+	searchFn func(ctx context.Context, q string) ([]*catalog.Media, error)
+	listFn   func(ctx context.Context) []*catalog.Media
+	detailFn func(ctx context.Context, id int) (*catalog.Media, error)
 
 	mu          sync.Mutex
-	searchCache map[string][]*anilist.Media
-	detailCache map[int]*anilist.Media
-	failed      int // AniList searches that failed
+	searchCache map[string][]*catalog.Media
+	detailCache map[int]*catalog.Media
+	failed      int // TMDB searches that failed
 }
 
-func NewMatcher(p *anilist.Platform, threshold float64, outsideList bool) *Matcher {
+func NewMatcher(p *catalog.Platform, threshold float64, outsideList bool) *Matcher {
 	m := &Matcher{
 		platform:    p,
 		threshold:   threshold,
 		outsideList: outsideList,
-		searchCache: map[string][]*anilist.Media{},
-		detailCache: map[int]*anilist.Media{},
+		searchCache: map[string][]*catalog.Media{},
+		detailCache: map[int]*catalog.Media{},
 	}
-	m.searchFn = func(ctx context.Context, q string) ([]*anilist.Media, error) {
-		page, err := p.Search(ctx, anilist.SearchParams{Search: q, PerPage: 10, Type: "ANIME"})
+	m.searchFn = func(ctx context.Context, q string) ([]*catalog.Media, error) {
+		page, err := p.Search(ctx, catalog.SearchParams{Search: q})
 		if err != nil || page == nil {
 			return nil, err
 		}
 		return page.Media, nil
 	}
-	m.listFn = func(ctx context.Context) []*anilist.Media {
-		coll, err := p.Collection(ctx, "ANIME", false)
+	m.listFn = func(ctx context.Context) []*catalog.Media {
+		coll, err := p.Collection(ctx, "", false)
 		if err != nil {
 			return nil
 		}
-		var pool []*anilist.Media
+		var pool []*catalog.Media
 		for _, e := range coll.Entries() {
 			pool = append(pool, e.Media)
 		}
 		return pool
 	}
+	if p != nil {
+		m.detailFn = func(ctx context.Context, id int) (*catalog.Media, error) { return p.MediaLite(ctx, id) }
+	}
 	return m
 }
 
-// SearchFailures is how many AniList searches failed: matches that may be
-// better when AniList answers.
+// SearchFailures is how many TMDB searches failed: matches that may be
+// better when TMDB answers.
 func (m *Matcher) SearchFailures() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -66,11 +69,11 @@ func (m *Matcher) SearchFailures() int {
 }
 
 type candidateScore struct {
-	media *anilist.Media
+	media *catalog.Media
 	score float64
-	// mismatch: the media's title differs from the file's in what tells
-	// seasons apart (scored lower, see markerPenalty): "Code Geass" files
-	// and the "R2" entry.
+	// mismatch: the title differs from the file's in what tells sequels
+	// apart (scored lower, see markerPenalty): "Toy Story" files and "Toy
+	// Story 2".
 	mismatch bool
 }
 
@@ -78,7 +81,9 @@ type group struct {
 	title, folderTitle string
 	season, part, year int
 	kind               string
-	files              []*LocalFile
+	// episodic: the files have episode numbers (a show's).
+	episodic bool
+	files    []*LocalFile
 }
 
 // MatchFiles assigns MediaID/Episode on every file in place. progress is
@@ -93,13 +98,14 @@ func (m *Matcher) MatchFiles(ctx context.Context, files []*LocalFile, progress f
 	var order []string
 	for _, f := range files {
 		p := f.Parsed
-		key := fmt.Sprintf("%s|%s|%d|%d", util.NormalizeTitle(p.Title), util.NormalizeTitle(p.FolderTitle), p.Season, p.Part)
+		key := fmt.Sprintf("%s|%s|%d", util.NormalizeTitle(p.Title), util.NormalizeTitle(p.FolderTitle), p.Part)
 		g, ok := groups[key]
 		if !ok {
 			g = &group{title: p.Title, folderTitle: p.FolderTitle, season: p.Season, part: p.Part, year: p.Year, kind: p.Kind}
 			groups[key] = g
 			order = append(order, key)
 		}
+		g.episodic = g.episodic || p.Episode >= 0 && p.Kind == "main"
 		g.files = append(g.files, f)
 	}
 
@@ -118,13 +124,17 @@ func (m *Matcher) MatchFiles(ctx context.Context, files []*LocalFile, progress f
 			}
 			continue
 		}
+		media := best.media
+		if d := m.detail(ctx, media.ID); d != nil {
+			media = d // with its seasons
+		}
 		for _, f := range g.files {
-			m.assign(ctx, f, best.media, best.score)
+			assign(f, media, best.score)
 		}
 	}
 }
 
-func (m *Matcher) bestMatch(ctx context.Context, g *group, pool []*anilist.Media) candidateScore {
+func (m *Matcher) bestMatch(ctx context.Context, g *group, pool []*catalog.Media) candidateScore {
 	queries := buildQueries(g)
 	if len(queries) == 0 {
 		return candidateScore{}
@@ -135,12 +145,12 @@ func (m *Matcher) bestMatch(ctx context.Context, g *group, pool []*anilist.Media
 		return best
 	}
 	if !m.outsideList {
-		return notAnotherSeason(best)
+		return notAnotherTitle(best)
 	}
-	// Otherwise search AniList with the most specific queries.
+	// Otherwise search TMDB.
 	seen := map[int]bool{}
 	searched := true
-	var extra []*anilist.Media
+	var extra []*catalog.Media
 	for _, q := range queries[:min(2, len(queries))] {
 		res, ok := m.search(ctx, q.text)
 		searched = searched && ok
@@ -155,27 +165,25 @@ func (m *Matcher) bestMatch(ctx context.Context, g *group, pool []*anilist.Media
 		best = alt
 	}
 	if !searched {
-		return notAnotherSeason(best)
+		return notAnotherTitle(best)
 	}
 	return best
 }
 
-// notAnotherSeason keeps a match only if it isn't another season of the
-// show than the file's (only its title tells: "R2", "II", "0", "Final"…),
-// which is all an entry of the list can be when AniList can't be asked for
-// the right one. Files of the first season matched to the second update
-// the second season's progress when watched. Rather unmatched: tried again
-// at the next scan.
-func notAnotherSeason(c candidateScore) candidateScore {
+// notAnotherTitle keeps a match only if it isn't another title of the
+// franchise than the file's (only its title tells: "2", "II", "Final"…),
+// which is all an entry of the list can be when TMDB can't be asked for the
+// right one. Rather unmatched: tried again at the next scan.
+func notAnotherTitle(c candidateScore) candidateScore {
 	if c.mismatch {
 		return candidateScore{score: c.score}
 	}
 	return c
 }
 
-// search searches AniList, and reports whether it could: a failure isn't
+// search searches TMDB, and reports whether it could: a failure isn't
 // kept, so the next file asks again.
-func (m *Matcher) search(ctx context.Context, q string) ([]*anilist.Media, bool) {
+func (m *Matcher) search(ctx context.Context, q string) ([]*catalog.Media, bool) {
 	key := util.NormalizeTitle(q)
 	m.mu.Lock()
 	if r, ok := m.searchCache[key]; ok {
@@ -199,22 +207,8 @@ type query struct {
 	weight float64
 }
 
-func ordinal(n int) string {
-	switch {
-	case n%100 >= 11 && n%100 <= 13:
-		return fmt.Sprintf("%dth", n)
-	case n%10 == 1:
-		return fmt.Sprintf("%dst", n)
-	case n%10 == 2:
-		return fmt.Sprintf("%dnd", n)
-	case n%10 == 3:
-		return fmt.Sprintf("%drd", n)
-	}
-	return fmt.Sprintf("%dth", n)
-}
-
-var romanNumerals = []string{"", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
-
+// buildQueries are the titles to look for: the file's and its folder's,
+// without the season (TMDB has a show's seasons under the show).
 func buildQueries(g *group) []query {
 	var bases []string
 	for _, t := range []string{g.title, g.folderTitle} {
@@ -226,25 +220,10 @@ func buildQueries(g *group) []query {
 	}
 	var out []query
 	for _, b := range bases {
-		if g.season > 1 {
-			out = append(out,
-				query{fmt.Sprintf("%s Season %d", b, g.season), 1},
-				query{fmt.Sprintf("%s %s Season", b, ordinal(g.season)), 1},
-				query{fmt.Sprintf("%s %d", b, g.season), 0.97},
-			)
-			if g.season < len(romanNumerals) {
-				out = append(out, query{fmt.Sprintf("%s %s", b, romanNumerals[g.season]), 0.95})
-			}
-			if g.part > 0 {
-				out = append(out, query{fmt.Sprintf("%s Season %d Part %d", b, g.season, g.part), 1})
-			}
-			out = append(out, query{b, 0.8})
-		} else {
-			if g.part > 0 {
-				out = append(out, query{fmt.Sprintf("%s Part %d", b, g.part), 1})
-			}
-			out = append(out, query{b, 1})
+		if g.part > 0 {
+			out = append(out, query{fmt.Sprintf("%s Part %d", b, g.part), 1})
 		}
+		out = append(out, query{b, 1})
 	}
 	return out
 }
@@ -258,9 +237,9 @@ func containsFold(list []string, s string) bool {
 	return false
 }
 
-func scoreCandidates(queries []query, pool []*anilist.Media, g *group) candidateScore {
+func scoreCandidates(queries []query, pool []*catalog.Media, g *group) candidateScore {
 	var best candidateScore
-	titleMarkers, season := fileMarkers(g)
+	titleMarkers := fileMarkers(g)
 	for _, media := range pool {
 		if media == nil {
 			continue
@@ -268,7 +247,7 @@ func scoreCandidates(queries []query, pool []*anilist.Media, g *group) candidate
 		var s float64
 		mismatch := false
 		for _, t := range media.AllTitles() {
-			penalty := markerPenalty(titleMarkers, season, util.SequelMarkers(t))
+			penalty := markerPenalty(titleMarkers, util.SequelMarkers(t))
 			for _, q := range queries {
 				if v := util.Similarity(q.text, t)*q.weight - penalty; v > s {
 					s, mismatch = v, penalty > 0
@@ -281,14 +260,13 @@ func scoreCandidates(queries []query, pool []*anilist.Media, g *group) candidate
 		if g.year > 0 {
 			if y := media.Year(); y == g.year {
 				s += 0.05
-			} else if y > 0 && abs(y-g.year) > 1 {
+			} else if y > 0 && !g.episodic && abs(y-g.year) > 1 {
+				// A show's files may carry the year of a later season.
 				s -= 0.05
 			}
 		}
-		switch {
-		case g.kind == "special" && (media.Format == "OVA" || media.Format == "SPECIAL" || media.Format == "ONA"):
-			s += 0.02
-		case g.kind == "main" && (media.Format == "TV" || media.Format == "TV_SHORT"):
+		// Files with episode numbers are a show's, others a movie's.
+		if g.kind == "main" && g.episodic == media.IsShow() {
 			s += 0.01
 		}
 		if s > best.score {
@@ -302,36 +280,32 @@ func scoreCandidates(queries []query, pool []*anilist.Media, g *group) candidate
 }
 
 // fileMarkers returns the sequel markers (util.SequelMarkers) in the
-// group's own titles, like the "R2" of "Code Geass Hangyaku no Lelouch R2",
-// and the season number its name gave, if any.
-func fileMarkers(g *group) (title []string, season string) {
+// group's own titles, like the "2" of "Toy Story 2".
+func fileMarkers(g *group) []string {
+	var out []string
 	for _, t := range []string{g.title, g.folderTitle} {
 		for _, m := range util.SequelMarkers(reSeasonAny.ReplaceAllString(t, "")) {
-			if !slices.Contains(title, m) {
-				title = append(title, m)
+			if !slices.Contains(out, m) {
+				out = append(out, m)
 			}
 		}
 	}
-	if g.season > 1 {
-		season = strconv.Itoa(g.season)
-	}
-	return title, season
+	return out
 }
 
 // markerPenalty lowers the score of a candidate title whose sequel markers
 // differ from the file's. Titles that differ only in those look almost the
-// same to util.Similarity ("Code Geass: Hangyaku no Lelouch" and its "R2"
-// score 0.95), but a file named after a sequel isn't the first season, and
-// a file named after the first season is less likely a sequel. Seasons the
-// name gave as such ("S2") are scored by the queries, like before.
-func markerPenalty(fileTitle []string, season string, candidate []string) float64 {
+// same to util.Similarity ("Toy Story" and "Toy Story 2"), but a file named
+// after a sequel isn't the first film, and a file named after the first
+// film is less likely a sequel.
+func markerPenalty(fileTitle []string, candidate []string) float64 {
 	for _, m := range fileTitle {
 		if !slices.Contains(candidate, m) {
 			return 0.5
 		}
 	}
 	for _, m := range candidate {
-		if !slices.Contains(fileTitle, m) && m != season {
+		if !slices.Contains(fileTitle, m) {
 			return 0.1
 		}
 	}
@@ -345,50 +319,17 @@ func abs(n int) int {
 	return n
 }
 
-// assign sets the media and normalised episode number of a file, resolving
-// absolute episode numbers ("One Piece - 1050", "JJK - 30") across seasons.
-func (m *Matcher) assign(ctx context.Context, f *LocalFile, media *anilist.Media, score float64) {
-	f.MediaID = media.ID
-	f.MatchScore = score
-	ep := f.Parsed.Episode
-	f.AiredEpisode = ep
-	total := media.TotalEpisodes()
-
-	switch {
-	case f.Kind == "nc":
-		f.Episode = 0
-		return
-	case ep < 0:
-		// Movies and single-episode entries.
-		if media.Format == "MOVIE" || total == 1 {
-			f.Episode = 1
-		} else {
-			f.Episode = 0
-		}
-		return
-	case ep == 0:
-		f.Episode = 0
-		if f.Kind == "main" {
-			f.Kind = "special"
-		}
-		return
-	}
-	f.Episode = ep
-	if total > 0 && ep > total && f.Kind == "main" {
-		if id, rel, ok := m.resolveAbsolute(ctx, media, ep); ok {
-			f.MediaID, f.Episode = id, rel
-		}
-	}
-}
-
-func (m *Matcher) detail(ctx context.Context, id int) *anilist.Media {
+func (m *Matcher) detail(ctx context.Context, id int) *catalog.Media {
 	m.mu.Lock()
 	if d, ok := m.detailCache[id]; ok {
 		m.mu.Unlock()
 		return d
 	}
 	m.mu.Unlock()
-	d, err := m.platform.Media(ctx, id, false)
+	if m.detailFn == nil {
+		return nil
+	}
+	d, err := m.detailFn(ctx, id)
 	if err != nil {
 		return nil
 	}
@@ -398,52 +339,45 @@ func (m *Matcher) detail(ctx context.Context, id int) *anilist.Media {
 	return d
 }
 
-func isSeries(format string) bool {
-	return format == "TV" || format == "TV_SHORT" || format == "ONA"
+// assign sets the media and episode key of a file (see FileKey).
+func assign(f *LocalFile, media *catalog.Media, score float64) {
+	f.MediaID = media.ID
+	f.MatchScore = score
+	f.AiredEpisode = f.Parsed.Episode
+	f.Episode = FileKey(f, media)
+	if media.IsShow() && f.Kind == "main" && f.Parsed.Season == 0 && f.Parsed.Episode == 0 {
+		f.Kind = "special"
+	}
 }
 
-func relation(d *anilist.Media, rel string) *anilist.Media {
-	if d == nil || d.Relations == nil {
-		return nil
+// FileKey is the episode key of a file of media: the movie's one episode,
+// or for a show the season and episode its name gives (season 0 holds the
+// specials). An episode number without a season counts from the first
+// episode of the show ("One Piece - 1050"). 0 when unknown, and for
+// creditless openings, a movie's extras and such.
+func FileKey(f *LocalFile, media *catalog.Media) int {
+	if f.Kind == "nc" {
+		return 0
 	}
-	for _, e := range d.Relations.Edges {
-		if e.RelationType == rel && e.Node != nil && e.Node.Type == "ANIME" && isSeries(e.Node.Format) {
-			return e.Node
+	if !media.IsShow() {
+		if f.Kind != "main" {
+			return 0
 		}
+		return catalog.MovieEpisode
 	}
-	return nil
-}
-
-func (m *Matcher) resolveAbsolute(ctx context.Context, media *anilist.Media, ep int) (int, int, bool) {
-	total := media.TotalEpisodes()
-	// 1) The numbering may continue from the prequels (S2 starting at 25).
-	offset := 0
-	cur := m.detail(ctx, media.ID)
-	for i := 0; i < 8 && cur != nil; i++ {
-		prev := relation(cur, "PREQUEL")
-		if prev == nil {
-			break
-		}
-		offset += prev.TotalEpisodes()
-		cur = m.detail(ctx, prev.ID)
+	ep, season := f.Parsed.Episode, f.Parsed.Season
+	switch {
+	case ep <= 0:
+		return 0
+	case season > 0:
+		return catalog.EpisodeKey(season, ep)
+	case f.Kind == "special":
+		return catalog.EpisodeKey(0, ep)
+	case ep <= max(media.SeasonEpisodeCount(1), 1) || len(media.Seasons) == 0:
+		return catalog.EpisodeKey(1, ep)
 	}
-	if offset > 0 && ep-offset >= 1 && ep-offset <= total {
-		return media.ID, ep - offset, true
+	if k := media.KeyAtIndex(ep); k > 0 {
+		return k
 	}
-	// 2) Or the file belongs to a later season of the matched show.
-	e := ep
-	cur = media
-	for i := 0; i < 8 && cur != nil; i++ {
-		t := cur.TotalEpisodes()
-		if t == 0 || e <= t {
-			return cur.ID, e, true
-		}
-		next := relation(m.detail(ctx, cur.ID), "SEQUEL")
-		if next == nil {
-			break
-		}
-		e -= t
-		cur = next
-	}
-	return 0, 0, false
+	return catalog.EpisodeKey(1, ep)
 }
