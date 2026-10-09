@@ -304,27 +304,45 @@ func TestSearchAllMergesFiltersAndSorts(t *testing.T) {
 		names = append(names, r.Name+"|"+r.Provider)
 	}
 	want := []string{
-		"Show.S01.1080p.BluRay.x265-GRP|a",   // 1080p, 50 seeders
-		"Show.S01E02.1080p.WEB.h264-ETHEL|b", // 1080p, 20 seeders
-		"Show S01E02 720p HDTV x264-CTU|b,a", // merged, b's copy kept
+		"Show.S01E02.1080p.WEB.h264-ETHEL|b", // the episode, 1080p
+		"Show S01E02 720p HDTV x264-CTU|b,a", // the episode, merged, b's copy kept
+		"Show.S01.1080p.BluRay.x265-GRP|a",   // the season's pack holds it too
 		"Show.S01E02.1080p.WEB.h264-NTb|a",   // no seeders: last
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("results:\n%s\nwant\n%s", strings.Join(names, "\n"), strings.Join(want, "\n"))
 	}
-	merged := res[2]
+	merged := res[1]
 	if merged.Seeders != 40 || merged.InfoHash != strings.ToUpper(hashA) || merged.Size != 100 || merged.EpisodeNumber != 1002 ||
 		merged.ReleaseGroup != "CTU" || merged.Date == "" || !reflect.DeepEqual(ProviderIDs(merged), []string{"b", "a"}) {
 		t.Fatalf("merged: %+v", merged)
 	}
-	if res[0].EpisodeNumber != -1 || !res[0].IsBatch {
-		t.Fatalf("pack: %+v", res[0])
+	if res[2].EpisodeNumber != -1 || !res[2].IsBatch {
+		t.Fatalf("pack: %+v", res[2])
 	}
 
 	// Free text: nothing is filtered, only free-text sources are asked.
 	res, errs = SearchAll(context.Background(), []Source{a, b}, MediaQuery{Query: "show"})
 	if len(errs) != 0 || len(res) != 5 || len(b.queries) != 1 {
 		t.Fatalf("free text: %d results, %v, b asked %d times", len(res), errs, len(b.queries))
+	}
+}
+
+// Asked for a season, its own pack comes before bigger packs, however
+// well seeded.
+func TestSearchAllSeasonPackFirst(t *testing.T) {
+	src := &fakeSource{id: "a", types: []string{MediaTV}, res: []*SearchResult{
+		{Name: "Show.Complete.Series.1080p.BluRay-GRP", InfoHash: hashA, Seeders: 900},
+		{Name: "Show.S01-S03.1080p.WEB-GRP", InfoHash: hashB, Seeders: 400},
+		{Name: "Show.S02.1080p.WEB-GRP", InfoHash: hashC, Seeders: 30},
+	}}
+	res, _ := SearchAll(context.Background(), []Source{src}, MediaQuery{Type: MediaTV, Title: "Show", Season: 2})
+	if len(res) != 3 || res[0].InfoHash != hashC || res[1].InfoHash != hashA || res[2].InfoHash != hashB {
+		var names []string
+		for _, r := range res {
+			names = append(names, r.Name)
+		}
+		t.Fatalf("order: %v", names)
 	}
 }
 
