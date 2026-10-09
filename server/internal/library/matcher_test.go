@@ -492,6 +492,48 @@ func TestAssignManual(t *testing.T) {
 	}
 }
 
+// The episode of a show's file whose number isn't one of its season's: a
+// number counted from the show's first episode, the season's number
+// followed by the episode's ("101" is S01E01), and E00, a special of the
+// season found by its title.
+func TestShowKeyOfOtherNumberings(t *testing.T) {
+	f := testCatalog(t)
+	p, _, _ := newTestPlatform(t, f)
+	ctx := context.Background()
+	get := func(id int) *catalog.Media {
+		media, err := p.MediaLite(ctx, catalog.ShowID(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return media
+	}
+	sev, aot, bb := get(95396), get(1429), get(1396)
+	m := NewMatcher(p, nil, 0, false)
+	for _, c := range []struct {
+		media *catalog.Media
+		path  string
+		want  int
+	}{
+		{sev, "/lib/Severance/Season 1/101.mkv", 1001},
+		{sev, "/lib/Severance/Season 1/Severance - 109 - The We We Are.mkv", 1009},
+		{sev, "/lib/Severance/Season 2/Severance - 205.mkv", 2005},
+		{sev, "/lib/Severance/Season 2/Severance - 10.mkv", 2010},
+		{sev, "/lib/Severance/Season 2/Severance - 12.mkv", 2003}, // the 12th episode
+		{aot, "/lib/Attack on Titan/Season 3/Attack on Titan - 38.mkv", 3001},
+		{aot, "/lib/Attack on Titan/Season 2/Attack on Titan - 05.mkv", 2005},
+		{bb, "/lib/Breaking Bad/Season 02/Breaking Bad - S02E00 - Inside Breaking Bad.mkv", 2},
+		{bb, "/lib/Breaking Bad/Season 02/Breaking Bad - S02E00 - Unknown Special.mkv", 0},
+	} {
+		path := filepath.FromSlash(c.path)
+		file := &LocalFile{Path: path, Dir: filepath.Dir(path), Name: filepath.Base(path), Parsed: Parse(path, []string{filepath.FromSlash("/lib")})}
+		file.Kind = file.Parsed.Kind
+		m.assign(ctx, []*LocalFile{file}, c.media, 1)
+		if file.Episode != c.want {
+			t.Errorf("%s: %d, want %d", c.path, file.Episode, c.want)
+		}
+	}
+}
+
 // When two files are matched to one episode (two releases of a movie, say),
 // the one played is the hand-matched one, then the surer match, then a
 // file of that episode alone, then the bigger file. A multi-episode file

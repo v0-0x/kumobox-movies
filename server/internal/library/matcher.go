@@ -663,17 +663,22 @@ func (m *Matcher) showKey(ctx context.Context, p Parsed, media *catalog.Media) (
 		if p.EpisodeEnd > p.Episode && p.EpisodeEnd < 1000 {
 			end = catalog.EpisodeKey(p.Season, p.EpisodeEnd)
 		}
-		// "Season 02/Show - 13.mkv" where season 2 is episodes 13-24: a
-		// number counted from the first episode.
-		if p.Season > 0 && p.Absolute > 0 && !hasEpisode(media, key) {
-			if k := media.KeyAtIndex(p.Absolute); k > 0 {
+		if p.Season > 0 && !hasEpisode(media, key) {
+			if k := otherNumbering(media, p.Season, p.Episode, p.Absolute); k > 0 {
 				return k, 0
 			}
 		}
 		return key, end
 	case p.Season >= 0 && p.Absolute > 0:
 		// "Season 21/One Piece - 1050.mkv"
+		if k := otherNumbering(media, p.Season, p.Absolute, p.Absolute); k > 0 {
+			return k, 0
+		}
 		return media.KeyAtIndex(p.Absolute), 0
+	case p.Season > 0 && p.Episode == 0 && p.EpisodeTitle != "":
+		// "Season 04/Show - S04E00 - Title.mkv": a special that aired
+		// during season 4 (Plex's way), found by its title.
+		return m.specialByTitle(ctx, media, p.EpisodeTitle), 0
 	case p.Date != "":
 		return m.dateKey(ctx, media, p), 0
 	case p.Season == 0 && p.EpisodeTitle != "":
@@ -688,6 +693,30 @@ func (m *Matcher) showKey(ctx context.Context, p Parsed, media *catalog.Media) (
 		return key, end
 	}
 	return 0, 0
+}
+
+// otherNumbering is the key of the episode a file of season's folder
+// numbered n means when the season has no episode n (0: none it can be):
+// n counted from the show's first episode ("Season 02/Show - 13.mkv" where
+// season 2 is episodes 13-24; absolute: the name's number has no season),
+// else the season's number followed by the episode's ("Season 01/101.mkv",
+// "Show - 1013" in season 10), else, counted from the first episode, an
+// episode of another season.
+func otherNumbering(media *catalog.Media, season, n, absolute int) int {
+	if absolute > 0 {
+		if k := media.KeyAtIndex(absolute); k > 0 && k/1000 == season {
+			return k
+		}
+	}
+	if len(media.Seasons) > 0 && n/100 == season && n%100 > 0 {
+		if k := catalog.EpisodeKey(season, n%100); hasEpisode(media, k) {
+			return k
+		}
+	}
+	if absolute > 0 {
+		return media.KeyAtIndex(absolute)
+	}
+	return 0
 }
 
 // absoluteKey is the key of episode n of a show counted from its first

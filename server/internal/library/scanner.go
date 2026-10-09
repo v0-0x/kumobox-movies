@@ -54,8 +54,10 @@ func NewScanner(store *Store, p *catalog.Platform, s *config.Store, hub *events.
 //	1: TMDB movies and shows.
 //	2: release names, files matched by folder, episode keys from seasons,
 //	   absolute numbers and air dates.
+//	3: episodes numbered with their season ("Season 01/101.mkv"), E00
+//	   specials, {tvdb-…} tags.
 const (
-	matcherVersion    = 2
+	matcherVersion    = 3
 	matcherVersionKey = "library:matcher-version"
 )
 
