@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/providers"
@@ -133,28 +134,30 @@ var DefaultClient = NewClient()
 
 // NewClient returns a client with the default HTTP clients.
 func NewClient() *Client {
-	return &Client{
-		HTTP: util.HTTP,
-		Local: &http.Client{
-			Timeout: requestTimeout,
-			// No proxy: it couldn't reach the LAN anyway.
-			Transport: &http.Transport{
-				DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-				MaxIdleConns:          20,
-				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: requestTimeout,
-			},
+	return &Client{HTTP: util.HTTP, Local: localHTTP()}
+}
+
+// localHTTP is the client for addons on this computer or the LAN: no
+// address guard, and no proxy (it couldn't reach the LAN anyway).
+var localHTTP = sync.OnceValue(func() *http.Client {
+	return &http.Client{
+		Timeout: requestTimeout,
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			MaxIdleConns:          20,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: requestTimeout,
 		},
 	}
-}
+})
 
 func (c *Client) httpClient(local bool) *http.Client {
 	if local {
 		if c.Local != nil {
 			return c.Local
 		}
-		return NewClient().Local
+		return localHTTP()
 	}
 	if c.HTTP != nil {
 		return c.HTTP

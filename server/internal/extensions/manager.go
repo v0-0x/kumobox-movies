@@ -306,6 +306,9 @@ func (m *Manager) start(ctx context.Context, man *Manifest, payload string, pref
 			rt, err = nil, fmt.Errorf("could not start the extension: %v", p)
 		}
 	}()
+	if man.Type == TypeNuvioProvider { // nuvio_runtime.go
+		return m.startNuvio(ctx, man, payload)
+	}
 	prog, err := Compile(man, payload)
 	if err != nil {
 		return nil, err
@@ -569,8 +572,8 @@ func (m *Manager) CheckUpdates(ctx context.Context) []UpdateInfo {
 	sem := make(chan struct{}, 6)
 	for _, l := range list {
 		uri := l.Manifest.ManifestURI
-		if !strings.HasPrefix(uri, "http") {
-			continue
+		if !strings.HasPrefix(uri, "http") || l.Manifest.Type == TypeNuvioProvider {
+			continue // Nuvio providers: nuvioUpdates below
 		}
 		wg.Add(1)
 		go func(l *Loaded) {
@@ -595,13 +598,16 @@ func (m *Manager) CheckUpdates(ctx context.Context) []UpdateInfo {
 		}(l)
 	}
 	wg.Wait()
-	return out
+	return append(out, m.nuvioUpdates(ctx)...)
 }
 
 func (m *Manager) Update(ctx context.Context, id string) (Info, error) {
 	l, ok := m.get(id)
 	if !ok {
 		return Info{}, errors.New("extension not installed")
+	}
+	if l.Manifest.Type == TypeNuvioProvider { // nuvio.go
+		return m.updateNuvio(ctx, l)
 	}
 	return m.Install(ctx, l.Manifest.ManifestURI)
 }

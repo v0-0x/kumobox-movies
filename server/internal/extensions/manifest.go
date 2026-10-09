@@ -84,6 +84,8 @@ type Manifest struct {
 	PayloadURI       string          `json:"payloadURI,omitempty"`
 	Plugin           *PluginManifest `json:"plugin,omitempty"`
 	IsDevelopment    bool            `json:"isDevelopment,omitempty"`
+	// Nuvio is set for Nuvio providers (TypeNuvioProvider, see nuvio.go).
+	Nuvio *NuvioMeta `json:"nuvio,omitempty"`
 }
 
 var reID = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9\-_.]*[a-zA-Z0-9]$`)

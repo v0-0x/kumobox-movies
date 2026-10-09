@@ -98,6 +98,7 @@ func TestGuessType(t *testing.T) {
 		{"https://example.com/a.webm#t=1", StreamWebM},
 		{"https://example.com/watch?v=1", StreamUnknown},
 		{"Movie.2019.1080p.mkv", StreamMKV},
+		{"Night of the Living Dead #1.mkv", StreamMKV},
 	} {
 		if got := GuessType(tc.in); got != tc.want {
 			t.Errorf("GuessType(%q) = %q, want %q", tc.in, got, tc.want)
