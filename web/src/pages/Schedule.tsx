@@ -5,8 +5,8 @@ import { PluginSlot } from "@/components/plugins/PluginSlot"
 import { Badge, Button, EmptyState, ErrorState, IconButton, Skeleton, Tabs } from "@/components/ui"
 import { usePersisted } from "@/lib/hooks"
 import { formatKey, splitKey } from "@/lib/ids"
-import { useSchedule } from "@/lib/queries"
-import type { ScheduleItem } from "@/lib/types"
+import { useCollection, useSchedule } from "@/lib/queries"
+import type { ListEntry, ScheduleItem } from "@/lib/types"
 import { banner, cn, cover, LIST_STATUS, title } from "@/lib/utils"
 
 const DAY = 86400
@@ -30,6 +30,14 @@ export default function SchedulePage() {
     const start = utcDay(monday)
     const end = start + 7 * DAY
     const { data, isLoading, error, refetch, isFetching } = useSchedule(start, end)
+    // How far each show on the list is (the schedule's shows don't carry
+    // their list entry), to tick the episodes already watched.
+    const { data: coll } = useCollection()
+    const entries = useMemo(() => {
+        const m = new Map<number, ListEntry>()
+        for (const l of coll?.lists ?? []) for (const it of l.items) if (it.listEntry) m.set(it.media.id, it.listEntry)
+        return m
+    }, [coll])
 
     const days = useMemo(() => {
         const items = (data ?? []).filter(i => i.media && (filter === "all" || !i.listStatus || i.listStatus === "CURRENT" || i.listStatus === "REPEATING"))
@@ -112,7 +120,7 @@ export default function SchedulePage() {
                                             </h2>
                                             <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 xl:grid-cols-1">
                                                 {d.items.map(it => (
-                                                    <CalendarCard key={`${it.media.id}-${it.episode}`} item={it} />
+                                                    <CalendarCard key={`${it.media.id}-${it.episode}`} item={it} entry={entries.get(it.media.id)} />
                                                 ))}
                                                 {d.items.length === 0 && <p className="py-2 text-xs text-subtle">—</p>}
                                             </div>
@@ -129,9 +137,10 @@ export default function SchedulePage() {
     )
 }
 
-function CalendarCard({ item }: { item: ScheduleItem }) {
+function CalendarCard({ item, entry }: { item: ScheduleItem; entry?: ListEntry }) {
     const m = item.media
-    const watched = (m.mediaListEntry?.progress ?? 0) >= item.episode
+    const e = entry ?? m.mediaListEntry
+    const watched = e?.status === "COMPLETED" || (e?.progress ?? 0) >= item.episode
     const image = banner(m) || cover(m)
     return (
         <Link
