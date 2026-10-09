@@ -97,11 +97,20 @@ export default function SearchPage() {
         setPage(1)
         setAcc([])
     }, [query])
-    const { data, isFetching, error, refetch } = useSearch({ ...query, page })
+    const { data, isFetching, isPlaceholderData, error, refetch } = useSearch({ ...query, page })
     useEffect(() => {
-        if (!data?.media) return
-        setAcc(prev => (page === 1 ? data.media! : [...prev, ...data.media!.filter(m => !prev.some(p => p.id === m.id))]))
-    }, [data, page])
+        // The previous search's (or page's) results, shown while this one
+        // loads, aren't this page's.
+        if (!data?.media || isPlaceholderData) return
+        const media = data.media
+        setAcc(prev => {
+            if (page === 1) return media
+            // A page seen already comes back changed (a card's list status):
+            // its titles are replaced where they are.
+            const fresh = new Map(media.map(m => [m.id, m]))
+            return [...prev.map(m => fresh.get(m.id) ?? m), ...media.filter(m => !prev.some(p => p.id === m.id))]
+        })
+    }, [data, page, isPlaceholderData])
 
     const years = Array.from({ length: new Date().getFullYear() - 1899 }, (_, i) => String(new Date().getFullYear() + 2 - i))
     const active = genres.length + (year ? 1 : 0) + (status ? 1 : 0) + (minScore ? 1 : 0) + (lang ? 1 : 0)
