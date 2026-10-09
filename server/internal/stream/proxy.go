@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -35,6 +36,60 @@ var proxyClient = &http.Client{
 		}
 		return nil
 	},
+}
+
+// LocalHosts, when set, lists the addresses on this computer or the LAN the
+// proxy may connect to all the same (as HostKey gives them): those of the
+// Stremio addons the user installed on purpose as local ones, whose streams
+// usually come from the addon's own address. Every other private address
+// stays refused.
+var LocalHosts func() []string
+
+// localProxyClient reaches those addresses, and follows redirects only
+// among them.
+var localProxyClient = &http.Client{
+	Timeout: 0,
+	Transport: &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,
+		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConnsPerHost:   16,
+	},
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) > 10 {
+			return errors.New("too many redirects")
+		}
+		if !allowedLocal(req.URL) {
+			return errors.New("redirected away from the local addon's address")
+		}
+		return nil
+	},
+}
+
+// HostKey is a URL's host and port, the port filled in from the scheme, to
+// compare addresses.
+func HostKey(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if strings.EqualFold(u.Scheme, "https") {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+}
+
+// allowedLocal reports whether u is at one of LocalHosts.
+func allowedLocal(u *url.URL) bool {
+	if LocalHosts == nil || u == nil {
+		return false
+	}
+	k := HostKey(u)
+	for _, h := range LocalHosts() {
+		if h == k {
+			return true
+		}
+	}
+	return false
 }
 
 // ProxyURL builds the URL the browser should use for a remote resource.
@@ -98,7 +153,8 @@ func ServeProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad url", http.StatusBadRequest)
 		return
 	}
-	if strings.EqualFold(tu.Hostname(), "localhost") {
+	local := allowedLocal(tu)
+	if strings.EqualFold(tu.Hostname(), "localhost") && !local {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -122,7 +178,11 @@ func ServeProxy(w http.ResponseWriter, r *http.Request) {
 	if rg := r.Header.Get("Range"); rg != "" && format == "" {
 		req.Header.Set("Range", rg)
 	}
-	resp, err := proxyClient.Do(req)
+	client := proxyClient
+	if local {
+		client = localProxyClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

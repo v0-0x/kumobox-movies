@@ -1,6 +1,8 @@
 package stream
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -40,5 +42,48 @@ func TestRewritePlaylist(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("rewritten playlist lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// The proxy refuses this computer and the LAN, except the addresses of
+// the addons installed as local ones (LocalHosts), and doesn't follow a
+// redirect from those to another local address.
+func TestProxyLocalHosts(t *testing.T) {
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("elsewhere"))
+	}))
+	defer other.Close()
+	addon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/away" {
+			http.Redirect(w, r, other.URL+"/x", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("video bytes"))
+	}))
+	defer addon.Close()
+	get := func(target string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		ServeProxy(w, httptest.NewRequest("GET", ProxyURL(target, nil), nil))
+		return w
+	}
+	defer func(old func() []string) { LocalHosts = old }(LocalHosts)
+
+	LocalHosts = nil
+	if w := get(addon.URL + "/stream.mp4"); w.Code == http.StatusOK {
+		t.Fatalf("a local address without permission: %d %q", w.Code, w.Body.String())
+	}
+	u, _ := url.Parse(addon.URL)
+	LocalHosts = func() []string { return []string{HostKey(u)} }
+	if w := get(addon.URL + "/stream.mp4"); w.Code != http.StatusOK || w.Body.String() != "video bytes" {
+		t.Fatalf("the local addon: %d %q", w.Code, w.Body.String())
+	}
+	if w := get(other.URL + "/x"); w.Code == http.StatusOK {
+		t.Fatalf("another local address: %d", w.Code)
+	}
+	if w := get(addon.URL + "/away"); w.Code == http.StatusOK {
+		t.Fatalf("redirected to another local address: %d %q", w.Code, w.Body.String())
+	}
+	if HostKey(&url.URL{Scheme: "https", Host: "Box.LAN"}) != "box.lan:443" || HostKey(&url.URL{Scheme: "http", Host: "[::1]:7000"}) != "[::1]:7000" {
+		t.Error("HostKey")
 	}
 }

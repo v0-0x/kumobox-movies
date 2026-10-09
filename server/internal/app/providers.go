@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,16 @@ func (a *App) wireProviders() error {
 	store.OnChange = func() {
 		a.Stream.Invalidate()
 		a.Hub.Publish(providersUpdated, nil)
+	}
+	// The in-app player may stream from the addons installed as local ones.
+	stream.LocalHosts = func() []string {
+		var out []string
+		for _, ad := range store.List() {
+			if u, err := url.Parse(ad.TransportURL); err == nil && ad.Local && ad.Enabled {
+				out = append(out, stream.HostKey(u))
+			}
+		}
+		return out
 	}
 	a.Stream.Providers = a.StreamProviders
 	a.Stream.SubtitleProviders = a.Stremio.SubtitleProviders
