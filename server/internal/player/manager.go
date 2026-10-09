@@ -132,8 +132,13 @@ type Manager struct {
 	NextResolver NextResolver
 	// HasNext decides whether credits at the end of a file are skipped
 	// with auto play next (nil: when NextResolver is set).
-	HasNext    HasNext
-	OnProgress []ProgressHook
+	HasNext HasNext
+	// LastCovered is the last episode watched once a viewing of an episode
+	// (a key) from a source ("local", "stream") is finished: that of a file
+	// holding several (S01E04E05), the episode itself otherwise (nil: the
+	// episode).
+	LastCovered func(mediaID, episode int, source string) int
+	OnProgress  []ProgressHook
 	// OnWatching hooks are called after a title was put on the "watching"
 	// list because one of its episodes started playing.
 	OnWatching []func(mediaID int)
@@ -415,7 +420,7 @@ func (m *Manager) onProperty(s *Session, mpv *Mpv, w *trackWatch, ev MpvEvent) {
 		m.startWatching(s.MediaID, s.Episode)
 	}
 	if fire {
-		m.fireProgress(s.MediaID, s.Episode)
+		m.fireProgress(s.MediaID, s.Episode, s.Source)
 	}
 }
 
@@ -587,7 +592,10 @@ func (m *Manager) tick(s *Session) (save *history.Entry, start, fire bool) {
 	return save, start, fire
 }
 
-func (m *Manager) fireProgress(mediaID, episode int) {
+func (m *Manager) fireProgress(mediaID, episode int, source string) {
+	if m.LastCovered != nil {
+		episode = max(episode, m.LastCovered(mediaID, episode, source))
+	}
 	if m.viewed != nil {
 		m.viewed(mediaID, episode)
 	}
@@ -670,7 +678,7 @@ func (m *Manager) finish(s *Session) {
 		}
 	}
 	if fire {
-		m.fireProgress(e.MediaID, e.Episode)
+		m.fireProgress(e.MediaID, e.Episode, e.Source)
 	}
 
 	m.mu.Lock()
@@ -819,7 +827,7 @@ func (m *Manager) ReportProgress(r ProgressReport) {
 	}
 	if r.Episode > 0 && r.Duration > 0 && (r.Ended || r.Position/r.Duration >= cfg.Playback.CompletionThreshold) &&
 		m.claimBuiltin(m.builtinSent, r.MediaID, r.Episode) {
-		m.fireProgress(r.MediaID, r.Episode)
+		m.fireProgress(r.MediaID, r.Episode, r.Source)
 	}
 	m.notifyStatus(&Session{MediaID: r.MediaID, Episode: r.Episode, Title: r.Title, Source: r.Source, Player: "builtin",
 		Position: r.Position, Duration: r.Duration, Paused: r.Paused, Active: !r.Ended})

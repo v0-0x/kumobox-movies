@@ -348,6 +348,32 @@ func TestBuiltinRewatchUpdatesProgressAgain(t *testing.T) {
 	}
 }
 
+// A file holding two episodes (S01E04E05) played to the end has both
+// watched, not only the first; a stream of the episode only has it.
+func TestBuiltinMultiEpisodeFileWatchesBoth(t *testing.T) {
+	m, _ := newTestManager(t, nil)
+	m.LastCovered = func(mediaID, episode int, source string) int {
+		if source == "local" && episode == 1004 {
+			return 1005
+		}
+		return episode
+	}
+	seen := make(chan int, 4)
+	m.viewed = func(mediaID, episode int) { seen <- episode }
+	m.ReportProgress(ProgressReport{MediaID: 3, Episode: 1004, Position: 2800, Duration: 2800, Source: "local", Ended: true})
+	m.ReportProgress(ProgressReport{MediaID: 4, Episode: 1004, Position: 1400, Duration: 1400, Source: "stream", Ended: true})
+	for _, want := range []int{1005, 1004} {
+		select {
+		case got := <-seen:
+			if got != want {
+				t.Fatalf("watched %d, want %d", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("no progress update")
+		}
+	}
+}
+
 // The in-app player reports every few seconds from 3 s in: the show goes
 // on the watching list once per viewing, from 10 s in.
 func TestBuiltinStartsWatchingOncePerViewing(t *testing.T) {

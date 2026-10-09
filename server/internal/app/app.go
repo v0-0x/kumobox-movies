@@ -202,6 +202,8 @@ func (a *App) wire() {
 
 	// Auto play next: the next episode's file, or stream (playback.go).
 	a.Player.NextResolver, a.Player.HasNext = a.nextEpisode, a.hasNextEpisode
+	// A file holding several episodes has them all watched at its end.
+	a.Player.LastCovered = a.lastCovered
 
 	// Plugins hooks after progress updates.
 	a.Player.OnProgress = append(a.Player.OnProgress, func(mediaID, episode int) {

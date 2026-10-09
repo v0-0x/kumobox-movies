@@ -249,7 +249,11 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 entryP
                     .then(e => {
                         if (cancelled || !e || !mediaIsShow(e.media)) return
-                        const next = nextEpisode(e.media, key)
+                        // A file holding the next episodes too (S01E04E05):
+                        // the one after them, not the same file again.
+                        const file = (e.episodes ?? []).find(x => keyOf(x) === key)?.file
+                        const last = req.kind === "local" && file?.path === req.path ? Math.max(key, file.episodeEnd ?? 0) : key
+                        const next = nextEpisode(e.media, last)
                         const n = (e.episodes ?? []).find(x => keyOf(x) === next)
                         if (!next || !n) return
                         if (req.kind === "local") n.file && setNextEp({ path: n.file.path, episode: next })

@@ -114,6 +114,19 @@ func (a *App) nextKey(ctx context.Context, s *player.Session) (*catalog.Media, i
 	return media, next, nil
 }
 
+// lastCovered is the last episode a file played to the end has watched: a
+// file holding several episodes (S01E04E05) has them all, not only the
+// first, which would have Continue play the same file again.
+func (a *App) lastCovered(mediaID, key int, source string) int {
+	if source != "local" || !catalog.IsShow(mediaID) || key < 1000 {
+		return key
+	}
+	if f := a.episodeFile(mediaID, key); f != nil && f.EpisodeEnd > key {
+		return f.EpisodeEnd
+	}
+	return key
+}
+
 // episodeFile is the file of an episode: this computer's, else one another
 // KumoBox shares.
 func (a *App) episodeFile(mediaID, key int) *library.LocalFile {
