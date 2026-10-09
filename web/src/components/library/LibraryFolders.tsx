@@ -22,6 +22,10 @@ export type LibraryFolder = {
     query: string // best guess of the title, for searching TMDB
     notIndexed: number // videos on disk that no scan has added yet
     problem?: string // why it has nothing to match (still downloading, unreadable…)
+    // Several titles share the folder (a flat "Movies" folder): matching or
+    // unmatching it as a whole would give every film the same title, so
+    // its files are matched by selection instead.
+    several: boolean
 }
 
 // Whether a folder has files to match (once its new videos are added).
@@ -64,6 +68,11 @@ function buildFolders(files: LocalFile[], roots: string[], disk: FolderInfo[]): 
             else unmatched++
         }
         fs.sort((a, b) => naturalCompare(a.name, b.name))
+        // Matched files count by their title, unmatched ones by the title
+        // read from their name (a show's files share the show folder's).
+        const titles = new Set(
+            fs.filter(f => f.kind !== "extra").map(f => (f.mediaId > 0 ? `#${f.mediaId}` : (f.parsed?.folderTitle || f.parsed?.title || "").toLowerCase())),
+        )
         out.push({
             dir,
             label,
@@ -74,6 +83,7 @@ function buildFolders(files: LocalFile[], roots: string[], disk: FolderInfo[]): 
             query: fs.find(f => f.parsed?.folderTitle)?.parsed.folderTitle || fs[0]?.parsed?.title || titleFromFolder(label),
             notIndexed: d?.notIndexed ?? 0,
             problem: d?.problem,
+            several: titles.size > 1,
         })
     }
     return out
@@ -304,16 +314,24 @@ function FolderRow({
                 </div>
 
                 <div className="flex shrink-0 items-center gap-1.5">
-                    <Button
-                        size="sm"
-                        variant={f.matches.length === 1 && f.unmatched === 0 && f.notIndexed === 0 ? "subtle" : "primary"}
-                        icon={<Link2 className="size-4" />}
-                        loading={preparing}
-                        onClick={onMatchFolder}
-                    >
-                        {f.matches.length === 0 ? "Match…" : "Change match…"}
-                    </Button>
-                    {f.matches.length > 0 && (
+                    {f.several ? (
+                        <Tooltip content="Several titles are in this folder: pick the files of one title to match them.">
+                            <Button size="sm" variant={f.unmatched > 0 ? "primary" : "subtle"} icon={<Link2 className="size-4" />} onClick={() => setOpen(true)}>
+                                Match files…
+                            </Button>
+                        </Tooltip>
+                    ) : (
+                        <Button
+                            size="sm"
+                            variant={f.matches.length === 1 && f.unmatched === 0 && f.notIndexed === 0 ? "subtle" : "primary"}
+                            icon={<Link2 className="size-4" />}
+                            loading={preparing}
+                            onClick={onMatchFolder}
+                        >
+                            {f.matches.length === 0 ? "Match…" : "Change match…"}
+                        </Button>
+                    )}
+                    {f.matches.length > 0 && !f.several && (
                         <IconButton size="sm" label="Unmatch folder" onClick={() => onUnmatch(f.files)}>
                             <Link2Off className="size-4" />
                         </IconButton>
