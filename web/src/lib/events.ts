@@ -53,6 +53,8 @@ export function connectEvents(qc: QueryClient) {
                 qc.invalidateQueries({ queryKey: ["collection"] })
                 qc.invalidateQueries({ queryKey: ["entry"] })
                 qc.invalidateQueries({ queryKey: ["list"] })
+                // The calendar has the shows on the list.
+                qc.invalidateQueries({ queryKey: ["schedule"] })
                 break
             case "diary-updated":
                 // A viewing logged (a movie watched to the end), imported,

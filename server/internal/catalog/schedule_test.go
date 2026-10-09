@@ -86,6 +86,38 @@ func TestSchedule(t *testing.T) {
 	}
 }
 
+// The calendar follows the list: a show put on it after the calendar was
+// looked at shows up at once, one dropped goes.
+func TestScheduleFollowsTheList(t *testing.T) {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	f := newFakeTMDB(t, func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/tv/600/season/1" {
+			return false
+		}
+		reply(w, http.StatusOK, map[string]any{"season_number": 1, "episodes": []any{
+			map[string]any{"season_number": 1, "episode_number": 1, "air_date": today.AddDate(0, 0, 1).Format(time.DateOnly)},
+		}})
+		return true
+	})
+	p := newTestPlatform(t, f)
+	ctx := context.Background()
+	start, end := today.Unix(), today.AddDate(0, 0, 7).Unix()
+	if got, err := p.Schedule(ctx, start, end); err != nil || len(got) != 0 {
+		t.Fatalf("empty list: %v, %v", got, err)
+	}
+	addLocal(t, p, testShow(600, "RELEASING", 8), "CURRENT", 0)
+	if got, err := p.Schedule(ctx, start, end); err != nil || len(got) != 1 || got[0].Episode != 1001 {
+		t.Fatalf("after following a show: %v, %v", got, err)
+	}
+	if _, err := p.db.Write(`UPDATE local_list SET status = 'DROPPED'`); err != nil {
+		t.Fatal(err)
+	}
+	p.invalidate()
+	if got, err := p.Schedule(ctx, start, end); err != nil || len(got) != 0 {
+		t.Fatalf("after dropping it: %v, %v", got, err)
+	}
+}
+
 func TestAiringSeasons(t *testing.T) {
 	now := time.Now()
 	start, end := now.Unix(), now.AddDate(0, 0, 7).Unix()
