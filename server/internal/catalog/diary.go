@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -35,7 +36,8 @@ func scanDiary(row interface{ Scan(...any) error }) (*DiaryEntry, error) {
 
 // AddDiary logs a viewing. The watched date defaults to today, the source to
 // "kumobox". An entry whose LetterboxdID is already in the diary isn't added
-// again: added is false, and the entry returned is the one there.
+// again: added is false, and the entry returned is the one there. Nor is one
+// the user deleted (see DeleteDiary): added is false, without an entry.
 func (p *Platform) AddDiary(ctx context.Context, e DiaryEntry) (*DiaryEntry, bool, error) {
 	if e.MediaID <= 0 {
 		return nil, false, errInvalidID
@@ -46,6 +48,19 @@ func (p *Platform) AddDiary(ctx context.Context, e DiaryEntry) (*DiaryEntry, boo
 	}
 	if e.WatchedDate == "" {
 		e.WatchedDate = time.Now().Format(time.DateOnly)
+	}
+	if e.LetterboxdID != "" {
+		// Letterboxd's copy of a viewing the user deleted: by its id (the
+		// feed read again), or the same film the same day (the export's
+		// copy of it, or of one logged here and sent).
+		var deleted int
+		if err := p.db.QueryRow(`SELECT COUNT(*) FROM diary_deleted WHERE letterboxd_id = ? OR (media_id = ? AND watched_date = ?)`,
+			e.LetterboxdID, e.MediaID, e.WatchedDate).Scan(&deleted); err != nil {
+			return nil, false, err
+		}
+		if deleted > 0 {
+			return nil, false, nil
+		}
 	}
 	e.Rating = min(max(e.Rating, 0), 100)
 	if e.CreatedAt == 0 {
@@ -160,14 +175,35 @@ func (p *Platform) RateDiary(ctx context.Context, id int64, rating int, liked bo
 	return nil
 }
 
-// DeleteDiary removes a viewing from the diary (gone already is fine).
+// DeleteDiary removes a viewing from the diary (gone already is fine). One
+// Letterboxd has (imported from it, or sent to it) is remembered, so that
+// syncing the diary doesn't bring it back (see AddDiary).
 func (p *Platform) DeleteDiary(ctx context.Context, id int64) error {
-	res, err := p.db.Write(`DELETE FROM diary WHERE id = ?`, id)
-	if err != nil {
+	deleted := false
+	err := p.db.Tx(func(tx *sql.Tx) error {
+		var mediaID int
+		var date, source, lbID string
+		var exported int64
+		err := tx.QueryRow(`SELECT media_id, watched_date, source, letterboxd_id, exported_at FROM diary WHERE id = ?`, id).
+			Scan(&mediaID, &date, &source, &lbID, &exported)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM diary WHERE id = ?`, id); err != nil {
+			return err
+		}
+		deleted = true
+		if source == DiaryLetterboxd || lbID != "" || exported != 0 {
+			_, err = tx.Exec(`INSERT INTO diary_deleted(media_id, watched_date, letterboxd_id, deleted_at) VALUES(?, ?, ?, ?)`,
+				mediaID, date, lbID, time.Now().Unix())
+		}
 		return err
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	})
+	if err == nil && deleted {
 		p.hub.Publish(events.DiaryUpdated, nil)
 	}
-	return nil
+	return err
 }

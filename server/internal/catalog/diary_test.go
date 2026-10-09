@@ -73,3 +73,68 @@ func TestDiary(t *testing.T) {
 		t.Fatalf("after deleting: %+v", all)
 	}
 }
+
+// A viewing Letterboxd has (imported from it, or sent to it) that the user
+// deleted isn't imported again: not by its id (the feed's next read), nor
+// as the same film the same day (the export's copy of it).
+func TestDeletedDiaryStaysDeleted(t *testing.T) {
+	p := newTestPlatform(t, nil)
+	ctx := context.Background()
+	a, b := testMovie(1), testMovie(2)
+	p.db.SetCache(liteKey(a.ID), a, time.Hour)
+	p.db.SetCache(liteKey(b.ID), b, time.Hour)
+	add := func(e DiaryEntry) (*DiaryEntry, bool) {
+		t.Helper()
+		got, added, err := p.AddDiary(ctx, e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got, added
+	}
+	del := func(id int64) {
+		t.Helper()
+		if err := p.DeleteDiary(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fromFeed := DiaryEntry{MediaID: b.ID, WatchedDate: "2024-03-10", Rating: 90, Source: DiaryLetterboxd, LetterboxdID: "letterboxd-watch-1001"}
+	imported, added := add(fromFeed)
+	if !added {
+		t.Fatal("not imported")
+	}
+	del(imported.ID)
+	if got, added := add(fromFeed); added || got != nil {
+		t.Fatalf("imported again after it was deleted: %+v", got)
+	}
+	fromExport := DiaryEntry{MediaID: b.ID, WatchedDate: "2024-03-10", Source: DiaryLetterboxd, LetterboxdID: "export:https://boxd.it/abc1:2024-03-10"}
+	if _, added := add(fromExport); added {
+		t.Fatal("the export's copy of a deleted viewing was imported")
+	}
+	if _, added := add(DiaryEntry{MediaID: b.ID, WatchedDate: "2024-05-01", Source: DiaryLetterboxd, LetterboxdID: "letterboxd-watch-1002"}); !added {
+		t.Fatal("another viewing of the film wasn't imported")
+	}
+
+	// Logged here and sent to Letterboxd, then deleted: the feed's copy
+	// stays out. Logged here again, it's logged.
+	sent, _ := add(DiaryEntry{MediaID: a.ID, WatchedDate: "2024-06-01"})
+	if err := p.MarkDiaryExported(ctx, []int64{sent.ID}, 1_800_000_000); err != nil {
+		t.Fatal(err)
+	}
+	del(sent.ID)
+	if _, added := add(DiaryEntry{MediaID: a.ID, WatchedDate: "2024-06-01", Source: DiaryLetterboxd, LetterboxdID: "letterboxd-watch-2001"}); added {
+		t.Fatal("a deleted viewing came back from the feed")
+	}
+	if _, added := add(DiaryEntry{MediaID: a.ID, WatchedDate: "2024-06-01"}); !added {
+		t.Fatal("logging the film here again was refused")
+	}
+	// Never sent: Letterboxd's own entry of that day is imported.
+	unsent, _ := add(DiaryEntry{MediaID: a.ID, WatchedDate: "2024-07-01"})
+	del(unsent.ID)
+	if _, added := add(DiaryEntry{MediaID: a.ID, WatchedDate: "2024-07-01", Source: DiaryLetterboxd, LetterboxdID: "letterboxd-watch-2002"}); !added {
+		t.Fatal("a Letterboxd entry was refused for a viewing deleted here before it was sent")
+	}
+	if all, _ := p.Diary(ctx, 0, 0); len(all) != 3 {
+		t.Fatalf("diary: %+v", all)
+	}
+}

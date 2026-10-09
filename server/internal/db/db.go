@@ -108,6 +108,16 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_diary_media ON diary(media_id)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_letterboxd ON diary(letterboxd_id) WHERE letterboxd_id != ''`,
+	// The viewings Letterboxd has (imported from it, or sent to it) that
+	// the user deleted from the diary: a sync doesn't bring them back.
+	`CREATE TABLE IF NOT EXISTS diary_deleted (
+		media_id INTEGER NOT NULL,
+		watched_date TEXT NOT NULL,
+		letterboxd_id TEXT NOT NULL DEFAULT '',
+		deleted_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_diary_deleted ON diary_deleted(media_id, watched_date)`,
+	`CREATE INDEX IF NOT EXISTS idx_diary_deleted_letterboxd ON diary_deleted(letterboxd_id) WHERE letterboxd_id != ''`,
 	`CREATE TABLE IF NOT EXISTS extensions (
 		id TEXT PRIMARY KEY,
 		manifest TEXT NOT NULL,
