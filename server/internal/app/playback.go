@@ -147,13 +147,18 @@ func (a *App) nextEpisode(ctx context.Context, s *player.Session) (*player.PlayR
 		if s.Provider == "" {
 			return nil, nil
 		}
-		res, err := a.Stream.Sources(ctx, s.Provider, media, stream.ProviderEpisode(media, next), s.Dub, "", "")
+		// The provider's best direct link for the next episode (the
+		// preferred quality first), with a few subtitles of subtitle addons.
+		st, res, err := a.Stream.Best(ctx, media, next, s.Provider)
 		if err != nil {
 			return nil, err
 		}
-		src := pickSource(res.Sources, a.Settings.Get().Providers.PreferredQuality)
-		req.Target, req.Headers, req.Referrer, req.Provider, req.Dub = src.URL, src.Headers, src.Referrer, s.Provider, s.Dub
-		for _, sub := range src.Subtitles {
+		req.Target, req.Provider, req.Dub = st.URL, s.Provider, s.Dub
+		req.Headers, req.Referrer = stream.SplitReferrer(st.Headers)
+		for _, sub := range st.Subtitles {
+			req.SubFiles = append(req.SubFiles, sub.URL)
+		}
+		for _, sub := range stream.SortSubtitles(res.Subtitles, a.Settings.Get().Playback.PreferredSubLang, 4) {
 			req.SubFiles = append(req.SubFiles, sub.URL)
 		}
 		if s.Dub {

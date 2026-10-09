@@ -142,15 +142,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/images/stats", h(func(r *http.Request) (any, error) { return s.app.Images.Stats(), nil }))
 	m.HandleFunc("POST /api/images/clear", h(func(r *http.Request) (any, error) { return nil, s.app.Images.Clear() }))
 
-	// --- streaming providers
-	m.HandleFunc("GET /api/providers/providers", h(func(r *http.Request) (any, error) { return s.app.Stream.Providers(r.Context()), nil }))
-	m.HandleFunc("GET /api/providers/episodes", h(s.osEpisodes))
-	m.HandleFunc("GET /api/providers/modes", h(s.osModes))
-	m.HandleFunc("GET /api/providers/sources", h(s.osSources))
-	m.HandleFunc("GET /api/providers/search", h(s.osSearch))
-	m.HandleFunc("POST /api/providers/mapping", h(s.osMapping))
-	m.HandleFunc("POST /api/providers/play", h(s.osPlay))
-	m.HandleFunc("POST /api/providers/download", h(s.osDownload))
+	// --- streaming providers (providers_routes.go)
+	s.providerRoutes()
 
 	// --- downloads
 	m.HandleFunc("GET /api/downloads", h(func(r *http.Request) (any, error) { return s.app.Downloads.List(), nil }))
@@ -173,7 +166,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/extensions/{id}/config", h(s.configExtension))
 	m.HandleFunc("POST /api/extensions/{id}/grant", h(func(r *http.Request) (any, error) { return nil, s.app.Extensions.Grant(r.PathValue("id")) }))
 	m.HandleFunc("POST /api/extensions/{id}/update", h(func(r *http.Request) (any, error) { return s.app.Extensions.Update(r.Context(), r.PathValue("id")) }))
-	m.HandleFunc("DELETE /api/extensions/{id}", h(func(r *http.Request) (any, error) { return nil, s.app.Extensions.Uninstall(r.PathValue("id")) }))
+	m.HandleFunc("DELETE /api/extensions/{id}", h(s.uninstallExtension))
 	m.HandleFunc("GET /api/extensions/{id}/logs", h(func(r *http.Request) (any, error) { return s.app.Extensions.Logs(r.PathValue("id")), nil }))
 	m.HandleFunc("GET /api/plugins/ui", h(func(r *http.Request) (any, error) { return s.app.Extensions.PluginStates(), nil }))
 	m.HandleFunc("POST /api/plugins/{id}/event", h(s.pluginEvent))

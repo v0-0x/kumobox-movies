@@ -2,11 +2,14 @@ import { useQueryClient } from "@tanstack/react-query"
 import {
     AlertTriangle,
     ArrowUpCircle,
+    Blocks,
     CheckCircle2,
     Download,
     ExternalLink,
     FileText,
+    FolderGit,
     Globe,
+    Landmark,
     Link2,
     Magnet,
     Puzzle,
@@ -24,57 +27,89 @@ import { useSearchParams } from "react-router-dom"
 import { toast } from "@/lib/toast"
 import { Badge, Button, Dialog, EmptyState, Field, IconButton, Input, Select, Switch, Tabs } from "@/components/ui"
 import { api } from "@/lib/api"
-import { useExtensions, useMarketplace, useStatus } from "@/lib/queries"
-import type { ExtensionInfo, LogLineT, MarketEntry } from "./extensionTypes"
+import { useExtensions, useMarketplace, useStatus, useStremioAddons } from "@/lib/queries"
+import type { ExtensionInfo, MarketEntry } from "./extensionTypes"
 import { cn } from "@/lib/utils"
+import { BuiltInTab } from "./providers/BuiltIn"
+import { NuvioTab } from "./providers/Nuvio"
+import { ExtIcon, LogsDialog } from "./providers/parts"
+import { StremioTab } from "./providers/Stremio"
 
 const TYPES: Record<string, { label: string; icon: React.ReactNode }> = {
     plugin: { label: "Plugin", icon: <Puzzle className="size-3.5" /> },
     "onlinestream-provider": { label: "Online streaming", icon: <Tv className="size-3.5" /> },
+    "nuvio-provider": { label: "Nuvio provider", icon: <FolderGit className="size-3.5" /> },
     "anime-torrent-provider": { label: "Torrent", icon: <Magnet className="size-3.5" /> },
     "custom-source": { label: "Custom source", icon: <Globe className="size-3.5" /> },
 }
 
+type PageTab = "builtin" | "stremio" | "nuvio" | "extensions"
+const PAGE_TABS: PageTab[] = ["builtin", "stremio", "nuvio", "extensions"]
+
+// Providers & extensions: the built-in provider, Stremio addons, Nuvio
+// repositories (pages/providers) and marketplace extensions (streaming and
+// torrent providers, UI plugins).
 export default function ExtensionsPage() {
     const [params, setParams] = useSearchParams()
-    const tab = params.get("tab") === "marketplace" ? "marketplace" : "installed"
+    const raw = params.get("tab") ?? ""
+    // Old links: ?tab=installed and ?tab=marketplace were the extensions'.
+    const legacy = raw === "installed" || raw === "marketplace"
+    const tab: PageTab = legacy ? "extensions" : PAGE_TABS.includes(raw as PageTab) ? (raw as PageTab) : "builtin"
+    const view = raw === "marketplace" || params.get("view") === "marketplace" ? "marketplace" : "installed"
     const { data: installed } = useExtensions()
+    const { data: addons } = useStremioAddons()
+    const { data: status } = useStatus()
     const [manualOpen, setManualOpen] = useState(false)
+    const exts = (installed ?? []).filter(e => e.manifest.type !== "nuvio-provider")
+    const nuvio = (installed ?? []).filter(e => e.manifest.type === "nuvio-provider")
+    const go = (t: PageTab, v?: string) => setParams(v ? { tab: t, view: v } : { tab: t }, { replace: true })
     return (
         <div className="min-h-full px-6 pt-8 pb-24 md:px-8 xl:px-10">
             <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
                 <div>
                     <h1 className="text-[1.75rem] font-semibold tracking-tight">Providers & extensions</h1>
-                    <p className="mt-1 max-w-2xl text-muted">Streaming and torrent providers plus plugins, from the extension marketplace. Streaming sources (Internet Archive, Stremio addons, Nuvio repositories) are in Settings › Providers.</p>
+                    <p className="mt-1 max-w-2xl text-muted">Where movies and episodes stream from (the Internet Archive, Stremio addons, Nuvio providers, extensions), plus torrent providers and plugins.</p>
                 </div>
-                <Button icon={<Link2 className="size-4" />} onClick={() => setManualOpen(true)}>
-                    Install from URL
-                </Button>
+                {tab === "extensions" && status?.client !== "lan" && (
+                    <Button icon={<Link2 className="size-4" />} onClick={() => setManualOpen(true)}>
+                        Install from URL
+                    </Button>
+                )}
             </div>
             <Tabs
+                variant="underline"
                 className="mb-8"
                 value={tab}
-                onChange={t => setParams({ tab: t }, { replace: true })}
+                onChange={t => go(t)}
                 tabs={[
-                    { value: "installed", label: "Installed", count: installed?.length ?? 0 },
-                    { value: "marketplace", label: "Marketplace" },
+                    { value: "builtin", label: "Built-in", icon: <Landmark /> },
+                    { value: "stremio", label: "Stremio addons", icon: <Blocks />, count: addons?.length ? addons.length : undefined },
+                    { value: "nuvio", label: "Nuvio providers", icon: <FolderGit />, count: nuvio.length ? nuvio.length : undefined },
+                    { value: "extensions", label: "Extensions", icon: <Puzzle />, count: exts.length ? exts.length : undefined },
                 ]}
             />
-            {tab === "installed" ? <Installed /> : <Marketplace />}
+            <div key={tab} className="fade-in">
+                {tab === "builtin" && <BuiltInTab />}
+                {tab === "stremio" && <StremioTab />}
+                {tab === "nuvio" && <NuvioTab />}
+                {tab === "extensions" && (
+                    <div className="flex flex-col gap-8">
+                        <Tabs
+                            className="self-start"
+                            value={view}
+                            onChange={v => go("extensions", v)}
+                            tabs={[
+                                { value: "installed", label: "Installed", count: exts.length },
+                                { value: "marketplace", label: "Marketplace" },
+                            ]}
+                        />
+                        {view === "installed" ? <Installed /> : <Marketplace />}
+                    </div>
+                )}
+            </div>
             <InstallUrlDialog open={manualOpen} onOpenChange={setManualOpen} />
         </div>
     )
-}
-
-function ExtIcon({ src, className }: { src?: string; className?: string }) {
-    const [err, setErr] = useState(false)
-    if (!src || err)
-        return (
-            <span className={cn("grid shrink-0 place-items-center rounded-lg bg-white/[0.06] text-muted", className)}>
-                <Puzzle className="size-5" />
-            </span>
-        )
-    return <img src={src} alt="" onError={() => setErr(true)} className={cn("shrink-0 rounded-lg bg-white/5 object-cover", className)} />
 }
 
 // ---------------------------------------------------------------------------
@@ -97,14 +132,15 @@ function Installed() {
         }
     }
     if (isLoading) return <div className="card h-40 shimmer" />
-    if (!data?.length)
+    const list = (data ?? []).filter(e => e.manifest.type !== "nuvio-provider") // in their own tab
+    if (!list.length)
         return (
             <EmptyState icon={<Puzzle className="size-6" />} title="No extensions installed">
                 Browse the marketplace to add providers and plugins.
             </EmptyState>
         )
     const groups = Object.keys(TYPES)
-        .map(t => ({ type: t, items: data.filter(e => e.manifest.type === t) }))
+        .map(t => ({ type: t, items: list.filter(e => e.manifest.type === t) }))
         .filter(g => g.items.length)
     return (
         <div className="flex flex-col gap-10">
@@ -246,29 +282,6 @@ function ConfigDialog({ open, onOpenChange, ext, onSaved }: { open: boolean; onO
                     </Field>
                 ))}
             </div>
-        </Dialog>
-    )
-}
-
-function LogsDialog({ open, onOpenChange, id }: { open: boolean; onOpenChange: (v: boolean) => void; id: string }) {
-    const [lines, setLines] = useState<LogLineT[]>([])
-    useEffect(() => {
-        if (open) api.get<LogLineT[] | null>(`/api/extensions/${id}/logs`).then(l => setLines(l ?? [])).catch(e => toast.error(e.message))
-    }, [open, id])
-    return (
-        <Dialog open={open} onOpenChange={onOpenChange} title="Extension logs" className="w-[min(94vw,820px)]">
-            {lines.length === 0 ? (
-                <p className="py-8 text-center text-sm text-subtle">No output yet.</p>
-            ) : (
-                <pre className="max-h-[60vh] overflow-auto rounded-xl bg-black/40 p-4 text-xs leading-relaxed">
-                    {lines.map((l, i) => (
-                        <div key={i} className={cn(l.level === "error" ? "text-rose-300" : l.level === "warn" ? "text-amber-300" : "text-fg/80")}>
-                            <span className="text-subtle">{new Date(l.time * 1000).toLocaleTimeString()} </span>
-                            {l.message}
-                        </div>
-                    ))}
-                </pre>
-            )}
         </Dialog>
     )
 }

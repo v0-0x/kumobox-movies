@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +28,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/lifecycle"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
+	"github.com/v0-0x/kumobox-movies/server/internal/providers/stremio"
 	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 	"github.com/v0-0x/kumobox-movies/server/internal/torrent"
@@ -69,6 +69,11 @@ type App struct {
 	prefetch *prefetcher
 	diary    diaryLog
 	presence presence
+
+	// Stremio holds the installed Stremio addons, collections the addon
+	// collections downloaded lately (see providers.go).
+	Stremio     *stremio.Store
+	collections *collectionCache
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -129,7 +134,7 @@ func New(dataDir string) (*App, error) {
 		DB: d, Settings: settings, Hub: hub, Platform: platform, Files: files, Scanner: scanner,
 		Library: lib, History: hist, Player: pl, Downloads: dls, Torrents: torrents,
 		AutoDL:     torrent.NewAutoDownloader(d, torrents, platform, files, hub),
-		Extensions: exts, Stream: stream.NewService(d, exts, platform), Local: stream.NewLocal(settings, files, d),
+		Extensions: exts, Stream: stream.NewService(streamOptions(settings)), Local: stream.NewLocal(settings, files, d),
 		Discord: &discord.Client{}, Logs: logs,
 		Images: images.New(filepath.Join(dataDir, "images")),
 		Update: update.New(hub, exits), Exits: exits,
@@ -142,6 +147,9 @@ func New(dataDir string) (*App, error) {
 	// Libraries other KumoBox apps share with this one show with its own.
 	lib.Remote = a.Share.RemoteFiles
 	a.ShellToken = randomToken()
+	if err := a.wireProviders(); err != nil {
+		return nil, fmt.Errorf("streaming providers: %w", err)
+	}
 	a.wire()
 	return a, nil
 }
@@ -191,27 +199,6 @@ func (a *App) wire() {
 	// Torrent search can use extension providers.
 	a.Torrents.ExtraProviders = a.Extensions.TorrentProviders
 
-	// Downloads resolved through a streaming provider.
-	a.Downloads.Resolvers["stream"] = func(ctx context.Context, it *downloads.Item) (*downloads.Resolved, error) {
-		media, err := a.Platform.MediaLite(ctx, it.MediaID)
-		if err != nil {
-			return nil, err
-		}
-		res, err := a.Stream.Sources(ctx, it.Provider, media, stream.ProviderEpisode(media, it.Episode), it.Mode == "dub", "", it.Quality)
-		if err != nil {
-			return nil, err
-		}
-		src := pickSource(res.Sources, it.Quality)
-		r := &downloads.Resolved{URL: src.URL, Headers: src.Headers}
-		for _, s := range src.Subtitles {
-			if s.IsDefault || strings.Contains(strings.ToLower(s.Language), "eng") {
-				r.SubURL = s.URL
-				break
-			}
-		}
-		return r, nil
-	}
-
 	// Auto play next: the next episode's file, or stream (playback.go).
 	a.Player.NextResolver, a.Player.HasNext = a.nextEpisode, a.hasNextEpisode
 
@@ -250,17 +237,6 @@ func (a *App) wire() {
 		}
 		a.Hub.Publish(events.SettingsUpdated, nil)
 	})
-}
-
-func pickSource(srcs []stream.Source, quality string) stream.Source {
-	if quality != "" && quality != "best" {
-		for _, s := range srcs {
-			if strings.Contains(s.Quality, strings.TrimSuffix(quality, "p")) {
-				return s
-			}
-		}
-	}
-	return srcs[0]
 }
 
 // Start runs the background jobs.

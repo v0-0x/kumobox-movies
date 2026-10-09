@@ -440,8 +440,12 @@ func (m *Manager) process(r *run) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tag := strings.ToUpper(util.FirstNonEmpty(it.Mode, "sub"))
-	name := util.SanitizeFilename(fmt.Sprintf("%s [%s]", label(&it), tag))
+	// The version (sub/dub) of extension streams is in the name; the
+	// streams of other providers have none.
+	name := util.SanitizeFilename(label(&it))
+	if it.Mode != "" {
+		name = util.SanitizeFilename(fmt.Sprintf("%s [%s]", label(&it), strings.ToUpper(it.Mode)))
+	}
 	out := filepath.Join(dir, name+".mp4")
 
 	// Download into a hidden folder next to the destination (the library

@@ -166,12 +166,12 @@ func TestMediaRoutes(t *testing.T) {
 		t.Error("still on the list")
 	}
 
-	for _, path := range []string{"/api/anime/155", "/api/anilist/discover", "/api/manga/collection", "/api/anicli/status", "/api/onlinestream/providers"} {
+	for _, path := range []string{"/api/anime/155", "/api/anilist/discover", "/api/manga/collection", "/api/anicli/status", "/api/onlinestream/providers", "/api/providers/providers"} {
 		if w := do(s, "GET", path, local, "", nil); w.Code != http.StatusNotFound {
 			t.Errorf("%s: %d, want gone", path, w.Code)
 		}
 	}
-	if w := do(s, "GET", "/api/providers/providers", local, "", nil); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+	if w := do(s, "GET", "/api/providers", local, "", nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"archive"`) {
 		t.Errorf("providers: %d %s", w.Code, w.Body.String())
 	}
 }

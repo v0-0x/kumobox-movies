@@ -280,6 +280,7 @@ type OnlineStreamProvider struct {
 
 func (p *OnlineStreamProvider) ID() string   { return p.ext.Manifest.ID }
 func (p *OnlineStreamProvider) Name() string { return p.ext.Manifest.Name }
+func (p *OnlineStreamProvider) Icon() string { return p.ext.Manifest.Icon }
 
 func (p *OnlineStreamProvider) Settings(ctx context.Context) OSSettings {
 	s := OSSettings{EpisodeServers: []string{}}

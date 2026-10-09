@@ -32,7 +32,7 @@ func TestFirstLaunchSavesDefaults(t *testing.T) {
 		t.Fatalf("schema version %d / %d, want %d", saved.SchemaVersion, s.Get().SchemaVersion, schemaVersion)
 	}
 	got := s.Get()
-	if got.Playback.DefaultPlayer != "builtin" || got.OnlineStream.DefaultProvider != "archive" || got.Downloads.Downloader != "auto" {
+	if got.Playback.DefaultPlayer != "builtin" || got.OnlineStream.DefaultProvider != "" || got.Downloads.Downloader != "auto" {
 		t.Fatalf("defaults: player %q, provider %q, downloader %q", got.Playback.DefaultPlayer, got.OnlineStream.DefaultProvider, got.Downloads.Downloader)
 	}
 	if got.TMDB.Language != "en-US" || got.TMDB.Region != "US" || got.TMDB.APIKey != "" {
@@ -73,7 +73,7 @@ func TestSavedSettingsKeepTheirValues(t *testing.T) {
 		{"letterboxd", got.Letterboxd.Username, "dave"},
 		{"download dir", got.Downloads.Dir, "/mnt/big/Downloads"},
 		{"downloader", got.Downloads.Downloader, "auto"},
-		{"provider", got.OnlineStream.DefaultProvider, "archive"},
+		{"provider", got.OnlineStream.DefaultProvider, ""}, // all of them
 		{"torrent source", got.Torrent.DefaultProvider, "all"},
 	} {
 		if c.got != c.want {
