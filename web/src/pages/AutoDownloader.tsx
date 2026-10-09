@@ -7,7 +7,7 @@ import { MediaPicker } from "@/components/MediaPicker"
 import { Badge, Button, Dialog, EmptyState, Field, IconButton, Input, Select, Switch } from "@/components/ui"
 import { api } from "@/lib/api"
 import { formatKey, mediaIsShow, seasonEpisodeCount, splitKey } from "@/lib/ids"
-import { useAutoItems, useAutoRules, useCollection, useRuleWanted, useSaveSettings, useStatus } from "@/lib/queries"
+import { fetchEntry, useAutoItems, useAutoRules, useCollection, useRuleWanted, useSaveSettings, useStatus } from "@/lib/queries"
 import type { AutoItem, AutoRule, AutoRunReport, Media } from "@/lib/types"
 import { cn, cover, entryUrl, relativeTime, title } from "@/lib/utils"
 import { PathInput } from "./settings/parts"
@@ -48,12 +48,13 @@ function useListShows() {
     }, [data])
 }
 
-// A show by id: from the list, else its page.
+// A show by id: from the list, else its page (the title page's own query,
+// which this shares).
 function useShow(id: number, list: Media[]) {
     const inList = list.find(m => m.id === id)
     const { data } = useQuery({
         queryKey: ["entry", id],
-        queryFn: () => api.get<{ media: Media }>(`/api/media/${id}`),
+        queryFn: () => fetchEntry(id),
         enabled: id > 0 && !inList,
         staleTime: 3600_000,
         retry: false,
