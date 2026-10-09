@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -120,10 +119,16 @@ type pathsBody struct {
 	Paths   []string `json:"paths"`
 	MediaID int      `json:"mediaId"`
 	Ignored bool     `json:"ignored"`
-	// Optional: shift the episode numbers of the file names (e.g. -12 when a
-	// folder numbers a show's episodes from the first one).
+	// Matching to a show, all optional:
+	// Absolute: the numbers in the names count from the show's first
+	// episode (episode 13 of a show with 12 in season 1 is S02E01).
+	Absolute bool `json:"absolute"`
+	// Season: the numbers in the names are episodes of this season (0:
+	// the specials).
+	Season *int `json:"season"`
+	// EpisodeOffset shifts the numbers of the names (e.g. -12).
 	EpisodeOffset int `json:"episodeOffset"`
-	// Optional: number the episodes 1, 2, 3… in file-name order instead
+	// Renumber numbers the episodes 1, 2, 3… in file-name order instead
 	// (for files whose names carry no usable episode number).
 	Renumber bool `json:"renumber"`
 }
@@ -156,31 +161,14 @@ func (s *Server) match(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	order := map[string]int{}
-	if body.Renumber {
-		var main []*library.LocalFile
-		for _, f := range files {
-			if f.Kind != "nc" && f.Kind != "special" {
-				main = append(main, f)
-			}
-		}
-		sort.SliceStable(main, func(i, j int) bool { return naturalLess(main[i].Name, main[j].Name) })
-		for i, f := range main {
-			order[f.Path] = i + 1
-		}
+	if body.Season != nil && *body.Season < 0 {
+		body.Season = nil
 	}
-	for _, f := range files {
-		f.MediaID, f.Locked, f.Ignored, f.MatchScore = body.MediaID, true, false, 1
-		// The episode by the number in its name (or its place), shifted.
-		numbered := *f
-		if f.Parsed.Episode >= 0 {
-			numbered.Parsed.Episode = f.Parsed.Episode + body.EpisodeOffset
-		}
-		if n, ok := order[f.Path]; ok {
-			numbered.Parsed.Episode = n + body.EpisodeOffset
-		}
-		f.Episode = library.FileKey(&numbered, media)
-	}
+	m := library.NewMatcher(s.app.Platform, nil, 0, false)
+	m.AssignManual(r.Context(), files, media, library.ManualOptions{
+		Absolute: body.Absolute, Season: body.Season, Offset: body.EpisodeOffset,
+		Renumber: body.Renumber, Less: naturalLess,
+	})
 	if err := s.app.Files.Save(files...); err != nil {
 		return nil, err
 	}
@@ -305,21 +293,37 @@ func (s *Server) patchFile(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, notFound("file not in library")
 	}
-	if body.Episode != nil {
-		f.Episode = *body.Episode
+	if body.MediaID != nil {
+		f.MediaID = *body.MediaID
 		f.Locked = true
 	}
+	if body.Episode != nil {
+		if *body.Episode < 0 {
+			return nil, badRequest("invalid episode")
+		}
+		// A key: S02E05 is 2005, a special S00E03 is 3, a movie 1. The
+		// file holds that one episode now.
+		f.Episode, f.EpisodeEnd = *body.Episode, 0
+		f.Locked = true
+		if body.Kind == nil && catalog.IsShow(f.MediaID) && f.Kind != library.KindExtra {
+			f.Kind = library.KindMain
+			if f.Episode > 0 && f.Episode < 1000 {
+				f.Kind = library.KindSpecial
+			}
+		}
+	}
 	if body.Kind != nil {
-		switch *body.Kind {
-		case "main", "special", "nc":
-			f.Kind = *body.Kind
-			f.Locked = true
+		switch k := *body.Kind; k {
+		case library.KindMain, library.KindSpecial, library.KindExtra, library.KindPart:
+			f.Kind = k
+		case "nc": // Kumo's name for bonus videos
+			f.Kind = library.KindExtra
 		default:
 			return nil, badRequest("invalid kind")
 		}
-	}
-	if body.MediaID != nil {
-		f.MediaID = *body.MediaID
+		if f.Kind == library.KindExtra {
+			f.Episode, f.EpisodeEnd = 0, 0
+		}
 		f.Locked = true
 	}
 	if body.Locked != nil {

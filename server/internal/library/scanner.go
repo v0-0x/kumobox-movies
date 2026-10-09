@@ -42,7 +42,9 @@ type Scanner struct {
 
 func NewScanner(store *Store, p *catalog.Platform, s *config.Store, hub *events.Hub) *Scanner {
 	sc := &Scanner{Store: store, platform: p, settings: s, hub: hub}
-	sc.newMatcher = func(threshold float64, outsideList bool) *Matcher { return NewMatcher(p, threshold, outsideList) }
+	sc.newMatcher = func(threshold float64, outsideList bool) *Matcher {
+		return NewMatcher(p, store.db, threshold, outsideList)
+	}
 	return sc
 }
 
@@ -50,8 +52,10 @@ func NewScanner(store *Store, p *catalog.Platform, s *config.Store, hub *events.
 // automatically before are matched again, once, at the next scan.
 //
 //	1: TMDB movies and shows.
+//	2: release names, files matched by folder, episode keys from seasons,
+//	   absolute numbers and air dates.
 const (
-	matcherVersion    = 1
+	matcherVersion    = 2
 	matcherVersionKey = "library:matcher-version"
 )
 
@@ -169,11 +173,24 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 	for path, info := range found {
 		old := byPath[path]
 		if old != nil && old.Size == info.Size() && old.ModTime == info.ModTime().Unix() && !opts.Full {
-			if (old.MediaID == 0 || upgrade) && !old.Locked && !old.Ignored {
-				cp := *old
-				toMatch = append(toMatch, &cp)
-				changed = append(changed, &cp)
+			// Read again when names are read differently now, matched again
+			// when unmatched (or matching got better).
+			reparse := old.Parsed.V < parseVersion
+			rematch := (old.MediaID == 0 || upgrade) && !old.Locked && !old.Ignored
+			if !reparse && !rematch {
+				continue
 			}
+			cp := *old
+			if reparse {
+				cp.Parsed = Parse(path, roots)
+				if cp.MediaID == 0 && !cp.Locked {
+					cp.Kind = cp.Parsed.Kind
+				}
+			}
+			if rematch {
+				toMatch = append(toMatch, &cp)
+			}
+			changed = append(changed, &cp)
 			continue
 		}
 		f := &LocalFile{
@@ -185,15 +202,10 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 			Parsed:  Parse(path, roots),
 		}
 		f.Kind = f.Parsed.Kind
-		f.Episode = max(f.Parsed.Episode, 0)
-		if f.Parsed.Season > 0 && f.Episode > 0 {
-			f.Episode = catalog.EpisodeKey(f.Parsed.Season, f.Episode)
-		}
-		f.AiredEpisode = f.Parsed.Episode
 		if old != nil {
 			f.Locked, f.Ignored = old.Locked, old.Ignored
 			if old.Locked {
-				f.MediaID, f.Episode, f.Kind, f.MatchScore = old.MediaID, old.Episode, old.Kind, old.MatchScore
+				f.MediaID, f.Episode, f.EpisodeEnd, f.Kind, f.MatchScore = old.MediaID, old.Episode, old.EpisodeEnd, old.Kind, old.MatchScore
 			}
 		} else {
 			res.Added++
@@ -207,8 +219,21 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 	res.Removed = len(removed)
 
 	if !opts.SkipMatching && len(toMatch) > 0 {
+		// The index as this scan read it (names read again included), for
+		// new files to follow their folder's match.
+		known := make([]*LocalFile, 0, len(existing))
+		updated := make(map[string]*LocalFile, len(changed))
+		for _, f := range changed {
+			updated[f.Path] = f
+		}
+		for _, f := range existing {
+			if u := updated[f.Path]; u != nil {
+				f = u
+			}
+			known = append(known, f)
+		}
 		m := s.newMatcher(cfg.Library.MatchThreshold, cfg.Library.MatchOutsideList)
-		m.MatchFiles(ctx, toMatch, func(done, total int, title string) {
+		m.MatchFiles(ctx, toMatch, known, func(done, total int, title string) {
 			s.hub.Publish(events.ScanProgress, ScanProgress{Stage: "matching", Done: done, Total: total, Message: "Matching " + title})
 		})
 		if upgrade {
@@ -217,7 +242,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 			// done again next scan.
 			for _, f := range toMatch {
 				if old := byPath[f.Path]; f.MediaID == 0 && old != nil && old.MediaID != 0 && old.Size == f.Size && old.ModTime == f.ModTime {
-					f.MediaID, f.Episode, f.Kind, f.MatchScore = old.MediaID, old.Episode, old.Kind, old.MatchScore
+					f.MediaID, f.Episode, f.EpisodeEnd, f.Kind, f.MatchScore = old.MediaID, old.Episode, old.EpisodeEnd, old.Kind, old.MatchScore
 				}
 			}
 			if m.SearchFailures() == 0 && ctx.Err() == nil {

@@ -1,6 +1,7 @@
 package downloads
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
@@ -223,7 +225,7 @@ printf 'video' > "$last"
 	if got.Status != StatusCompleted {
 		t.Fatalf("status = %s (%s), want completed", got.Status, got.Error)
 	}
-	want := filepath.Join(lib, "Flood", "Flood [SUB].mp4")
+	want := filepath.Join(lib, "Flood", "Flood.mp4")
 	if got.Output != want {
 		t.Fatalf("output = %q, want %q", got.Output, want)
 	}
@@ -289,7 +291,7 @@ printf 'fragment' > "$out.part-Frag1"
 		if got.Status != StatusCompleted {
 			t.Fatalf("status = %s (%s), want completed", got.Status, got.Error)
 		}
-		if names := dirEntries(t, filepath.Join(lib, "Chatty")); strings.Join(names, ",") != "Chatty [SUB].mp4" {
+		if names := dirEntries(t, filepath.Join(lib, "Chatty")); strings.Join(names, ",") != "Chatty.mp4" {
 			t.Fatalf("anime folder holds %v, want only the video", names)
 		}
 		var sawProgress bool
@@ -346,7 +348,7 @@ while :; do sleep 0.05; done
 				c.Downloads.Downloader, c.Transcode.FfmpegPath = tc.name, script
 			})
 			it := enqueue(t, m, "Halt")
-			waitFile(t, filepath.Join(lib, "Halt", ".kumobox-download-"+it.ID, "Halt [SUB]"+tc.partial))
+			waitFile(t, filepath.Join(lib, "Halt", ".kumobox-download-"+it.ID, "Halt"+tc.partial))
 			m.Cancel(it.ID)
 			waitIdleWithin(t, m, 5*time.Second)
 			if got := find(m, it.ID); got.Status != StatusCanceled {
@@ -573,5 +575,78 @@ func TestDownloadFolder(t *testing.T) {
 	}
 	if dir, _ := m.folderFor(cfg, 99, "  "); filepath.Base(dir) != "Title 99" {
 		t.Fatalf("no title: got %q", dir)
+	}
+}
+
+// Finished downloads are named the way Plex, Jellyfin and the library read
+// them — "Movie (Year)/Movie (Year).mp4", "Show (Year)/Season 02/Show -
+// S02E05.mp4" — with names valid on every OS, in the show's folder when
+// it has one, and are matched at once with what was downloaded.
+func TestDownloadNames(t *testing.T) {
+	m, lib := newTestManager(t, nil)
+	titles := map[int]*catalog.Media{}
+	add := func(id int, kind, title string, year int) {
+		mm := &catalog.Media{ID: id, Type: kind, SeasonYear: &year}
+		mm.Title.English, mm.Title.UserPreferred = title, title
+		titles[id] = mm
+	}
+	add(603, catalog.TypeMovie, "The Matrix", 1999)
+	add(catalog.ShowID(1396), catalog.TypeTV, "Breaking Bad", 2008)
+	add(catalog.ShowID(85949), catalog.TypeTV, "Star Trek: Picard", 2020)
+	m.Lookup = func(_ context.Context, id int) (*catalog.Media, error) {
+		if mm := titles[id]; mm != nil {
+			return mm, nil
+		}
+		return nil, catalog.ErrNotFound
+	}
+	m.fetch = func(_ *run, _ config.Settings, _ *Resolved, out string) error {
+		return os.WriteFile(out, []byte("video"), 0o644)
+	}
+	// Picard's episodes are already in a folder of the user's.
+	own := filepath.Join(lib, "Picard")
+	ownFile := filepath.Join(own, "Season 01", "Picard.S01E01.mkv")
+	if err := os.MkdirAll(filepath.Dir(ownFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.files.Save(&library.LocalFile{Path: ownFile, Dir: filepath.Dir(ownFile), Name: filepath.Base(ownFile), MediaID: catalog.ShowID(85949), Episode: 1001, Kind: "main",
+		Parsed: library.Parse(ownFile, []string{lib})}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		mediaID, episode int
+		title            string
+		want             string
+		kind             string
+	}{
+		{603, 1, "Matrix", "The Matrix (1999)/The Matrix (1999).mp4", "main"},
+		{catalog.ShowID(1396), 2005, "BB", "Breaking Bad (2008)/Season 02/Breaking Bad - S02E05.mp4", "main"},
+		{catalog.ShowID(1396), 3, "BB", "Breaking Bad (2008)/Specials/Breaking Bad - S00E03.mp4", "special"},
+		{catalog.ShowID(85949), 1002, "Picard", "Picard/Season 01/Star Trek： Picard - S01E02.mp4", "main"},
+		{catalog.ShowID(77), 1001, "Not: On TMDB?", "Not： On TMDB/Season 01/Not： On TMDB - S01E01.mp4", "main"},
+	} {
+		it, err := m.Enqueue(Item{MediaID: c.mediaID, Episode: c.episode, AnimeTitle: c.title, Source: "stream", URL: testURL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := waitFinal(t, m, it.ID, 15*time.Second)
+		want := filepath.Join(lib, filepath.FromSlash(c.want))
+		if got.Status != StatusCompleted || got.Output != want {
+			t.Errorf("%s: %s %q (%s), want %q", c.title, got.Status, got.Output, got.Error, want)
+			continue
+		}
+		f, err := m.files.Get(want)
+		if err != nil || f.MediaID != c.mediaID || f.Episode != c.episode || f.Kind != c.kind || !f.Locked {
+			t.Errorf("%s: library entry %+v, %v", c.title, f, err)
+		}
+	}
+	// The library reads the names back as what they are.
+	f, _ := m.files.Get(filepath.Join(lib, "Breaking Bad (2008)", "Season 02", "Breaking Bad - S02E05.mp4"))
+	if p := f.Parsed; p.Title != "Breaking Bad" || p.Year != 2008 || p.Season != 2 || p.Episode != 5 {
+		t.Errorf("parsed back: %+v", p)
+	}
+	f, _ = m.files.Get(filepath.Join(lib, "The Matrix (1999)", "The Matrix (1999).mp4"))
+	if p := f.Parsed; p.Title != "The Matrix" || p.Year != 1999 || p.Show {
+		t.Errorf("parsed back: %+v", p)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/v0-0x/kumobox-movies/server/internal/library"
 )
 
 // Every movie and show with files, this computer's or shared with it by
@@ -120,12 +122,34 @@ func (a *App) prefetchOne(ctx context.Context, id int) (fetched bool) {
 	fetched = !a.Platform.HasDetails(id)
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
+	media, err := a.Platform.Media(ctx, id, false)
+	if err != nil {
+		return fetched
+	}
+	// The episodes of the seasons it has files of (and of the one being
+	// watched), one season at a time: not every season of a long show.
+	files, _ := a.Files.ByMedia(id)
+	for _, f := range a.Share.RemoteFiles() {
+		if f.MediaID == id {
+			files = append(files, f)
+		}
+	}
+	progress := 0
+	if media.MediaListEntry != nil {
+		progress = media.MediaListEntry.Progress
+	}
+	complete := true
+	for _, n := range library.SeasonsWanted(media, files, progress) {
+		if _, err := a.Platform.Season(ctx, id, n); err != nil {
+			complete = false
+		}
+	}
 	e, err := a.Library.Entry(ctx, id, false)
 	if err != nil || e == nil || e.Media == nil {
 		return fetched
 	}
 	a.PrefetchEntryArt(e)
-	if e.MetadataNote == "" {
+	if complete && e.MetadataNote == "" {
 		a.DB.SetCache(prefetchedKey(id), true, prefetchedFor)
 	}
 	return fetched

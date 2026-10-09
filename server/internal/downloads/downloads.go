@@ -26,6 +26,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
+	"github.com/v0-0x/kumobox-movies/server/internal/release"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -81,6 +82,11 @@ type Manager struct {
 	files    *library.Store
 
 	Resolvers map[string]Resolver
+
+	// Lookup gives the movie or show of a download, whose title and year
+	// name its folder and file. Unset (tests), they're named after the
+	// item's title.
+	Lookup func(ctx context.Context, mediaID int) (*catalog.Media, error)
 
 	// saveMu orders the writes of an item (database row and UI event) with
 	// its deletion, so a late update can't bring a removed item back.
@@ -433,15 +439,19 @@ func (m *Manager) process(r *run) error {
 		return ctx.Err()
 	}
 
-	dir, err := m.folderFor(cfg, it.MediaID, it.AnimeTitle)
+	title, year := it.AnimeTitle, 0
+	if m.Lookup != nil {
+		if media, err := m.Lookup(ctx, it.MediaID); err == nil && media != nil {
+			title, year = util.FirstNonEmpty(media.PreferredTitle(), title), media.Year()
+		}
+	}
+	dir, name, err := m.destination(cfg, &it, title, year)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tag := strings.ToUpper(util.FirstNonEmpty(it.Mode, "sub"))
-	name := util.SanitizeFilename(fmt.Sprintf("%s [%s]", label(&it), tag))
 	out := filepath.Join(dir, name+".mp4")
 
 	// Download into a hidden folder next to the destination (the library
@@ -493,12 +503,15 @@ func (m *Manager) process(r *run) error {
 		_ = os.Rename(filepath.Join(work, sub), filepath.Join(dir, sub))
 	}
 
-	// Register the file as matched so it appears instantly.
-	roots := cfg.LibraryDirs()
+	// Register the file as matched (the movie or show and the episode are
+	// known: no search needed) so it appears instantly.
 	f := &library.LocalFile{
 		Path: out, Dir: dir, Name: filepath.Base(out), Size: st.Size(), ModTime: st.ModTime().Unix(),
-		Parsed: library.Parse(out, roots), MediaID: it.MediaID, Episode: it.Episode, AiredEpisode: it.Episode,
-		Kind: "main", Locked: true, MatchScore: 1,
+		Parsed: library.Parse(out, cfg.LibraryDirs()), MediaID: it.MediaID, Episode: it.Episode,
+		Kind: library.KindMain, Locked: true, MatchScore: 1,
+	}
+	if catalog.IsShow(it.MediaID) && it.Episode > 0 && it.Episode < 1000 {
+		f.Kind = library.KindSpecial
 	}
 	if err := m.files.Save(f); err != nil {
 		log.Printf("register download: %v", err)
@@ -533,11 +546,49 @@ func label(it *Item) string {
 	return it.AnimeTitle
 }
 
-// folderFor is where a movie or the episodes of a show are downloaded: the
-// folder that already holds its files (when it's inside the
-// download/library folder), otherwise a new folder named after it — never
+// titleWithYear is "Title (Year)", the way Plex, Jellyfin and the library
+// scanner like movie and show folders named.
+func titleWithYear(title string, year int) string {
+	title = strings.TrimSpace(title)
+	if year > 0 && !strings.HasSuffix(title, fmt.Sprintf("(%d)", year)) {
+		return fmt.Sprintf("%s (%d)", title, year)
+	}
+	return title
+}
+
+// destination is the folder a finished download goes to and its file name
+// (without the extension), named the way Plex, Jellyfin and the library
+// scanner read them:
+//
+//	movies: <Title> (<Year>)/<Title> (<Year>)
+//	shows:  <Title> (<Year>)/Season 02/<Title> - S02E05  (specials: Specials/)
+//
+// in the folder that already holds the title's files when there is one.
+func (m *Manager) destination(cfg config.Settings, it *Item, title string, year int) (dir, name string, err error) {
+	if strings.TrimSpace(title) == "" {
+		title = fmt.Sprintf("Title %d", it.MediaID)
+	}
+	full := titleWithYear(title, year)
+	dir, err = m.folderFor(cfg, it.MediaID, full)
+	if err != nil {
+		return "", "", err
+	}
+	if !catalog.IsShow(it.MediaID) || it.Episode <= 0 {
+		return dir, util.SanitizeFilename(full), nil
+	}
+	season, _ := catalog.SplitKey(it.Episode)
+	seasonDir := fmt.Sprintf("Season %02d", season)
+	if season == 0 {
+		seasonDir = "Specials"
+	}
+	return filepath.Join(dir, seasonDir), util.SanitizeFilename(strings.TrimSpace(title) + " - " + catalog.FormatKey(it.Episode)), nil
+}
+
+// folderFor is the folder of a movie or show downloads go to: the one that
+// already holds its files (its "Title (Year)" folder, when it's inside the
+// download/library folder), otherwise a new one named folderName — never
 // loose in the library folder itself.
-func (m *Manager) folderFor(cfg config.Settings, mediaID int, animeTitle string) (string, error) {
+func (m *Manager) folderFor(cfg config.Settings, mediaID int, folderName string) (string, error) {
 	baseDir := config.ExpandHome(util.FirstNonEmpty(cfg.Downloads.Dir, cfg.Library.Dir))
 	if baseDir == "" {
 		return "", errors.New("no download directory configured")
@@ -548,7 +599,12 @@ func (m *Manager) folderFor(cfg config.Settings, mediaID int, animeTitle string)
 			counts := map[string]int{}
 			best := ""
 			for _, f := range existing {
-				d := filepath.Clean(f.Dir)
+				// The movie's or show's folder, else the file's (a season
+				// folder is a show's: its parent is the show's).
+				d := filepath.Clean(util.FirstNonEmpty(f.Parsed.Folder, f.Dir))
+				if f.Parsed.Folder == "" && !release.NamesTitle(filepath.Base(d)) && filepath.Dir(d) != baseDir {
+					d = filepath.Dir(d)
+				}
 				// Only a folder of its own below the base folder.
 				if d == baseDir || !util.IsSubPath(baseDir, d) || strings.HasPrefix(filepath.Base(d), ".") {
 					continue
@@ -565,7 +621,7 @@ func (m *Manager) folderFor(cfg config.Settings, mediaID int, animeTitle string)
 			}
 		}
 	}
-	name := strings.TrimSpace(animeTitle)
+	name := strings.TrimSpace(folderName)
 	if name == "" {
 		name = fmt.Sprintf("Title %d", mediaID)
 	}

@@ -2,7 +2,6 @@ package library
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -72,20 +71,20 @@ func scan(t *testing.T, s *Scanner) *ScanResult {
 
 func TestScanFollowsSymlinks(t *testing.T) {
 	base := t.TempDir()
-	real := filepath.Join(base, "hdd", "Anime")
-	touch(t, filepath.Join(real, "Frieren", "[SubsPlease] Sousou no Frieren - 01 (1080p).mkv"))
-	other := filepath.Join(base, "other", "Bocchi")
-	touch(t, filepath.Join(other, "Bocchi the Rock! - 01.mkv"))
-	if err := os.Symlink(other, filepath.Join(real, "Bocchi")); err != nil { // symlinked show folder
+	real := filepath.Join(base, "hdd", "TV")
+	touch(t, filepath.Join(real, "Severance (2022)", "Season 01", "Severance.S01E01.1080p.mkv"))
+	other := filepath.Join(base, "other", "Fargo")
+	touch(t, filepath.Join(other, "Fargo.S01E01.mkv"))
+	if err := os.Symlink(other, filepath.Join(real, "Fargo")); err != nil { // symlinked show folder
 		if runtime.GOOS == "windows" {
 			t.Skip("Windows only lets administrators (or Developer Mode) make symlinks:", err)
 		}
 		t.Fatal(err)
 	}
-	if err := os.Symlink(real, filepath.Join(real, "Frieren", "loop")); err != nil { // loop back to the root
+	if err := os.Symlink(real, filepath.Join(real, "Severance (2022)", "loop")); err != nil { // loop back to the root
 		t.Fatal(err)
 	}
-	root := filepath.Join(base, "Videos", "Anime")
+	root := filepath.Join(base, "Videos", "TV")
 	if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -96,23 +95,28 @@ func TestScanFollowsSymlinks(t *testing.T) {
 	scan(t, s)
 	got := paths(t, s)
 	want := []string{
-		filepath.Join(root, "Bocchi", "Bocchi the Rock! - 01.mkv"),
-		filepath.Join(root, "Frieren", "[SubsPlease] Sousou no Frieren - 01 (1080p).mkv"),
+		filepath.Join(root, "Fargo", "Fargo.S01E01.mkv"),
+		filepath.Join(root, "Severance (2022)", "Season 01", "Severance.S01E01.1080p.mkv"),
 	}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("got %q\nwant %q", got, want)
+	}
+	// Paths are read below the root as configured.
+	f, _ := s.Store.Get(want[0])
+	if f.Parsed.Title != "Fargo" || f.Parsed.Folder != filepath.Join(root, "Fargo") || f.Parsed.Season != 1 || f.Parsed.Episode != 1 {
+		t.Errorf("parsed %+v", f.Parsed)
 	}
 }
 
 func TestScanKeepsFilesOfMissingDrives(t *testing.T) {
 	base := t.TempDir()
-	main := filepath.Join(base, "Anime")
-	extra := filepath.Join(base, "usb", "Anime")
+	main := filepath.Join(base, "TV")
+	extra := filepath.Join(base, "usb", "Movies")
 	mount := filepath.Join(base, "mnt") // a mount point that stays behind empty
-	a := filepath.Join(main, "Show A", "Show A - 01.mkv")
-	b := filepath.Join(main, "Show A", "Show A - 02.mkv")
-	c := filepath.Join(extra, "Show B", "Show B - 01.mkv")
-	d := filepath.Join(mount, "Show C", "Show C - 01.mkv")
+	a := filepath.Join(main, "Show A", "Season 01", "Show A - S01E01.mkv")
+	b := filepath.Join(main, "Show A", "Season 01", "Show A - S01E02.mkv")
+	c := filepath.Join(extra, "Movie B (2010)", "Movie B (2010).mkv")
+	d := filepath.Join(mount, "Movie C (2012)", "Movie.C.2012.1080p.mkv")
 	for _, p := range []string{a, b, c, d} {
 		touch(t, p)
 	}
@@ -129,7 +133,7 @@ func TestScanKeepsFilesOfMissingDrives(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(base, "usb")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(mount, "Show C")); err != nil {
+	if err := os.RemoveAll(filepath.Join(mount, "Movie C (2012)")); err != nil {
 		t.Fatal(err)
 	}
 	res := scan(t, s)
@@ -143,17 +147,17 @@ func TestScanKeepsFilesOfMissingDrives(t *testing.T) {
 
 func TestScanKeepsDownloadsOutsideLibrary(t *testing.T) {
 	base := t.TempDir()
-	lib := filepath.Join(base, "Anime")
-	touch(t, filepath.Join(lib, "Show - 01.mkv"))
+	lib := filepath.Join(base, "TV")
+	touch(t, filepath.Join(lib, "Show", "Show.S01E01.mkv"))
 	s, _ := newTestScanner(t, lib)
-	dl := filepath.Join(base, "Downloads", "Show - 02.mp4")
+	dl := filepath.Join(base, "Downloads", "Show", "Season 01", "Show - S01E02.mp4")
 	touch(t, dl)
 	// Registered by the downloader, outside the library folders.
-	if err := s.Store.Save(&LocalFile{Path: dl, Dir: filepath.Dir(dl), Name: filepath.Base(dl), MediaID: 7, Episode: 2, Kind: "main", Locked: true}); err != nil {
+	if err := s.Store.Save(&LocalFile{Path: dl, Dir: filepath.Dir(dl), Name: filepath.Base(dl), MediaID: catalog.ShowID(7), Episode: 1002, Kind: KindMain, Locked: true}); err != nil {
 		t.Fatal(err)
 	}
 	scan(t, s)
-	if f, _ := s.Store.Get(dl); f == nil || f.MediaID != 7 {
+	if f, _ := s.Store.Get(dl); f == nil || f.MediaID != catalog.ShowID(7) || f.Episode != 1002 {
 		t.Fatalf("download was dropped by the scan: %+v", f)
 	}
 	if err := os.Remove(dl); err != nil {
@@ -167,7 +171,7 @@ func TestScanKeepsDownloadsOutsideLibrary(t *testing.T) {
 
 func TestSaveScannedKeepsConcurrentChanges(t *testing.T) {
 	s, _ := newTestScanner(t, t.TempDir())
-	orig := &LocalFile{Path: "/lib/x.mkv", Dir: "/lib", Name: "x.mkv", Kind: "main"}
+	orig := &LocalFile{Path: "/lib/x.mkv", Dir: "/lib", Name: "x.mkv", Kind: KindMain}
 	if err := s.Store.Save(orig); err != nil {
 		t.Fatal(err)
 	}
@@ -179,14 +183,14 @@ func TestSaveScannedKeepsConcurrentChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	// …and a download registered a new file the scan also found.
-	dl := &LocalFile{Path: "/lib/y.mkv", Dir: "/lib", Name: "y.mkv", MediaID: 9, Episode: 1, Kind: "main", Locked: true}
+	dl := &LocalFile{Path: "/lib/y.mkv", Dir: "/lib", Name: "y.mkv", MediaID: 9, Episode: 1, Kind: KindMain, Locked: true}
 	if err := s.Store.Save(dl); err != nil {
 		t.Fatal(err)
 	}
 
 	scanned := *orig
 	scanned.MediaID, scanned.Episode = 8, 1
-	newer := &LocalFile{Path: "/lib/y.mkv", Dir: "/lib", Name: "y.mkv", Kind: "main"}
+	newer := &LocalFile{Path: "/lib/y.mkv", Dir: "/lib", Name: "y.mkv", Kind: KindMain}
 	if err := s.Store.SaveScanned([]*LocalFile{&scanned, newer}, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -209,24 +213,46 @@ func TestSaveScannedKeepsConcurrentChanges(t *testing.T) {
 	}
 }
 
+// The episodes a multi-episode file holds are stored with it; what Kumo
+// kept in that column (the number in the name) and its "nc" kind read as
+// today's.
+func TestStoreMultiEpisodeAndOldRows(t *testing.T) {
+	s, _ := newTestScanner(t, t.TempDir())
+	f := &LocalFile{Path: "/tv/Show.S01E01E02.mkv", Dir: "/tv", Name: "Show.S01E01E02.mkv", MediaID: catalog.ShowID(3), Episode: 1001, EpisodeEnd: 1002, Kind: KindMain}
+	if err := s.Store.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Store.Get(f.Path)
+	if got.EpisodeEnd != 1002 || !got.Covers(1002) || got.Covers(1003) || len(got.Keys()) != 2 {
+		t.Errorf("multi-episode file: %+v keys %v", got, got.Keys())
+	}
+	if _, err := s.Store.db.Write(`INSERT INTO local_files(path, dir, name, media_id, episode, aired_episode, kind) VALUES('/tv/old.mkv', '/tv', 'old.mkv', 7, 1005, 5, 'nc')`); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := s.Store.Get("/tv/old.mkv")
+	if old.EpisodeEnd != 0 || old.Kind != KindExtra {
+		t.Errorf("old row: %+v", old)
+	}
+}
+
 func TestFoldersExplainSkippedFolders(t *testing.T) {
 	base := t.TempDir()
-	lib := filepath.Join(base, "Anime")
-	s1 := filepath.Join(lib, "[Lulu] Code Geass")
-	touch(t, filepath.Join(s1, "Code Geass - 01.mkv"))
-	touch(t, filepath.Join(s1, "Code Geass - 02.mkv"))
-	touch(t, filepath.Join(s1, "Scans", "01.jpg")) // extras: not listed
+	lib := filepath.Join(base, "TV")
+	s1 := filepath.Join(lib, "Fargo (2014)")
+	touch(t, filepath.Join(s1, "Fargo.S01E01.mkv"))
+	touch(t, filepath.Join(s1, "Fargo.S01E02.mkv"))
+	touch(t, filepath.Join(s1, "Artwork", "poster.jpg")) // extras: not listed
 	// Still downloading in qBittorrent.
-	r2 := filepath.Join(lib, "Code Geass Hangyaku no Lelouch R2")
-	touch(t, filepath.Join(r2, "Code Geass R2 - 01.mkv.!qB"))
-	touch(t, filepath.Join(r2, "Code Geass R2 - 02.mkv.!qB"))
+	s2 := filepath.Join(lib, "Fargo Season 2")
+	touch(t, filepath.Join(s2, "Fargo.S02E01.mkv.!qB"))
+	touch(t, filepath.Join(s2, "Fargo.S02E02.mkv.!qB"))
 	touch(t, filepath.Join(lib, "Some Show Sample Clips", "clip.mkv"))
 	touch(t, filepath.Join(lib, "Packed", "show.rar"))
 	touch(t, filepath.Join(lib, "Packed", "show.r00"))
-	touch(t, filepath.Join(lib, "Creditless", "Show NCOP.mkv"))
+	touch(t, filepath.Join(lib, "Partial", "Show.S01E01.mkv.part"))
 	touch(t, filepath.Join(lib, "Artbook", "Scans", "01.jpg"))
 	touch(t, filepath.Join(lib, "Notes", "readme.txt"))
-	touch(t, filepath.Join(lib, "KumoBox Download", ".kumobox-download-abc", "Show - 01 [SUB].mp4"))
+	touch(t, filepath.Join(lib, "KumoBox Download", ".kumobox-download-abc", "Show - S01E01.mp4"))
 	if err := os.MkdirAll(filepath.Join(lib, "Empty"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -246,51 +272,51 @@ func TestFoldersExplainSkippedFolders(t *testing.T) {
 		return out
 	}
 	got := byLabel()
-	if f := got["[Lulu] Code Geass"]; f.Videos != 2 || f.NotIndexed != 0 || f.Problem != "" {
+	if f := got["Fargo (2014)"]; f.Videos != 2 || f.NotIndexed != 0 || f.Problem != "" {
 		t.Errorf("season 1: %+v", f)
 	}
 	problems := map[string]string{
-		"Code Geass Hangyaku no Lelouch R2": "Still downloading (2 unfinished files)",
-		"Some Show Sample Clips":            "“*sample*”",
-		"Packed":                            "archives (.rar)",
-		"Creditless":                        "Ignore patterns skip its videos (*NCOP*)",
-		"Artbook":                           "No video files in this folder or its subfolders",
-		"Notes":                             "No video files here (1 .txt)",
-		"KumoBox Download":                  "Still downloading (1 unfinished file)",
-		"Empty":                             "The folder is empty",
+		"Fargo Season 2":         "Still downloading (2 unfinished files)",
+		"Some Show Sample Clips": "“*sample*”",
+		"Packed":                 "archives (.rar)",
+		"Partial":                "Still downloading (1 unfinished file)",
+		"Artbook":                "No video files in this folder or its subfolders",
+		"Notes":                  "No video files here (1 .txt)",
+		"KumoBox Download":       "Still downloading (1 unfinished file)",
+		"Empty":                  "The folder is empty",
 	}
 	for label, want := range problems {
 		if f, ok := got[label]; !ok || !strings.Contains(f.Problem, want) {
 			t.Errorf("%s: want problem %q, got %+v (listed: %v)", label, want, f, ok)
 		}
 	}
-	for _, label := range []string{"[Lulu] Code Geass/Scans", "Artbook/Scans", "KumoBox Download/.kumobox-download-abc"} {
+	for _, label := range []string{"Fargo (2014)/Artwork", "Artbook/Scans", "KumoBox Download/.kumobox-download-abc"} {
 		if f, ok := got[label]; ok {
 			t.Errorf("%s shouldn't be listed: %+v", label, f)
 		}
 	}
 
 	// The download finished, but no scan ran yet: index it on the spot.
-	for _, n := range []string{"Code Geass R2 - 01.mkv", "Code Geass R2 - 02.mkv"} {
-		if err := os.Rename(filepath.Join(r2, n+".!qB"), filepath.Join(r2, n)); err != nil {
+	for _, n := range []string{"Fargo.S02E01.mkv", "Fargo.S02E02.mkv"} {
+		if err := os.Rename(filepath.Join(s2, n+".!qB"), filepath.Join(s2, n)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if f := byLabel()["Code Geass Hangyaku no Lelouch R2"]; f.Videos != 2 || f.NotIndexed != 2 || f.Problem != "" {
+	if f := byLabel()["Fargo Season 2"]; f.Videos != 2 || f.NotIndexed != 2 || f.Problem != "" {
 		t.Errorf("finished, not indexed: %+v", f)
 	}
-	files, err := s.IndexFolders([]string{r2})
-	if err != nil || len(files) != 2 || files[0].MediaID != 0 || files[0].Episode != 1 || files[1].Episode != 2 {
+	files, err := s.IndexFolders([]string{s2})
+	if err != nil || len(files) != 2 || files[0].MediaID != 0 || files[0].Parsed.Season != 2 || files[0].Parsed.Episode != 1 || files[1].Parsed.Episode != 2 {
 		t.Fatalf("index: %d files %v", len(files), err)
 	}
-	if f := byLabel()["Code Geass Hangyaku no Lelouch R2"]; f.NotIndexed != 0 {
+	if f := byLabel()["Fargo Season 2"]; f.NotIndexed != 0 {
 		t.Errorf("after indexing: %+v", f)
 	}
 	// Indexing again changes nothing.
-	if again, err := s.IndexFolders([]string{r2}); err != nil || len(again) != 2 {
+	if again, err := s.IndexFolders([]string{s2}); err != nil || len(again) != 2 {
 		t.Fatalf("index again: %d files %v", len(again), err)
 	}
-	for _, dir := range []string{base, filepath.Join(lib, "..", "x"), "Anime"} {
+	for _, dir := range []string{base, filepath.Join(lib, "..", "x"), "TV"} {
 		if _, err := s.IndexFolders([]string{dir}); err == nil {
 			t.Errorf("indexing %s must be refused", dir)
 		}
@@ -306,79 +332,28 @@ func TestFoldersExplainSkippedFolders(t *testing.T) {
 			}
 		}
 	}
-	if f := byLabel()["[Lulu] Code Geass"]; !strings.Contains(f.Problem, "ignore its 2 videos") {
+	if f := byLabel()["Fargo (2014)"]; !strings.Contains(f.Problem, "ignore its 2 videos") {
 		t.Errorf("ignored by hand: %+v", f)
 	}
 }
 
-// Matching got better (matcherVersion): files matched before are matched
-// again once. The first film's files matched to its sequel go to the first
-// film when TMDB confirms it, keep their match while it can't, and aren't
-// matched again after.
-func TestScanRematchesAfterMatcherUpgrade(t *testing.T) {
+// Files indexed by an older version are read again (names are read
+// differently now), without touching what was matched by hand.
+func TestScanReparsesOldFiles(t *testing.T) {
 	lib := t.TempDir()
 	s, _ := newTestScanner(t, lib)
-	film := filepath.Join(lib, "Toy Story (1995)", "Toy.Story.1995.1080p.BluRay.x264.mkv")
-	byHand := filepath.Join(lib, "Other", "Other.2001.mkv")
-	touch(t, film)
-	touch(t, byHand)
-	scan(t, s) // indexed, not matched
-	files, _ := s.Store.All()
-	for _, f := range files {
-		f.MediaID, f.Episode, f.Kind, f.MatchScore = 863, 1, "main", 0.86 // the sequel, by the old matcher
-		if f.Path == byHand {
-			f.MediaID, f.Locked = 777, true // matched by hand
-		}
-	}
-	if err := s.Store.Save(files...); err != nil {
+	path := filepath.Join(lib, "Fargo (2014)", "Season 02", "Fargo.S02E05.mkv")
+	touch(t, path)
+	scan(t, s)
+	f, _ := s.Store.Get(path)
+	f.Parsed = Parsed{Title: "Fargo", Episode: 5} // as Kumo read it
+	f.MediaID, f.Episode, f.Locked = catalog.ShowID(60622), 2005, true
+	if err := s.Store.Save(f); err != nil {
 		t.Fatal(err)
 	}
-
-	ts1 := testMovie(862, "Toy Story", 1995)
-	ts2 := testMovie(863, "Toy Story 2", 1999)
-	tmdbUp := false
-	searches := 0
-	s.newMatcher = func(threshold float64, outsideList bool) *Matcher {
-		m := NewMatcher(nil, threshold, outsideList)
-		m.listFn = func(context.Context) []*catalog.Media { return []*catalog.Media{ts2} }
-		m.searchFn = func(context.Context, string) ([]*catalog.Media, error) {
-			searches++
-			if !tmdbUp {
-				return nil, errors.New("TMDB is down")
-			}
-			return []*catalog.Media{ts1, ts2}, nil
-		}
-		return m
-	}
-	matchedTo := func(path string) *LocalFile {
-		f, err := s.Store.Get(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return f
-	}
-	rescan := func() {
-		t.Helper()
-		if _, err := s.Scan(context.Background(), ScanOptions{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	rescan() // TMDB down: the old match stays, for now
-	if got := matchedTo(film).MediaID; got != 863 {
-		t.Errorf("TMDB down: matched to %d, want the old match (863) kept", got)
-	}
-	tmdbUp = true
-	rescan()
-	if got := matchedTo(film); got.MediaID != 862 || got.Episode != catalog.MovieEpisode {
-		t.Errorf("TMDB up: matched to %d (episode %d), want Toy Story (862)", got.MediaID, got.Episode)
-	}
-	if got := matchedTo(byHand).MediaID; got != 777 {
-		t.Errorf("a match made by hand changed to %d", got)
-	}
-	searches = 0
-	rescan()
-	if searches != 0 || matchedTo(film).MediaID != 862 {
-		t.Errorf("matched again after the upgrade (%d searches)", searches)
+	scan(t, s)
+	got, _ := s.Store.Get(path)
+	if got.Parsed.V != parseVersion || got.Parsed.Season != 2 || got.Parsed.Year != 2014 || got.MediaID != catalog.ShowID(60622) || got.Episode != 2005 || !got.Locked {
+		t.Errorf("reparsed: %+v", got)
 	}
 }

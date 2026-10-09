@@ -305,8 +305,6 @@ func (s *Scanner) IndexFolders(dirs []string) ([]*LocalFile, error) {
 			}
 			f := &LocalFile{Path: p, Dir: dir, Name: name, Size: info.Size(), ModTime: info.ModTime().Unix(), Parsed: Parse(p, roots)}
 			f.Kind = f.Parsed.Kind
-			f.Episode = max(f.Parsed.Episode, 0)
-			f.AiredEpisode = f.Parsed.Episode
 			added = append(added, f)
 		}
 	}

@@ -5,26 +5,34 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
+	"github.com/v0-0x/kumobox-movies/server/internal/release"
+	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
 // LocalFile is a video file found in one of the library directories.
 type LocalFile struct {
-	Path         string  `json:"path"`
-	Dir          string  `json:"dir"`
-	Name         string  `json:"name"`
-	Size         int64   `json:"size"`
-	ModTime      int64   `json:"modTime"`
-	Parsed       Parsed  `json:"parsed"`
-	MediaID      int     `json:"mediaId"`
-	Episode      int     `json:"episode"`      // episode number relative to the matched media
-	AiredEpisode int     `json:"airedEpisode"` // episode number as written in the file name
-	Kind         string  `json:"kind"`         // main | special | nc
-	Locked       bool    `json:"locked"`
-	Ignored      bool    `json:"ignored"`
-	MatchScore   float64 `json:"matchScore"`
+	Path    string `json:"path"`
+	Dir     string `json:"dir"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"modTime"`
+	Parsed  Parsed `json:"parsed"`
+	MediaID int    `json:"mediaId"`
+	// Episode is the key of the episode the file holds (see catalog: 1 for
+	// a movie, S02E05 is 2005), 0 when unknown and for extras. EpisodeEnd
+	// is the key of the last one when it holds several (S01E01E02: Episode
+	// 1001, EpisodeEnd 1002), 0 otherwise. (It is kept in the
+	// aired_episode column, which Kumo used for the number in the name.)
+	Episode    int     `json:"episode"`
+	EpisodeEnd int     `json:"episodeEnd,omitempty"`
+	Kind       string  `json:"kind"` // main | special | extra | part (see KindMain...)
+	Locked     bool    `json:"locked"`
+	Ignored    bool    `json:"ignored"`
+	MatchScore float64 `json:"matchScore"`
 	// Host: another KumoBox on the network shares this file (see package
 	// share); its path is kumobox://<host>/<path there>. Never stored.
 	Host     string `json:"host,omitempty"`
@@ -41,10 +49,14 @@ func scanFile(row interface{ Scan(...any) error }) (*LocalFile, error) {
 	var f LocalFile
 	var parsed string
 	var locked, ignored int
-	if err := row.Scan(&f.Path, &f.Dir, &f.Name, &f.Size, &f.ModTime, &parsed, &f.MediaID, &f.Episode, &f.AiredEpisode, &f.Kind, &locked, &ignored, &f.MatchScore); err != nil {
+	if err := row.Scan(&f.Path, &f.Dir, &f.Name, &f.Size, &f.ModTime, &parsed, &f.MediaID, &f.Episode, &f.EpisodeEnd, &f.Kind, &locked, &ignored, &f.MatchScore); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(parsed), &f.Parsed)
+	f.Kind = normalizedKind(f.Kind)
+	if !sameSeasonAfter(f.Episode, f.EpisodeEnd) {
+		f.EpisodeEnd = 0 // the number Kumo kept there
+	}
 	f.Locked = locked == 1
 	f.Ignored = ignored == 1
 	return &f, nil
@@ -109,7 +121,7 @@ func upsertFile(tx *sql.Tx, f *LocalFile) error {
 		ON CONFLICT(path) DO UPDATE SET dir=excluded.dir, name=excluded.name, size=excluded.size, mod_time=excluded.mod_time,
 			parsed=excluded.parsed, media_id=excluded.media_id, episode=excluded.episode, aired_episode=excluded.aired_episode,
 			kind=excluded.kind, locked=excluded.locked, ignored=excluded.ignored, match_score=excluded.match_score`,
-		f.Path, f.Dir, f.Name, f.Size, f.ModTime, string(parsed), f.MediaID, f.Episode, f.AiredEpisode, f.Kind, b2i(f.Locked), b2i(f.Ignored), f.MatchScore)
+		f.Path, f.Dir, f.Name, f.Size, f.ModTime, string(parsed), f.MediaID, f.Episode, f.EpisodeEnd, f.Kind, b2i(f.Locked), b2i(f.Ignored), f.MatchScore)
 	return err
 }
 
@@ -135,14 +147,14 @@ func (s *Store) SaveScanned(files []*LocalFile, snapshot map[string]*LocalFile) 
 			old := snapshot[f.Path]
 			if old == nil {
 				if _, err := tx.Exec(`INSERT INTO local_files(`+fileCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO NOTHING`,
-					f.Path, f.Dir, f.Name, f.Size, f.ModTime, string(parsed), f.MediaID, f.Episode, f.AiredEpisode, f.Kind, b2i(f.Locked), b2i(f.Ignored), f.MatchScore); err != nil {
+					f.Path, f.Dir, f.Name, f.Size, f.ModTime, string(parsed), f.MediaID, f.Episode, f.EpisodeEnd, f.Kind, b2i(f.Locked), b2i(f.Ignored), f.MatchScore); err != nil {
 					return err
 				}
 				continue
 			}
 			if _, err := tx.Exec(`UPDATE local_files SET dir=?, name=?, size=?, mod_time=?, parsed=?, media_id=?, episode=?, aired_episode=?, kind=?, locked=?, ignored=?, match_score=?
 				WHERE path=? AND media_id=? AND episode=? AND kind=? AND locked=? AND ignored=?`,
-				f.Dir, f.Name, f.Size, f.ModTime, string(parsed), f.MediaID, f.Episode, f.AiredEpisode, f.Kind, b2i(f.Locked), b2i(f.Ignored), f.MatchScore,
+				f.Dir, f.Name, f.Size, f.ModTime, string(parsed), f.MediaID, f.Episode, f.EpisodeEnd, f.Kind, b2i(f.Locked), b2i(f.Ignored), f.MatchScore,
 				f.Path, old.MediaID, old.Episode, old.Kind, b2i(old.Locked), b2i(old.Ignored)); err != nil {
 				return err
 			}
@@ -169,22 +181,59 @@ func b2i(b bool) int {
 	return 0
 }
 
-// sortFiles orders by kind then episode then name.
+// sameSeasonAfter reports whether end is a later episode of the season of
+// key: a valid EpisodeEnd.
+func sameSeasonAfter(key, end int) bool {
+	return key > 0 && end > key && end/1000 == key/1000
+}
+
+// Keys are the episode keys the file holds: its episode, and the ones up
+// to EpisodeEnd for a multi-episode file. None for an extra.
+func (f *LocalFile) Keys() []int {
+	if f.Episode <= 0 || f.Kind == KindExtra {
+		return nil
+	}
+	if !sameSeasonAfter(f.Episode, f.EpisodeEnd) {
+		return []int{f.Episode}
+	}
+	out := make([]int, 0, f.EpisodeEnd-f.Episode+1)
+	for k := f.Episode; k <= f.EpisodeEnd; k++ {
+		out = append(out, k)
+	}
+	return out
+}
+
+// Covers reports whether the file holds the episode key.
+func (f *LocalFile) Covers(key int) bool {
+	if key <= 0 || f.Kind == KindExtra {
+		return false
+	}
+	return f.Episode == key || sameSeasonAfter(f.Episode, f.EpisodeEnd) && key > f.Episode && key <= f.EpisodeEnd
+}
+
+var kindRank = map[string]int{KindMain: 0, KindPart: 1, KindSpecial: 2, KindExtra: 3}
+
+// sortFiles orders by kind (episodes and movies, later parts, specials,
+// extras), then episode, then part, then name.
 func sortFiles(files []*LocalFile) {
-	rank := map[string]int{"main": 0, "special": 1, "nc": 2}
 	sort.SliceStable(files, func(i, j int) bool {
 		a, b := files[i], files[j]
-		if rank[a.Kind] != rank[b.Kind] {
-			return rank[a.Kind] < rank[b.Kind]
+		if kindRank[a.Kind] != kindRank[b.Kind] {
+			return kindRank[a.Kind] < kindRank[b.Kind]
 		}
 		if a.Episode != b.Episode {
 			return a.Episode < b.Episode
+		}
+		if a.Parsed.Part != b.Parsed.Part {
+			return a.Parsed.Part < b.Parsed.Part
 		}
 		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
 	})
 }
 
-// UnmatchedGroup groups unmatched files by folder for the matching UI.
+// UnmatchedGroup groups unmatched files for the matching UI: the files of
+// one movie's or show's folder (its season and extras folders included),
+// or of one title when they're loose in a folder.
 type UnmatchedGroup struct {
 	Dir   string       `json:"dir"`
 	Title string       `json:"title"`
@@ -192,28 +241,25 @@ type UnmatchedGroup struct {
 }
 
 func GroupUnmatched(files []*LocalFile) []UnmatchedGroup {
-	byDir := map[string]*UnmatchedGroup{}
+	byKey := map[string]*UnmatchedGroup{}
 	var order []string
 	for _, f := range files {
-		g, ok := byDir[f.Dir]
+		dir, key := f.Parsed.Folder, "folder:"+f.Parsed.Folder
+		if dir == "" {
+			dir, key = f.Dir, "title:"+f.Dir+"|"+release.Normalize(f.Parsed.Title)+"|"+strconv.Itoa(f.Parsed.Year)
+		}
+		g, ok := byKey[key]
 		if !ok {
-			title := f.Parsed.FolderTitle
-			if title == "" {
-				title = f.Parsed.Title
-			}
-			if title == "" {
-				title = filepath.Base(f.Dir)
-			}
-			g = &UnmatchedGroup{Dir: f.Dir, Title: title}
-			byDir[f.Dir] = g
-			order = append(order, f.Dir)
+			g = &UnmatchedGroup{Dir: dir, Title: util.FirstNonEmpty(f.Parsed.Title, f.Parsed.FolderTitle, filepath.Base(dir))}
+			byKey[key] = g
+			order = append(order, key)
 		}
 		g.Files = append(g.Files, f)
 	}
 	out := make([]UnmatchedGroup, 0, len(order))
-	for _, d := range order {
-		sortFiles(byDir[d].Files)
-		out = append(out, *byDir[d])
+	for _, k := range order {
+		sortFiles(byKey[k].Files)
+		out = append(out, *byKey[k])
 	}
 	return out
 }

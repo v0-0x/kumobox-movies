@@ -205,26 +205,40 @@ func LookPath(p string) (string, bool) {
 	return lookBare(p)
 }
 
-// SanitizeFilename replaces characters that are invalid in file names.
+// SanitizeFilename makes s a file or folder name valid on Windows, macOS
+// and Linux (and on NTFS/exFAT drives): characters they refuse become
+// "_" (a colon a look-alike, so titles like "Star Trek: Picard" stay
+// readable; question marks go), no trailing dots or spaces (Windows drops
+// them), no reserved device name (CON, NUL, COM1…), at most 180 bytes of
+// valid UTF-8.
 func SanitizeFilename(s string) string {
-	// Characters that are invalid on Linux or on NTFS/exFAT media drives.
-	// Colons become a look-alike so titles like "Re:Zero" stay readable.
 	s = strings.Map(func(r rune) rune {
-		switch r {
-		case ':':
+		switch {
+		case r == ':':
 			return '：'
-		case '/', '\\', '*', '?', '"', '<', '>', '|', 0:
+		case r == '?':
+			return -1 // "Who Framed Roger Rabbit?"
+		case r == '/' || r == '\\' || r == '*' || r == '"' || r == '<' || r == '>' || r == '|':
+			return '_'
+		case r < 0x20 || r == 0x7f:
 			return '_'
 		}
 		return r
-	}, s)
-	s = strings.TrimSpace(s)
-	s = strings.Trim(s, ".")
+	}, strings.ToValidUTF8(s, ""))
+	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 180 {
-		s = s[:180]
+		s = strings.ToValidUTF8(s[:180], "")
 	}
+	s = strings.Trim(s, ". ")
 	if s == "" {
-		s = "untitled"
+		return "untitled"
+	}
+	base, _, _ := strings.Cut(s, ".")
+	switch strings.ToUpper(strings.TrimSpace(base)) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		s = "_" + s
 	}
 	return s
 }

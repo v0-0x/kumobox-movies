@@ -63,6 +63,11 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/library/unmatched", h(s.unmatched))
 	m.HandleFunc("GET /api/library/ignored", h(func(r *http.Request) (any, error) { return s.app.Files.Ignored() }))
 	m.HandleFunc("GET /api/library/files", h(func(r *http.Request) (any, error) { return s.app.Files.All() }))
+	// The Local library page: the titles with files, this computer's or a
+	// sharing KumoBox's (?host=<its id>).
+	m.HandleFunc("GET /api/library/titles", h(func(r *http.Request) (any, error) {
+		return s.app.Library.Titles(r.Context(), r.URL.Query().Get("host"))
+	}))
 	m.HandleFunc("POST /api/library/match", h(s.match))
 	m.HandleFunc("GET /api/library/folders", h(func(r *http.Request) (any, error) { return s.app.Scanner.Folders() }))
 	m.HandleFunc("POST /api/library/index", h(s.indexFolders))

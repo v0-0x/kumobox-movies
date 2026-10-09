@@ -3,12 +3,15 @@ package library
 import (
 	"context"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/history"
+	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
 // Service builds the views the UI needs by combining the list, the local
@@ -26,18 +29,22 @@ type Service struct {
 	hiddenMu sync.Mutex
 }
 
-// EpisodeView is an episode of the title page (a movie has one). Key is
-// the episode key (see catalog), Season and Number the episode it is.
+// EpisodeView is an episode of the title page (a movie has one), or a
+// file of it that isn't one (an extra, a later part of a movie). Number and
+// Key are both the episode key (see catalog; the web UI reads Number),
+// Season and Episode the season and the episode's number in it; 0 for a
+// file without an episode.
 type EpisodeView struct {
+	Number   int            `json:"number"`
 	Key      int            `json:"key"`
 	Season   int            `json:"season"`
-	Number   int            `json:"number"`
+	Episode  int            `json:"episode"`
 	Title    string         `json:"title"`
 	Image    string         `json:"image"`
 	Summary  string         `json:"summary"`
 	AirDate  string         `json:"airDate"`
 	Runtime  int            `json:"runtime"`
-	Kind     string         `json:"kind"` // main | special | nc
+	Kind     string         `json:"kind"` // main | special | extra | part
 	File     *LocalFile     `json:"file"`
 	Watched  bool           `json:"watched"`
 	Aired    bool           `json:"aired"`
@@ -62,13 +69,16 @@ type Mappings struct {
 }
 
 type EntryView struct {
-	Media       *catalog.Media     `json:"media"`
-	ListEntry   *catalog.ListEntry `json:"listEntry"`
-	Episodes    []*EpisodeView     `json:"episodes"`
-	Specials    []*EpisodeView     `json:"specials"`
-	Others      []*EpisodeView     `json:"others"`
-	NextEpisode *EpisodeView       `json:"nextEpisode"`
-	LocalCount  int                `json:"localCount"`
+	Media     *catalog.Media     `json:"media"`
+	ListEntry *catalog.ListEntry `json:"listEntry"`
+	// Episodes are the regular episodes (a movie's one), Specials season 0
+	// and the show's files without a known episode, Others the extras and
+	// the later parts of a movie.
+	Episodes    []*EpisodeView `json:"episodes"`
+	Specials    []*EpisodeView `json:"specials"`
+	Others      []*EpisodeView `json:"others"`
+	NextEpisode *EpisodeView   `json:"nextEpisode"`
+	LocalCount  int            `json:"localCount"`
 	// SharedCount: files of it other KumoBox apps share with this one.
 	SharedCount  int      `json:"sharedCount"`
 	Images       Images   `json:"images"`
@@ -96,7 +106,11 @@ func (s *Service) Entry(ctx context.Context, mediaID int, refresh bool) (*EntryV
 		Images:   Images{Fanart: media.BannerImage, Poster: media.CoverImage.ExtraLarge},
 		Mappings: Mappings{TmdbID: media.TMDBID, ImdbID: media.IMDbID, TvdbID: media.TVDBID},
 	}
-	details, err := s.seasonEpisodes(ctx, media, refresh)
+	progress := 0
+	if entry != nil {
+		progress = entry.Progress
+	}
+	details, err := s.SeasonEpisodes(ctx, media, SeasonsWanted(media, files, progress))
 	if err != nil {
 		v.MetadataNote = "Episode details unavailable: " + err.Error()
 	}
@@ -104,11 +118,49 @@ func (s *Service) Entry(ctx context.Context, mediaID int, refresh bool) (*EntryV
 	return v, nil
 }
 
-// seasonEpisodes fetches the episodes of every season of a show (specials
-// included), by key.
-func (s *Service) seasonEpisodes(ctx context.Context, media *catalog.Media, refresh bool) (map[int]*catalog.Episode, error) {
+// SeasonsWanted are the seasons of a show whose episodes a title page
+// needs: those with files (specials included), and the ones of the last
+// episode watched and of the next one. The others are fetched when looked
+// at (GET /api/media/{id}/season/{n}): a show of 30 seasons doesn't cost
+// 30 requests.
+func SeasonsWanted(media *catalog.Media, files []*LocalFile, progress int) []int {
+	if !media.IsShow() {
+		return nil
+	}
+	want := map[int]bool{}
+	for _, f := range files {
+		for _, k := range f.Keys() {
+			s, _ := catalog.SplitKey(k)
+			want[s] = true
+		}
+	}
+	if progress >= 1000 {
+		s, _ := catalog.SplitKey(progress)
+		want[s] = true
+	}
+	if next := media.NextEpisode(progress); next > 0 {
+		s, _ := catalog.SplitKey(next)
+		want[s] = true
+	}
+	known := map[int]bool{}
+	for _, s := range media.Seasons {
+		known[s.Number] = true
+	}
+	var out []int
+	for s := range want {
+		if len(known) == 0 || known[s] {
+			out = append(out, s)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// SeasonEpisodes fetches the episodes of some seasons of a show (the
+// Platform keeps them for a while), by key.
+func (s *Service) SeasonEpisodes(ctx context.Context, media *catalog.Media, seasons []int) (map[int]*catalog.Episode, error) {
 	out := map[int]*catalog.Episode{}
-	if !media.IsShow() || s.Platform == nil {
+	if !media.IsShow() || s.Platform == nil || len(seasons) == 0 {
 		return out, nil
 	}
 	var (
@@ -117,7 +169,7 @@ func (s *Service) seasonEpisodes(ctx context.Context, media *catalog.Media, refr
 		wg       sync.WaitGroup
 		next     = make(chan int)
 	)
-	for range min(4, len(media.Seasons)) {
+	for range min(4, len(seasons)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -137,17 +189,21 @@ func (s *Service) seasonEpisodes(ctx context.Context, media *catalog.Media, refr
 			}
 		}()
 	}
-	for _, season := range media.Seasons {
-		next <- season.Number
+	for _, n := range seasons {
+		next <- n
 	}
 	close(next)
 	wg.Wait()
 	return out, firstErr
 }
 
+// finishedAt is how far into an episode it counts as watched.
+const finishedAt = 0.85
+
 // fillEpisodes lists the episodes of the title page: the regular ones (the
 // movie, or the show's from its seasons, plus any its files have beyond
-// them), the specials (season 0, and special files) and the extras.
+// them), the specials (season 0, and the show's files whose episode isn't
+// known) and the extras.
 func (s *Service) fillEpisodes(v *EntryView, media *catalog.Media, entry *catalog.ListEntry, files []*LocalFile, details map[int]*catalog.Episode) {
 	progress := 0
 	if entry != nil {
@@ -156,34 +212,45 @@ func (s *Service) fillEpisodes(v *EntryView, media *catalog.Media, entry *catalo
 	hist := s.History.ForMedia(media.ID)
 	latest := media.LatestAired()
 	today := time.Now().UTC().Format(time.DateOnly)
-	fallbackImage := firstNonEmpty(media.BannerImage, media.CoverImage.ExtraLarge)
+	fallbackImage := util.FirstNonEmpty(media.BannerImage, media.CoverImage.ExtraLarge)
 
-	mainFiles := map[int]*LocalFile{}
-	specialFiles := map[int]*LocalFile{}
+	// The files of the episodes (a multi-episode file holds several).
+	episodeFiles := map[int]*LocalFile{}
 	for _, f := range files {
-		switch {
-		case f.Kind == "main" && f.Episode > 0:
-			if old, ok := mainFiles[f.Episode]; !ok || betterFile(f, old) {
-				mainFiles[f.Episode] = f
-			}
-		case f.Kind == "nc":
-			v.Others = append(v.Others, &EpisodeView{Key: f.Episode, Title: f.Name, Kind: "nc", File: f, HasFile: true, Aired: true})
-		case f.Episode > 0 && f.Episode < 1000:
-			specialFiles[f.Episode] = f
-		default:
-			sp := &EpisodeView{Key: f.Episode, Title: f.Name, Kind: "special", File: f, HasFile: true, Aired: true}
-			if f.Parsed.EpisodeTitle != "" {
-				sp.Title = f.Parsed.EpisodeTitle
-			}
+		switch f.Kind {
+		case KindExtra:
+			v.Others = append(v.Others, &EpisodeView{Title: ExtraTitle(f), Kind: KindExtra, File: f, HasFile: true, Aired: true, Image: fallbackImage})
+			continue
+		case KindPart:
+			v.Others = append(v.Others, &EpisodeView{Number: f.Episode, Key: f.Episode, Title: partTitle(f), Kind: KindPart, File: f, HasFile: true, Aired: true, Image: fallbackImage})
+			continue
+		}
+		keys := f.Keys()
+		if len(keys) == 0 {
+			// A show's file whose episode isn't known.
+			sp := &EpisodeView{Title: util.FirstNonEmpty(f.Parsed.EpisodeTitle, f.Name), Kind: KindSpecial, File: f, HasFile: true, Aired: true, Image: fallbackImage}
 			v.Specials = append(v.Specials, sp)
+			continue
+		}
+		for _, k := range keys {
+			if old, ok := episodeFiles[k]; !ok || betterFile(f, old) {
+				episodeFiles[k] = f
+			}
 		}
 	}
 
+	watched := func(key int) bool {
+		if entry != nil && key >= catalog.MovieEpisode && (key >= 1000 || !media.IsShow()) {
+			return entry.Status == "COMPLETED" || key <= progress
+		}
+		h := hist[key]
+		return h != nil && h.Percent() >= finishedAt
+	}
 	view := func(key int, kind string) *EpisodeView {
 		season, number := catalog.SplitKey(key)
-		ep := &EpisodeView{Key: key, Season: season, Number: number, Kind: kind, Image: fallbackImage}
+		ep := &EpisodeView{Number: key, Key: key, Season: season, Episode: number, Kind: kind, Image: fallbackImage}
 		if !media.IsShow() {
-			ep.Season, ep.Number = 0, 1
+			ep.Season, ep.Episode = 0, 1
 			ep.Title = media.PreferredTitle()
 			ep.Aired = media.Status != "NOT_YET_RELEASED"
 		} else if d := details[key]; d != nil {
@@ -202,6 +269,13 @@ func (s *Service) fillEpisodes(v *EntryView, media *catalog.Media, entry *catalo
 			ep.History = h
 			ep.ResumeAt = s.History.ResumePosition(media.ID, key)
 		}
+		ep.Watched = watched(key)
+		if f, ok := episodeFiles[key]; ok {
+			ep.File, ep.HasFile, ep.Aired = f, true, true
+			if ep.Title == "" && media.IsShow() {
+				ep.Title = f.Parsed.EpisodeTitle
+			}
+		}
 		return ep
 	}
 
@@ -210,51 +284,47 @@ func (s *Service) fillEpisodes(v *EntryView, media *catalog.Media, entry *catalo
 	for _, k := range keys {
 		known[k] = true
 	}
-	for k := range mainFiles {
-		if !known[k] {
+	for k := range episodeFiles {
+		if !known[k] && (k >= 1000 || !media.IsShow()) {
 			keys = append(keys, k)
+			known[k] = true
 		}
 	}
 	sort.Ints(keys)
 	for _, k := range keys {
-		ep := view(k, "main")
-		ep.Watched = progress > 0 && k <= progress
-		if f, ok := mainFiles[k]; ok {
-			ep.File, ep.HasFile, ep.Aired = f, true, true
-		}
-		v.Episodes = append(v.Episodes, ep)
+		v.Episodes = append(v.Episodes, view(k, KindMain))
 	}
 
-	// Specials: TMDB's season 0, with the files matched to them, then the
-	// special files it doesn't have.
-	var specialKeys []int
+	// Specials: TMDB's season 0 (as far as it's been fetched), with their
+	// files, then the special files it doesn't list.
+	specials := map[int]bool{}
 	for k := range details {
 		if k < 1000 {
-			specialKeys = append(specialKeys, k)
+			specials[k] = true
 		}
+	}
+	if media.IsShow() {
+		for k := range episodeFiles {
+			if k < 1000 {
+				specials[k] = true
+			}
+		}
+	}
+	specialKeys := make([]int, 0, len(specials))
+	for k := range specials {
+		specialKeys = append(specialKeys, k)
 	}
 	sort.Ints(specialKeys)
+	listed := v.Specials
+	v.Specials = nil
 	for _, k := range specialKeys {
-		ep := view(k, "special")
-		if f, ok := specialFiles[k]; ok {
-			ep.File, ep.HasFile, ep.Aired = f, true, true
-			delete(specialFiles, k)
+		ep := view(k, KindSpecial)
+		if ep.Title == "" && ep.File != nil {
+			ep.Title = util.FirstNonEmpty(ep.File.Parsed.EpisodeTitle, ep.File.Name)
 		}
 		v.Specials = append(v.Specials, ep)
 	}
-	var rest []int
-	for k := range specialFiles {
-		rest = append(rest, k)
-	}
-	sort.Ints(rest)
-	for _, k := range rest {
-		ep := view(k, "special")
-		ep.File, ep.HasFile, ep.Aired = specialFiles[k], true, true
-		if ep.Title == "" {
-			ep.Title = firstNonEmpty(ep.File.Parsed.EpisodeTitle, ep.File.Name)
-		}
-		v.Specials = append(v.Specials, ep)
-	}
+	v.Specials = append(v.Specials, listed...)
 
 	// Next episode to watch: the first one after progress; the first one
 	// again for a title watched to the end (a rewatch) or not on the list.
@@ -268,6 +338,24 @@ func (s *Service) fillEpisodes(v *EntryView, media *catalog.Media, entry *catalo
 	if v.NextEpisode == nil && (entry == nil || entry.Status == "COMPLETED") && len(v.Episodes) > 0 {
 		v.NextEpisode = v.Episodes[0]
 	}
+}
+
+// ExtraTitle names an extra: its own title, else its type ("Trailer").
+func ExtraTitle(f *LocalFile) string {
+	if t := f.Parsed.EpisodeTitle; t != "" {
+		return t
+	}
+	if x := f.Parsed.Extra; x != "" {
+		return strings.ToUpper(x[:1]) + x[1:]
+	}
+	return f.Name
+}
+
+func partTitle(f *LocalFile) string {
+	if f.Parsed.Part > 0 {
+		return "Part " + strconv.Itoa(f.Parsed.Part)
+	}
+	return f.Name
 }
 
 // EpisodesView is the episodes of a title page.
@@ -304,7 +392,7 @@ func (s *Service) sharedFor(mediaID int, local []*LocalFile) []*LocalFile {
 	}
 	var out []*LocalFile
 	for _, f := range s.shared() {
-		if f.MediaID == mediaID && !f.Ignored && (f.Kind == "main" || !names[f.Name]) {
+		if f.MediaID == mediaID && !f.Ignored && (f.Kind == KindMain || !names[f.Name]) {
 			out = append(out, f)
 		}
 	}
@@ -364,6 +452,25 @@ var statusNames = map[string]string{
 	"PAUSED": "Paused", "COMPLETED": "Watched", "DROPPED": "Dropped",
 }
 
+// downloadedKeys are the keys of the episodes (the movie) files hold.
+func downloadedKeys(media *catalog.Media, files []*LocalFile) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, f := range files {
+		if f.Kind != KindMain {
+			continue
+		}
+		for _, k := range f.Keys() {
+			if !seen[k] && (k >= 1000 || !media.IsShow()) {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
 func (s *Service) Collection(ctx context.Context, refresh bool) (*CollectionView, error) {
 	coll, err := s.Platform.Collection(ctx, "", refresh)
 	if err != nil {
@@ -393,17 +500,8 @@ func (s *Service) Collection(ctx context.Context, refresh bool) (*CollectionView
 			progress = e.Progress
 		}
 		it.NextEpisode = media.NextEpisode(progress)
-		seen := map[int]bool{}
-		for _, f := range filesByMedia[media.ID] {
-			if f.Kind == "main" && f.Episode > 0 && !seen[f.Episode] {
-				seen[f.Episode] = true
-				it.Downloaded = append(it.Downloaded, f.Episode)
-				if f.Episode == it.NextEpisode {
-					it.NextHasFile = true
-				}
-			}
-		}
-		sort.Ints(it.Downloaded)
+		it.Downloaded = downloadedKeys(media, filesByMedia[media.ID])
+		it.NextHasFile = EpisodeFile(filesByMedia[media.ID], it.NextEpisode) != nil
 		it.LocalFiles = len(filesByMedia[media.ID])
 		return it
 	}
@@ -471,9 +569,6 @@ func (s *Service) Collection(ctx context.Context, refresh bool) (*CollectionView
 	return view, nil
 }
 
-// finishedAt is how far into an episode it counts as watched.
-const finishedAt = 0.85
-
 func (s *Service) continueWatching(ctx context.Context, coll *catalog.Collection, files map[int][]*LocalFile) []*ContinueItem {
 	var out []*ContinueItem
 	seen := map[int]bool{}
@@ -508,7 +603,7 @@ func (s *Service) continueWatching(ctx context.Context, coll *catalog.Collection
 		if media.Duration != nil {
 			it.Runtime = *media.Duration
 		}
-		it.Image = firstNonEmpty(media.BannerImage, media.CoverImage.ExtraLarge)
+		it.Image = util.FirstNonEmpty(media.BannerImage, media.CoverImage.ExtraLarge)
 		if !media.IsShow() {
 			it.Title = media.PreferredTitle()
 		} else if s.Platform != nil {
@@ -634,11 +729,13 @@ func (s *Service) UnhideContinue(mediaID int) error {
 }
 
 // EpisodeFile returns the file to play for an episode (by key) among a
-// title's files, or nil (see betterFile).
+// title's files, or nil (see betterFile): the movie's, or the file that
+// holds the episode (a multi-episode file holds several). Extras and the
+// later parts of a movie are never played for it.
 func EpisodeFile(files []*LocalFile, episode int) *LocalFile {
 	var best *LocalFile
 	for _, f := range files {
-		if f.Kind == "main" && f.Episode == episode && !f.Ignored && (best == nil || betterFile(f, best)) {
+		if (f.Kind == KindMain || f.Kind == KindSpecial) && !f.Ignored && f.Covers(episode) && (best == nil || betterFile(f, best)) {
 			best = f
 		}
 	}
@@ -647,7 +744,8 @@ func EpisodeFile(files []*LocalFile, episode int) *LocalFile {
 
 // betterFile reports whether f is the one to play when it and old are
 // matched to the same episode, e.g. two releases of a movie: a match made
-// by hand wins, then the surer match, then the bigger file. A file on this
+// by hand wins, then the surer match, then a file of that episode alone
+// (rather than one holding several), then the bigger file. A file on this
 // computer always wins.
 func betterFile(f, old *LocalFile) bool {
 	// This computer's file, not one another KumoBox shares.
@@ -659,6 +757,9 @@ func betterFile(f, old *LocalFile) bool {
 	}
 	if f.MatchScore != old.MatchScore {
 		return f.MatchScore > old.MatchScore
+	}
+	if fm, om := f.EpisodeEnd > 0, old.EpisodeEnd > 0; fm != om {
+		return !fm
 	}
 	return f.Size > old.Size
 }

@@ -116,6 +116,7 @@ func New(dataDir string) (*App, error) {
 	lib := &library.Service{Store: files, Scanner: scanner, Platform: platform, History: hist, DB: d}
 	pl := player.NewManager(settings, hist, d, platform, hub)
 	dls := downloads.NewManager(settings, d, hub, files)
+	dls.Lookup = platform.MediaLite // names files "Title (Year)"
 	torrents := torrent.NewManager(settings, hub)
 	exts := extensions.NewManager(d, settings, hub)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -221,14 +222,16 @@ func (a *App) wire() {
 			return nil, err
 		}
 		next := media.NextEpisode(s.Episode)
-		if next == 0 {
-			return nil, nil // the last one, or a movie
-		}
 		f := library.EpisodeFile(files, next)
-		if f == nil {
-			return nil, nil
+		if f != nil && f.Path == s.Target && f.EpisodeEnd > 0 {
+			// The file just played holds the next episodes too (S01E01E02).
+			next = media.NextEpisode(f.EpisodeEnd)
+			f = library.EpisodeFile(files, next)
 		}
-		return &player.PlayRequest{MediaID: s.MediaID, Episode: f.Episode, Title: EpisodeTitle(media, f.Episode), Source: "local", Target: f.Path}, nil
+		if next == 0 || f == nil {
+			return nil, nil // the last one, a movie, or not downloaded
+		}
+		return &player.PlayRequest{MediaID: s.MediaID, Episode: next, Title: EpisodeTitle(media, next), Source: "local", Target: f.Path}, nil
 	}
 
 	// Plugins hooks after progress updates.

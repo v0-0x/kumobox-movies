@@ -2,223 +2,209 @@ package library
 
 import (
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
-	"unicode"
 
-	"github.com/5rahim/habari"
+	"github.com/v0-0x/kumobox-movies/server/internal/release"
 )
 
-// VideoExtensions lists every container the scanner picks up. mpv can play
-// all of them; the in-app player remuxes/transcodes the ones browsers can't.
-var VideoExtensions = map[string]bool{
-	".mkv": true, ".mk3d": true, ".mp4": true, ".m4v": true, ".avi": true, ".webm": true,
-	".mov": true, ".qt": true, ".wmv": true, ".asf": true, ".flv": true, ".f4v": true,
-	".ts": true, ".m2ts": true, ".mts": true, ".m2t": true, ".tp": true, ".trp": true,
-	".ogv": true, ".ogm": true, ".mpg": true, ".mpeg": true, ".mpe": true, ".mpv": true,
-	".m1v": true, ".m2v": true, ".vob": true, ".evo": true, ".3gp": true, ".3g2": true,
-	".rm": true, ".rmvb": true, ".divx": true, ".xvid": true, ".dv": true, ".mxf": true,
-	".nut": true, ".wtv": true, ".dvr-ms": true, ".amv": true, ".y4m": true, ".hevc": true,
-	".h264": true, ".h265": true, ".264": true, ".265": true, ".av1": true, ".ivf": true,
-	".bik": true, ".nsv": true, ".viv": true, ".flc": true, ".fli": true, ".gifv": true,
+// VideoExtensions lists every container the scanner picks up (lower case,
+// with the dot). mpv can play all of them; the in-app player remuxes or
+// transcodes the ones browsers can't.
+var VideoExtensions = extensionSet(release.VideoExtensions)
+
+// SubtitleExtensions are the external subtitle files picked up next to
+// videos (the in-app player and mpv load them).
+var SubtitleExtensions = extensionSet(release.SubtitleExtensions)
+
+func extensionSet(list []string) map[string]bool {
+	m := make(map[string]bool, len(list))
+	for _, e := range list {
+		m[e] = true
+	}
+	return m
 }
 
-// SubtitleExtensions are external subtitle files picked up next to videos.
-var SubtitleExtensions = map[string]bool{
-	".ass": true, ".ssa": true, ".srt": true, ".vtt": true, ".sub": true, ".idx": true, ".sup": true,
-}
+// IsVideo reports whether path names a video file, by its extension.
+func IsVideo(path string) bool { return release.IsVideo(path) }
 
-func IsVideo(path string) bool {
-	return VideoExtensions[strings.ToLower(filepath.Ext(path))]
-}
+// File kinds (LocalFile.Kind and Parsed.Kind).
+const (
+	// KindMain is a movie or an episode of a show.
+	KindMain = "main"
+	// KindSpecial is a special of a show (season 0, or a file in its
+	// Specials folder).
+	KindSpecial = "special"
+	// KindExtra is bonus material: a trailer, a featurette, behind the
+	// scenes, deleted scenes, a sample... It is never taken for an episode
+	// or for the movie, only listed with them.
+	KindExtra = "extra"
+	// KindPart is a later part of a movie split across files (CD2, Part
+	// 2): its key is the movie's, but playing the movie starts with part 1.
+	KindPart = "part"
+)
 
+// parseVersion goes up when Parse reads names differently: the files
+// indexed with an older version are read again at the next scan.
+//
+//	2: release names (movies and shows), instead of anime names.
+const parseVersion = 2
+
+// Parsed is what a file's path says about it (see release.ParsePath),
+// kept with the file in the index. Season is -1 when the name has none,
+// Episode -1 when it has no episode number (for a number without a season,
+// "Show - 105", it is that absolute number).
 type Parsed struct {
+	V            int    `json:"v"`
 	Title        string `json:"title"`
-	FolderTitle  string `json:"folderTitle"`
-	Season       int    `json:"season"`
-	Part         int    `json:"part"`
-	Episode      int    `json:"episode"`    // -1 when unknown
-	EpisodeEnd   int    `json:"episodeEnd"` // for multi-episode files
-	EpisodeTitle string `json:"episodeTitle"`
-	ReleaseGroup string `json:"releaseGroup"`
-	Resolution   string `json:"resolution"`
 	Year         int    `json:"year"`
-	Kind         string `json:"kind"` // main | special | nc | extra
-	Source       string `json:"source"`
+	Season       int    `json:"season"`
+	Episode      int    `json:"episode"`
+	EpisodeEnd   int    `json:"episodeEnd,omitempty"` // the last episode of a multi-episode file: S01E01E02 → 2
+	Absolute     int    `json:"absolute,omitempty"`   // an episode number without a season
+	Date         string `json:"date,omitempty"`       // daily shows: 2024-01-02
+	EpisodeTitle string `json:"episodeTitle"`
+	Part         int    `json:"part"` // CD1, Part 2: a movie split across files
+	// Show: the name or its folders say it's a show's (episodes, a season).
+	Show  bool   `json:"show,omitempty"`
+	Extra string `json:"extra,omitempty"` // trailer, featurette, sample...
+	Kind  string `json:"kind"`            // main | special | extra
+	// Folder is the folder that names the movie or show the file belongs
+	// to ("…/Breaking Bad (2008)" for "…/Breaking Bad (2008)/Season 01/x.mkv"),
+	// "" when the file is loose in the library; FolderTitle the title in
+	// its name. Files are matched by folder.
+	Folder       string   `json:"folder,omitempty"`
+	FolderTitle  string   `json:"folderTitle"`
+	ReleaseGroup string   `json:"releaseGroup"`
+	Resolution   string   `json:"resolution"`
+	Source       string   `json:"source"`
+	Codec        string   `json:"codec,omitempty"`
+	HDR          []string `json:"hdr,omitempty"`
+	Audio        []string `json:"audio,omitempty"`
+	Edition      string   `json:"edition,omitempty"`
+	// Ids from Plex/Jellyfin/Emby tags: "Movie (2010) {tmdb-27205}",
+	// "[imdbid-tt1375666]", "{tvdb-81189}".
+	TMDBID int    `json:"tmdbId,omitempty"`
+	IMDbID string `json:"imdbId,omitempty"`
+	TVDBID int    `json:"tvdbId,omitempty"`
 }
 
-var (
-	reSeasonDir  = regexp.MustCompile(`(?i)^(?:season|s|series)[\s._-]*0*(\d{1,2})$|^(\d{1,2})(?:st|nd|rd|th)[\s._-]*season$`)
-	reSeasonAny  = regexp.MustCompile(`(?i)\b(?:season|s)[\s._-]*0*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+season\b`)
-	reGenericDir = regexp.MustCompile(`(?i)^(?:season[\s._-]*\d+|s\d{1,2}|specials?|extras?|bonus|ova|ovas|movies?|featurettes?|nc|ncop|nced|creditless|batch|\d{3,4}p|subs?|subtitles?|fonts?|attachments?|disc\s*\d+|cd\s*\d+|vol(?:ume)?\.?\s*\d+|bd|bdmv|stream|video_ts)$`)
-	reSpecialDir = regexp.MustCompile(`(?i)^(?:specials?|sp|ova|ovas|oad|bonus|extras?|featurettes?|omake)$`)
-	reNCDir      = regexp.MustCompile(`(?i)^(?:nc|ncop|nced|creditless|op(?:ening)?s?|ed(?:ing)?s?|menus?|pv|cm|trailers?)$`)
-	reNCFile     = regexp.MustCompile(`(?i)\b(?:NC[\s_-]?(?:OP|ED)|NCOP|NCED|creditless|clean\s+(?:op|ed)|opening|ending|menu|preview|trailer|teaser|PV\d*|CM\d*)\b`)
-	reSpecialTag = regexp.MustCompile(`(?i)\b(?:OVA|OAD|ONA|special|SP\d+|S00E\d+)\b`)
-)
-
-// titleWords are words habari reads as metadata (NHK is a broadcaster
-// "source") that are also part of real titles: "Welcome to the NHK",
-// "NHK ni Youkoso!".
-var titleWords = []string{"nhk"}
-
-// restoreTitleWords puts such words back when habari cut them from the
-// start or end of the title.
-func restoreTitleWords(raw, title string) string {
-	if title == "" {
-		return title
-	}
-	norm := strings.ToLower(strings.NewReplacer("_", " ", ".", " ").Replace(raw))
-	lt := strings.ToLower(title)
-	idx := strings.Index(norm, lt)
-	if idx < 0 {
-		return title
-	}
-	isWordEnd := func(s string, i int) bool {
-		return i >= len(s) || !unicode.IsLetter(rune(s[i])) && !unicode.IsDigit(rune(s[i]))
-	}
-	for _, w := range titleWords {
-		if strings.Contains(lt, w) {
-			continue
-		}
-		after := strings.TrimLeft(norm[idx+len(lt):], " ")
-		before := strings.TrimRight(norm[:idx], " ")
-		switch {
-		case strings.HasPrefix(after, w) && isWordEnd(after, len(w)):
-			title += " " + strings.ToUpper(w)
-		case strings.HasSuffix(before, w) && (len(before) == len(w) || isWordEnd(before, len(before)-len(w)-1)):
-			title = strings.ToUpper(w) + " " + title
-		}
-	}
-	return title
-}
-
-// Parse extracts metadata from a file path. roots are the library roots so
-// folder names above the library aren't used as titles.
+// Parse reads what a file's path says about it. roots are the library
+// folders: only the folders below them are read (a folder above the
+// library says nothing about the file, "/home/me/Videos"). A file outside
+// them is read with its own folder only.
 func Parse(path string, roots []string) Parsed {
-	name := filepath.Base(path)
-	md := habari.Parse(name)
-	p := Parsed{
-		Title:        cleanTitle(restoreTitleWords(name, firstNonEmpty(md.Title, md.FormattedTitle))),
-		EpisodeTitle: md.EpisodeTitle,
-		ReleaseGroup: md.ReleaseGroup,
-		Resolution:   md.VideoResolution,
-		Episode:      -1,
-		Kind:         "main",
-	}
-	for _, t := range md.AnimeType {
-		switch strings.ToUpper(t) {
-		case "OVA", "OAD", "ONA", "SP", "SPECIAL", "SPECIALS":
-			p.Kind = "special"
-		case "NCOP", "NCED", "OP", "ED", "OPENING", "ENDING", "PV", "CM", "PREVIEW":
-			p.Kind = "nc"
-		}
-	}
-	if len(md.Source) > 0 {
-		p.Source = md.Source[0]
-	}
-	if y, err := strconv.Atoi(md.Year); err == nil {
-		p.Year = y
-	}
-	if len(md.SeasonNumber) > 0 {
-		p.Season = atoiFloor(md.SeasonNumber[0])
-	}
-	if len(md.PartNumber) > 0 {
-		p.Part = atoiFloor(md.PartNumber[0])
-	}
-	if len(md.EpisodeNumber) > 0 {
-		p.Episode = atoiFloor(md.EpisodeNumber[0])
-		if len(md.EpisodeNumber) > 1 {
-			p.EpisodeEnd = atoiFloor(md.EpisodeNumber[len(md.EpisodeNumber)-1])
-		}
-	} else if len(md.EpisodeNumberAlt) > 0 {
-		p.Episode = atoiFloor(md.EpisodeNumberAlt[0])
-	}
-
-	// Look at the folders between the library root and the file.
-	dir := filepath.Dir(path)
+	path = filepath.Clean(path)
+	root := rootOf(path, roots)
 	var rel string
-	for _, r := range roots {
-		if strings.HasPrefix(dir+string(filepath.Separator), r+string(filepath.Separator)) {
-			rel, _ = filepath.Rel(r, dir)
-			break
+	if root != "" {
+		rel, _ = filepath.Rel(root, path)
+	}
+	if rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
+		root = filepath.Dir(filepath.Dir(path))
+		rel = filepath.Join(filepath.Base(filepath.Dir(path)), filepath.Base(path))
+	}
+	info := release.ParsePath(rel)
+	p := Parsed{
+		V:            parseVersion,
+		Title:        info.Title,
+		Year:         info.Year,
+		Season:       -1,
+		Episode:      -1,
+		Absolute:     info.Absolute,
+		Date:         info.Date,
+		EpisodeTitle: info.EpisodeTitle,
+		Part:         info.Part,
+		Extra:        info.Extra,
+		Show:         info.IsShow() || len(info.Seasons) > 0,
+		ReleaseGroup: info.Group,
+		Resolution:   info.Resolution,
+		Source:       info.Source,
+		Codec:        info.Codec,
+		HDR:          info.HDR,
+		Audio:        info.Audio,
+		Edition:      info.Edition,
+		TMDBID:       info.TMDBID,
+		IMDbID:       info.IMDbID,
+		TVDBID:       info.TVDBID,
+	}
+	if len(info.Seasons) > 0 {
+		p.Season = info.Seasons[0]
+	}
+	switch {
+	case len(info.Episodes) > 0:
+		p.Episode = info.Episodes[0]
+		if last := slicesMax(info.Episodes); last > p.Episode {
+			p.EpisodeEnd = last
 		}
+	case info.Absolute > 0:
+		p.Episode = info.Absolute
 	}
-	if rel != "" && rel != "." {
-		parts := strings.Split(rel, string(filepath.Separator))
-		for i := len(parts) - 1; i >= 0; i-- {
-			d := parts[i]
-			if m := reSeasonDir.FindStringSubmatch(strings.TrimSpace(d)); m != nil && p.Season == 0 {
-				p.Season = atoiFloor(firstNonEmpty(m[1], m[2]))
-			}
-			if reSpecialDir.MatchString(strings.TrimSpace(d)) && p.Kind == "main" {
-				p.Kind = "special"
-			}
-			if reNCDir.MatchString(strings.TrimSpace(d)) {
-				p.Kind = "nc"
-			}
-			if p.FolderTitle == "" && !reGenericDir.MatchString(strings.TrimSpace(d)) {
-				fmd := habari.Parse(d)
-				ft := cleanTitle(restoreTitleWords(d, firstNonEmpty(fmd.Title, fmd.FormattedTitle)))
-				if ft != "" {
-					p.FolderTitle = ft
-					if p.Season == 0 && len(fmd.SeasonNumber) > 0 {
-						p.Season = atoiFloor(fmd.SeasonNumber[0])
-					}
-					if p.Year == 0 {
-						p.Year, _ = strconv.Atoi(fmd.Year)
-					}
-				}
+	switch {
+	case info.Extra != "":
+		p.Kind = KindExtra
+	case p.Season == 0:
+		p.Kind = KindSpecial
+		// "Specials/Inside Breaking Bad.mkv": the special's title, found
+		// among the show's specials, even when it holds the show's.
+		if p.Episode < 0 && p.EpisodeTitle == "" {
+			if t := release.Parse(filepath.Base(rel)).Title; release.Normalize(t) != release.Normalize(p.Title) {
+				p.EpisodeTitle = t
 			}
 		}
+	default:
+		p.Kind = KindMain
 	}
-	if p.Season == 0 {
-		if m := reSeasonAny.FindStringSubmatch(p.Title); m != nil {
-			p.Season = atoiFloor(firstNonEmpty(m[1], m[2]))
-		}
-	}
-	if reNCFile.MatchString(name) {
-		p.Kind = "nc"
-	} else if p.Kind == "main" && (reSpecialTag.MatchString(name) || p.Season == 0 && strings.Contains(strings.ToLower(name), "s00")) {
-		p.Kind = "special"
-	}
-	if p.Title == "" {
-		p.Title = p.FolderTitle
-	}
+	p.Folder, p.FolderTitle = titleFolder(root, rel)
 	return p
 }
 
-var (
-	reTrailingJunk = regexp.MustCompile(`(?i)[\s._-]+(?:-|–)?\s*$`)
-	reTrailingType = regexp.MustCompile(`(?i)[\s._-]*(?:-|–)?\s*\b(?:OVA|OAD|ONA|specials?|movie|the movie|NCOP|NCED|creditless)\s*$`)
-)
-
-func cleanTitle(s string) string {
-	s = strings.ReplaceAll(s, "_", " ")
-	s = strings.TrimSpace(s)
-	s = reTrailingType.ReplaceAllString(s, "")
-	s = reTrailingJunk.ReplaceAllString(s, "")
-	return strings.Join(strings.Fields(s), " ")
-}
-
-func atoiFloor(s string) int {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexAny(s, ".,"); i >= 0 {
-		s = s[:i]
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
+// rootOf is the library folder path is in (the deepest, when they nest),
+// "" when none.
+func rootOf(path string, roots []string) string {
+	best := ""
+	for _, r := range roots {
+		r = filepath.Clean(r)
+		if r == "" || r == "." {
+			continue
+		}
+		if underAny(path, []string{r}) && path != r && len(r) > len(best) {
+			best = r
 		}
 	}
-	return ""
+	return best
+}
+
+// titleFolder finds, among the folders of rel (a path below root), the
+// one that names the movie or show (the nearest that isn't a season,
+// extras, part or generic folder), and the title it gives.
+func titleFolder(root, rel string) (dir, title string) {
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i := len(parts) - 2; i >= 0; i-- {
+		if release.NamesTitle(parts[i]) {
+			dir = filepath.Join(append([]string{root}, parts[:i+1]...)...)
+			return dir, release.Parse(parts[i]).Title
+		}
+	}
+	return "", ""
+}
+
+func slicesMax(xs []int) int {
+	m := 0
+	for _, x := range xs {
+		m = max(m, x)
+	}
+	return m
+}
+
+// normalizedKind maps the kinds files indexed by older versions had to
+// today's: Kumo's "nc" (creditless openings and other bonus videos) is an
+// extra.
+func normalizedKind(kind string) string {
+	switch kind {
+	case KindMain, KindSpecial, KindExtra, KindPart:
+		return kind
+	case "nc":
+		return KindExtra
+	}
+	return KindMain
 }
