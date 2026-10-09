@@ -195,21 +195,37 @@ export type Viewer = {
     letterboxd?: string // profile page
 }
 
-// GET /api/letterboxd/status. lastSync is unix seconds (0: never); pending
-// counts the diary entries not on Letterboxd yet.
+// GET /api/letterboxd/status (and the "letterboxd-status" event). lastSync
+// is when the diary was last read (unix seconds, 0: never), lastError why
+// the last sync failed; pending counts the diary entries logged here that
+// aren't on Letterboxd yet. apiAvailable: API client credentials are set;
+// apiConnected: a member signed in with them (apiMember).
 export type LetterboxdStatus = {
     connected: boolean
     username: string
     displayName: string
+    profileUrl?: string
     lastSync: number
-    lastError: string
+    lastError?: string
     pending: number
-    apiConfigured: boolean
+    syncing: boolean
+    apiAvailable: boolean
     apiConnected: boolean
+    apiMember?: string
 }
 
-// What a sync, an import or a push did. unmatched: titles that weren't found.
-export type LetterboxdResult = { added: number; updated: number; skipped: number; unmatched: string[] | null }
+// What a sync, an import or a push did: films added to the list, updated or
+// skipped (nothing new), diary entries added (a push: entries sent), and the
+// titles that couldn't be found.
+export type LetterboxdResult = { added: number; updated: number; skipped: number; diary?: number; unmatched: string[] | null }
+
+// POST /api/letterboxd/import: the result, and the export's files read.
+export type LetterboxdImportResult = LetterboxdResult & { files: string[] | null }
+
+// POST /api/letterboxd/connect: the status, the member and what the first
+// read of the diary did (syncError: it failed, the account is connected
+// all the same).
+export type LetterboxdConnected = LetterboxdStatus & { viewer: Viewer | null; result: LetterboxdResult | null; syncError?: string }
 
 export type Parsed = {
     title: string

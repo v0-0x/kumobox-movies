@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query"
 import { toast } from "@/lib/toast"
 import { playbackStore, pluginStore, scanStore, torrentCountStore, trayOpenStore } from "./store"
-import type { DownloadItem, PluginState, Status, UpdateStatus } from "./types"
+import type { DownloadItem, LetterboxdStatus, PluginState, Status, UpdateStatus } from "./types"
 
 type ServerEvent = { type: string; payload: any }
 
@@ -53,14 +53,23 @@ export function connectEvents(qc: QueryClient) {
                 qc.invalidateQueries({ queryKey: ["collection"] })
                 qc.invalidateQueries({ queryKey: ["entry"] })
                 qc.invalidateQueries({ queryKey: ["list"] })
-                // A movie watched to the end is logged in the diary.
+                break
+            case "diary-updated":
+                // A viewing logged (a movie watched to the end), imported,
+                // rated, sent to Letterboxd or deleted: the diaries, and the
+                // count of entries to send.
                 qc.invalidateQueries({ queryKey: ["letterboxd"] })
                 break
-            case "letterboxd-updated":
-                // A sync (automatic or from another device) ran.
-                qc.invalidateQueries({ queryKey: ["letterboxd"] })
-                qc.invalidateQueries({ queryKey: ["status"] })
+            case "letterboxd-status": {
+                // A sync ended (automatic, or from another device), the
+                // account was connected or disconnected, the API signed in.
+                const prev = qc.getQueryData<LetterboxdStatus>(["letterboxd", "status"])
+                qc.setQueryData<LetterboxdStatus>(["letterboxd", "status"], p)
+                // /api/status has the member (name, avatar).
+                if (!prev || prev.connected !== p?.connected || prev.username !== p?.username || prev.displayName !== p?.displayName || prev.apiConnected !== p?.apiConnected)
+                    qc.invalidateQueries({ queryKey: ["status"] })
                 break
+            }
             case "settings-updated":
                 qc.invalidateQueries({ queryKey: ["status"] })
                 break
