@@ -115,6 +115,13 @@ func TestMediaRoutes(t *testing.T) {
 	if w := do(s, "GET", "/api/media/155/season/1", local, "", nil); w.Code != http.StatusBadRequest {
 		t.Errorf("a movie's season: %d", w.Code)
 	}
+	// What TMDB doesn't have is a 404 (the UI doesn't ask again), not a
+	// server error.
+	for _, path := range []string{"/api/media/999999", "/api/media/" + strconv.Itoa(show) + "/season/9"} {
+		if w := do(s, "GET", path, local, "", nil); w.Code != http.StatusNotFound {
+			t.Errorf("%s: %d %s, want 404", path, w.Code, w.Body.String())
+		}
+	}
 
 	var genres []string
 	decodeBody(t, do(s, "GET", "/api/catalog/genres", local, "", nil), &genres)
