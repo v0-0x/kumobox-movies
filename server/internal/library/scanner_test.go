@@ -256,7 +256,7 @@ func TestFoldersExplainSkippedFolders(t *testing.T) {
 		"Creditless":                        "Ignore patterns skip its videos (*NCOP*)",
 		"Artbook":                           "No video files in this folder or its subfolders",
 		"Notes":                             "No video files here (1 .txt)",
-		"KumoBox Download":                     "Still downloading (1 unfinished file)",
+		"KumoBox Download":                  "Still downloading (1 unfinished file)",
 		"Empty":                             "The folder is empty",
 	}
 	for label, want := range problems {

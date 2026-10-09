@@ -21,7 +21,7 @@ var group = net.IPv4(239, 255, 75, 77)
 
 // beacon is the message: who sends it, and where its server is.
 type beacon struct {
-	KumoBox    int    `json:"kumobox"` // protocol version
+	KumoBox int    `json:"kumobox"` // protocol version
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Port    int    `json:"port"`

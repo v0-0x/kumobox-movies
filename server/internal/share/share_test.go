@@ -180,7 +180,7 @@ func TestSharedFilesAreTheMatchedOnes(t *testing.T) {
 		{Path: "/a/1.mkv", MediaID: 5, Episode: 1, Kind: "main"},
 		{Path: "/a/2.mkv"}, // not matched
 		{Path: "/a/3.mkv", MediaID: 5, Ignored: true}, // ignored
-		{Path: "kumobox://x//b/1.mkv", MediaID: 6},       // another's
+		{Path: "kumobox://x//b/1.mkv", MediaID: 6},    // another's
 	}
 	s, _ := New(d, settings, lib, events.NewHub())
 	files, _ := s.SharedFiles()
