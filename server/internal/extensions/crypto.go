@@ -106,16 +106,19 @@ func installCrypto(vm *goja.Runtime) {
 			_ = o.Set("iv", bytesToJS(vm, iv))
 		}
 		_ = o.Set("sigBytes", len(data))
-		_ = o.Set("toString", func(call goja.FunctionCall) string {
+		// A func(goja.FunctionCall) goja.Value is called with the JS
+		// arguments; any other signature goes through reflection, which
+		// would lose the encoder argument.
+		_ = o.Set("toString", func(call goja.FunctionCall) goja.Value {
 			enc := call.Argument(0)
-			if enc != nil && !goja.IsUndefined(enc) {
+			if enc != nil && !goja.IsUndefined(enc) && !goja.IsNull(enc) {
 				if name := enc.ToObject(vm).Get("__encoder"); name != nil {
 					if e, ok := encoders[name.String()]; ok {
-						return e.stringify(data)
+						return vm.ToValue(e.stringify(data))
 					}
 				}
 			}
-			return base64.StdEncoding.EncodeToString(data)
+			return vm.ToValue(base64.StdEncoding.EncodeToString(data))
 		})
 		return o
 	}
