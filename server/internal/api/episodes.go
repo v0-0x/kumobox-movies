@@ -95,6 +95,10 @@ func markedProgress(status string, progress, repeat int, media *catalog.Media, k
 			repeat++
 		}
 		status = "COMPLETED"
+	case !media.IsShow() && !watched && next == 0 && progress > 0:
+		// A movie marked unwatched goes back on the watchlist, rather than
+		// "watching" with nothing watched.
+		status = "PLANNING"
 	case status == "COMPLETED" && next < progress:
 		status = "CURRENT" // reopened
 	case next > progress && status != "REPEATING":

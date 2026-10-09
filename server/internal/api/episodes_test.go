@@ -49,7 +49,8 @@ func TestMarkedProgress(t *testing.T) {
 		{"episodes unknown", unknown, "CURRENT", 1004, 0, 1006, true, 1006, "CURRENT", 0},
 		{"paused resumes", long, "PAUSED", 1004, 0, 1005, true, 1005, "CURRENT", 0},
 		{"movie watched", movie, "PLANNING", 0, 0, 1, true, 1, "COMPLETED", 0},
-		{"movie unwatched", movie, "COMPLETED", 1, 0, 1, false, 0, "CURRENT", 0},
+		{"movie unwatched", movie, "COMPLETED", 1, 0, 1, false, 0, "PLANNING", 0},
+		{"rewatched movie unwatched", movie, "REPEATING", 1, 2, 1, false, 0, "PLANNING", 2},
 		// Its progress kept: put back on the watchlist, or on another list.
 		{"movie back on the watchlist", movie, "PLANNING", 1, 0, 1, true, 1, "COMPLETED", 0},
 		{"movie paused", movie, "PAUSED", 1, 0, 1, true, 1, "COMPLETED", 0},
