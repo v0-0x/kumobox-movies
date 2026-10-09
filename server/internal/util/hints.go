@@ -12,14 +12,12 @@ func InstallHint(tool string) string {
 			return "scoop install mpv (extras bucket), or get it from mpv.io"
 		case "yt-dlp":
 			return "winget install yt-dlp.yt-dlp"
-		case "ani-cli":
-			return "install Git for Windows (winget install Git.Git), then scoop install ani-cli (extras bucket)"
 		}
 		return "install " + tool
 	}
 	if runtime.GOOS == "darwin" {
 		switch tool {
-		case "ffmpeg", "yt-dlp", "ani-cli":
+		case "ffmpeg", "yt-dlp":
 			return "Settings › App › Programs › Install downloads it"
 		case "mpv":
 			return "get it from mpv.io, or brew install mpv on an Apple silicon Mac"
@@ -29,8 +27,6 @@ func InstallHint(tool string) string {
 	switch tool {
 	case "ffmpeg", "mpv", "yt-dlp":
 		return "sudo pacman -S " + tool
-	case "ani-cli":
-		return "yay -S ani-cli (AUR)"
 	}
 	return "install " + tool
 }

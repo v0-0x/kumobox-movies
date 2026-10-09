@@ -8,7 +8,7 @@ var (
 )
 
 // SetToolsDir sets the folder where KumoBox puts programs itself (the macOS
-// programs setup: ffmpeg, yt-dlp, ani-cli). On macOS it goes first on the
+// programs setup: ffmpeg, yt-dlp, mpv). On macOS it goes first on the
 // PATH, for KumoBox's lookups and the programs it starts; it needn't exist
 // yet.
 func SetToolsDir(dir string) {

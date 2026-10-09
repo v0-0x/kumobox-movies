@@ -13,9 +13,8 @@ var toolDirs = []string{"/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/b
 
 // Apps opened from the Finder or the Dock get the PATH /usr/bin:/bin:
 // /usr/sbin:/sbin, without the folders of the programs KumoBox uses (ffmpeg, mpv,
-// yt-dlp, ani-cli from Homebrew): KumoBox puts those first on its PATH, like a
-// Terminal has them, for its own lookups and the programs it starts (ani-cli
-// runs other tools in turn).
+// yt-dlp from Homebrew): KumoBox puts those first on its PATH, like a
+// Terminal has them, for its own lookups and the programs it starts.
 func init() {
 	_ = os.Setenv("PATH", withToolDirs(os.Getenv("PATH"), toolDirs, isDir))
 }
