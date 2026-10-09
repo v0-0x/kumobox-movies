@@ -1,6 +1,7 @@
 import { Loader2, Pause, Play, RotateCcw, RotateCw, Square } from "lucide-react"
 import { Link } from "react-router-dom"
 import { api } from "@/lib/api"
+import { formatKey, isShow } from "@/lib/ids"
 import { playbackStore, scanStore, useStore } from "@/lib/store"
 import { formatDuration } from "@/lib/utils"
 import { Progress } from "./ui"
@@ -15,7 +16,9 @@ export function NowPlaying() {
         <div className="fixed bottom-5 left-1/2 z-50 w-[min(92vw,560px)] -translate-x-1/2 rounded-xl border border-line-strong bg-surface-2 p-3 shadow-2xl shadow-black/50 rise-in">
             <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
-                    <p className="text-xs text-muted">Playing in mpv</p>
+                    <p className="text-xs text-muted">
+                        Playing in mpv{isShow(s.mediaId) && s.episode > 0 && !s.title.includes(formatKey(s.episode)) ? ` · ${formatKey(s.episode)}` : ""}
+                    </p>
                     <Link to={`/entry?id=${s.mediaId}`} className="block truncate text-sm font-medium hover:underline">
                         {s.title}
                     </Link>
@@ -27,7 +30,7 @@ export function NowPlaying() {
                     <button className="grid size-9 place-items-center rounded-full bg-white text-neutral-950 transition-colors hover:bg-white/85" onClick={() => cmd("toggle")} title="Play/Pause">
                         {s.paused ? <Play className="ml-0.5 size-4 fill-current" /> : <Pause className="size-4 fill-current" />}
                     </button>
-                    <button className="grid size-9 place-items-center rounded-full text-muted transition-colors hover:bg-white/10 hover:text-fg" onClick={() => cmd("seek", 85)} title="Skip 85s">
+                    <button className="grid size-9 place-items-center rounded-full text-muted transition-colors hover:bg-white/10 hover:text-fg" onClick={() => cmd("seek", 30)} title="Forward 30s">
                         <RotateCw className="size-4" />
                     </button>
                     <button className="grid size-9 place-items-center rounded-full text-muted transition-colors hover:bg-white/10 hover:text-fg" onClick={() => cmd("stop")} title="Stop">

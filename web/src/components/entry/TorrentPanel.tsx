@@ -3,6 +3,7 @@ import { ArrowDownToLine, Copy, ExternalLink, Magnet, Search, ShieldCheck, Users
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "@/lib/toast"
 import { api } from "@/lib/api"
+import { episodeKey, firstEpisode, formatKey, mediaIsShow, splitKey } from "@/lib/ids"
 import { useStatus, useTorrentSearch } from "@/lib/queries"
 import type { EntryView, TorrentResult } from "@/lib/types"
 import { cn, copyText, relativeTime } from "@/lib/utils"
@@ -13,9 +14,13 @@ export function TorrentPanel({ entry }: { entry: EntryView }) {
     const settings = status?.settings
     const media = entry.media
     const { data: providers } = useQuery({ queryKey: ["torrent-providers"], queryFn: () => api.get<{ id: string; name: string; extension: boolean }[]>("/api/torrents/providers") })
-    const [provider, setProvider] = useState(settings?.torrent.defaultProvider || "nyaa")
-    const [episode, setEpisode] = useState<number>(entry.nextEpisode?.number ?? 1)
-    const [batch, setBatch] = useState(media.status === "FINISHED" && (entry.listEntry?.progress ?? 0) === 0 && media.format !== "MOVIE")
+    const show = mediaIsShow(media)
+    const [provider, setProvider] = useState(settings?.torrent.defaultProvider || "all")
+    // Shows: an episode (by key) or a season pack. Movies have neither.
+    const [season, setSeason] = useState(() => splitKey(entry.nextEpisode?.number || firstEpisode(media))[0] || 1)
+    const [ep, setEp] = useState(() => splitKey(entry.nextEpisode?.number || firstEpisode(media))[1] || 1)
+    const episode = show ? episodeKey(season, ep) : 0
+    const [batch, setBatch] = useState(show && media.status === "FINISHED" && (entry.listEntry?.progress ?? 0) === 0)
     const [resolution, setResolution] = useState(settings?.torrent.preferredResolution || "1080")
     const [query, setQuery] = useState("")
     const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -24,7 +29,16 @@ export function TorrentPanel({ entry }: { entry: EntryView }) {
 
     const run = () => {
         setSelected(new Set())
-        search.mutate({ provider, mediaId: media.id, query: query.trim() || undefined, episode: batch ? 0 : episode, batch, resolution: resolution === "any" ? "" : resolution })
+        search.mutate({
+            provider,
+            mediaId: media.id,
+            query: query.trim() || undefined,
+            // An episode key, or the season of a pack.
+            episode: show && !batch ? episode : 0,
+            season: show ? season : undefined,
+            batch: show && batch,
+            resolution: resolution === "any" ? "" : resolution,
+        })
     }
     useEffect(() => {
         run()
@@ -62,10 +76,18 @@ export function TorrentPanel({ entry }: { entry: EntryView }) {
                         ]}
                     />
                 </label>
-                <label className="flex w-28 flex-col gap-1.5">
-                    <span className="text-xs font-medium text-subtle">Episode</span>
-                    <Input type="number" min={1} value={episode} disabled={batch} onChange={e => setEpisode(Number(e.target.value))} />
-                </label>
+                {show && (
+                    <>
+                        <label className="flex w-20 flex-col gap-1.5">
+                            <span className="text-xs font-medium text-subtle">Season</span>
+                            <Input type="number" min={0} value={season} onChange={e => setSeason(Number(e.target.value))} />
+                        </label>
+                        <label className="flex w-20 flex-col gap-1.5">
+                            <span className="text-xs font-medium text-subtle">Episode</span>
+                            <Input type="number" min={1} value={ep} disabled={batch} onChange={e => setEp(Number(e.target.value))} />
+                        </label>
+                    </>
+                )}
                 <label className="flex w-32 flex-col gap-1.5">
                     <span className="text-xs font-medium text-subtle">Resolution</span>
                     <Select
@@ -80,10 +102,12 @@ export function TorrentPanel({ entry }: { entry: EntryView }) {
                         ]}
                     />
                 </label>
-                <label className="flex h-10 items-center gap-2.5 px-1">
-                    <Switch checked={batch} onChange={setBatch} />
-                    <span className="text-sm">Batch</span>
-                </label>
+                {show && (
+                    <label className="flex h-10 items-center gap-2.5 px-1">
+                        <Switch checked={batch} onChange={setBatch} />
+                        <span className="text-sm">Season pack</span>
+                    </label>
+                )}
                 <div className="min-w-56 flex-1">
                     <span className="mb-1.5 block text-xs font-medium text-subtle">Custom query (optional)</span>
                     <Input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === "Enter" && run()} placeholder="Leave empty for smart search" icon={<Search className="size-4" />} />
@@ -137,8 +161,8 @@ export function TorrentPanel({ entry }: { entry: EntryView }) {
                                         {provider === "all" && r.provider && <Badge>{providerName(r.provider)}</Badge>}
                                         {r.releaseGroup && <Badge tone="brand">{r.releaseGroup}</Badge>}
                                         {r.resolution && <Badge>{r.resolution}</Badge>}
-                                        {r.isBatch && <Badge tone="blue">Batch</Badge>}
-                                        {r.episodeNumber > 0 && !r.isBatch && <Badge>Ep {r.episodeNumber}</Badge>}
+                                        {r.isBatch && <Badge tone="blue">{show ? "Pack" : "Collection"}</Badge>}
+                                        {show && r.episodeNumber > 0 && !r.isBatch && <Badge>{r.episodeNumber >= 1000 ? formatKey(r.episodeNumber) : `E${r.episodeNumber}`}</Badge>}
                                         {r.dub && <Badge tone="amber">Dual audio</Badge>}
                                         {r.trusted && (
                                             <Badge tone="green">

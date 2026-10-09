@@ -21,6 +21,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "@/lib/toast"
 import { api, qs } from "@/lib/api"
+import { formatKey, mediaIsShow, nextEpisode } from "@/lib/ids"
 import { prefersHls, randomId, videoCaps } from "@/lib/playback"
 import { useSettings } from "@/lib/queries"
 import { playerStore, type PlayerRequest } from "@/lib/store"
@@ -31,10 +32,13 @@ import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparat
 
 type SubOption = { key: string; label: string; lang: string; title: string; index: number; url: string; bitmap?: boolean }
 type Skip = { type: string; start: number; end: number }
-// The AniSkip intervals the player skips: openings and endings. Recaps play
-// (AniSkip calls the next episode's preview one too).
-const SKIPPED = ["op", "mixed-op", "ed", "mixed-ed"]
-const skipName = (type: string) => (type === "ed" || type === "mixed-ed" ? "ending" : "opening")
+// The intervals the player offers to skip, found by the server from the
+// file's chapter names: intros and recaps (Settings › Playback "Skip intros
+// and recaps"), end credits ("Skip end credits"). The older op/ed names
+// count too.
+const CREDITS = ["credits", "outro", "ed", "mixed-ed"]
+const SKIPPED = ["intro", "recap", "op", "mixed-op", ...CREDITS]
+const skipName = (type: string) => (CREDITS.includes(type) ? "credits" : type === "recap" ? "recap" : "intro")
 
 const langNames: Record<string, string> = {
     jpn: "Japanese", ja: "Japanese", eng: "English", en: "English", spa: "Spanish", es: "Spanish", fre: "French", fra: "French", fr: "French",
@@ -115,7 +119,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
 
     const mediaId = req.mediaId
     const episode = req.episode
-    const source = req.kind === "local" ? "local" : req.provider === "ani-cli" ? "anicli" : "stream"
+    const source = req.kind === "local" ? "local" : "stream"
     // Safari and iPhone/iPad get converted files as HLS (see lib/playback).
     const hlsMode = useMemo(() => prefersHls(), [])
     const caps = useMemo(() => videoCaps(hlsMode && Hls.isSupported() ? "mse" : "element"), [hlsMode])
@@ -126,6 +130,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     // ------------------------------------------------------------------ load
     useEffect(() => {
         let cancelled = false
+        // The movie or show: its original language, title and episodes.
+        const entryP = api.get<EntryView>(`/api/media/${mediaId}`).catch(() => null)
         ;(async () => {
             try {
                 setLoading(true)
@@ -147,9 +153,15 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     let ai = res.probe.audio?.findIndex(a => a.default) ?? 0
                     if (ai < 0) ai = 0
                     const p = res.tracks
-                    // Sub/dub chosen for this anime (or a "dub" default) picks the
-                    // audio of dual-audio files, unless a track was picked by hand.
-                    const mode = p?.streamMode || (settings?.aniCli.defaultMode === "dub" ? "dub" : "")
+                    // Original audio or dub, chosen for this title (or a "dub"
+                    // default), picks the audio of multi-audio files, unless a
+                    // track was picked by hand. The dub is in the preferred
+                    // audio language (English if none).
+                    const mode = p?.streamMode || (settings?.onlineStream.preferDub ? "dub" : "")
+                    const original = (await entryP)?.media.originalLanguage ?? ""
+                    const dubLang = settings?.playback.preferredAudioLang || "eng,en"
+                    const isDub = (a: { lang: string; title: string }) => (a.lang ? langIn(a.lang, dubLang) : isEnglishTrack(a.lang, a.title)) && !(original && langIn(a.lang, original))
+                    const isOriginal = (a: { lang: string }) => !!original && !!a.lang && langIn(a.lang, original)
                     const handAudio = !!(settings?.playback.rememberTracks && p && (p.audioLang || p.audioTitle || p.audioIndex))
                     const handSub = !!(settings?.playback.rememberTracks && p && (p.subOff || p.subLang || p.subTitle || p.subIndex))
                     let modeAudio = false
@@ -160,11 +172,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                             audio.find(a => p.audioLang && normLang(a.lang) === normLang(p.audioLang)) ??
                             (p.audioIndex ? audio[p.audioIndex - 1] : undefined)
                         if (m) ai = m.index
-                    } else if (mode && audio.length > 1 && (mode === "dub" ? audio.some(a => isEnglishTrack(a.lang, a.title)) : true)) {
-                        const m =
-                            mode === "dub"
-                                ? audio.find(a => isEnglishTrack(a.lang, a.title))
-                                : (audio.find(a => isJapaneseTrack(a.lang, a.title)) ?? audio.find(a => !isEnglishTrack(a.lang, a.title)))
+                    } else if (mode && audio.length > 1 && audio.some(a => (mode === "dub" ? isDub(a) : isOriginal(a)))) {
+                        const m = audio.find(a => (mode === "dub" ? isDub(a) : isOriginal(a)))
                         if (m) {
                             ai = m.index
                             modeAudio = true
@@ -212,12 +221,13 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     }
                 } else {
                     const res = await api.get<{ sources: StreamSource[]; resumeAt: number; tracks: TrackPrefs | null; title: string }>(
-                        `/api/onlinestream/sources${qs({ provider: req.provider, mediaId: req.mediaId, episode: req.episode, dub: req.dub, server: req.server })}`,
+                        `/api/providers/sources${qs({ provider: req.provider, mediaId: req.mediaId, episode: req.episode, dub: req.dub, server: req.server })}`,
                     )
                     if (cancelled) return
                     prefsRef.current = res.tracks
-                    const media = await api.get<EntryView>(`/api/anime/${req.mediaId}`).catch(() => null)
-                    setTitle(`${media?.media.title.userPreferred ?? res.title ?? "Episode"} — Episode ${req.episode}${req.dub ? " (Dub)" : ""}`)
+                    const e = await entryP
+                    const name = e?.media.title.userPreferred || e?.media.title.english || res.title || "Stream"
+                    setTitle(`${name}${e && mediaIsShow(e.media) ? ` — ${formatKey(req.episode)}` : ""}${req.dub ? " (Dub)" : ""}`)
                     const sorted = [...res.sources].sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality))
                     setSources(sorted)
                     setSourceIdx(0)
@@ -225,11 +235,12 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     applyStreamSubs(sorted[0])
                 }
                 // Next episode
-                api.get<EntryView>(`/api/anime/${mediaId}`)
+                entryP
                     .then(e => {
-                        if (cancelled) return
-                        const n = e.episodes.find(x => x.number === episode + 1)
-                        if (!n) return
+                        if (cancelled || !e || !mediaIsShow(e.media)) return
+                        const key = nextEpisode(e.media, episode)
+                        const n = (e.episodes ?? []).find(x => x.number === key)
+                        if (!key || !n) return
                         if (req.kind === "local") n.file && setNextEp({ path: n.file.path, episode: n.number })
                         else if (n.aired) setNextEp({ episode: n.number })
                     })
@@ -564,7 +575,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         }
     }
 
-    // AniSkip's times are recorded on one version of the episode and land on
+    // Skips are worked out for one file (its chapters) and would land on
     // random scenes in a longer or shorter one: ask for the ones that fit
     // this one's length, once it's known.
     const length = Number.isFinite(duration) ? Math.round(duration) : 0
@@ -582,7 +593,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const skippable = skips.filter(s => SKIPPED.includes(s.type))
     const currentSkip = skippable.find(s => time >= s.start && time < s.end - 1)
     const skipWhat = currentSkip && skipName(currentSkip.type)
-    const autoSkip = skipWhat === "ending" ? settings?.playback.skipOutroAniSkip : skipWhat ? settings?.playback.skipIntroAniSkip : false
+    const autoSkip = skipWhat === "credits" ? settings?.playback.skipOutroAniSkip : skipWhat ? settings?.playback.skipIntroAniSkip : false
     useEffect(() => {
         if (!currentSkip || !autoSkip || skipped.current.has(currentSkip.type)) return
         skipped.current.add(currentSkip.type)
@@ -996,19 +1007,13 @@ function qualityRank(q: string) {
     return 0
 }
 
-// An English (dub) or Japanese (original) track, by language tag or title —
-// dual-audio releases often only name their tracks ("English 5.1").
+// An English track, by language tag or title: multi-audio releases often
+// only name their tracks ("English 5.1").
 function isEnglishTrack(lang?: string, title?: string) {
     const l = (lang ?? "").trim().toLowerCase()
     const t = (title ?? "").toLowerCase()
     if (t.includes("commentary")) return false
     return l === "eng" || l === "en" || t.includes("english") || t.includes("dub") || /\beng\b/.test(t)
-}
-
-function isJapaneseTrack(lang?: string, title?: string) {
-    const l = (lang ?? "").trim().toLowerCase()
-    const t = (title ?? "").toLowerCase()
-    return l === "jpn" || l === "ja" || l === "jp" || t.includes("japanese") || /\b(jpn|jap)\b/.test(t)
 }
 
 function pickSub(opts: SubOption[], prefs: TrackPrefs | null, preferred: string, defaultIndex?: number, fallbackKey?: string): string {
