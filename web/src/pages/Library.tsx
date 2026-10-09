@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query"
 import { EyeOff, FileVideo, FolderSync, Link2, Link2Off, Lock, RefreshCw, Search, Undo2, Wand2 } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { toast } from "@/lib/toast"
 import { LibraryFolders } from "@/components/library/LibraryFolders"
@@ -243,20 +243,25 @@ function AllFiles() {
     )
 }
 
-// A show's season and episode, saved as the episode key when either changes.
+// A show's season and episode, saved as the episode key when the focus
+// leaves both boxes: typing the season then Tab and the episode saves
+// S01E03, not S01E00 then S00E03 (a special).
 function KeyInput({ value, onChange }: { value: number; onChange: (key: number) => void }) {
     const [s, e] = splitKey(value)
-    const commit = (season: number, episode: number) => {
-        const key = episodeKey(Math.max(0, season), Math.max(0, episode))
+    const season = useRef<HTMLInputElement>(null)
+    const episode = useRef<HTMLInputElement>(null)
+    const commit = (ev: React.FocusEvent<HTMLDivElement>) => {
+        if (ev.currentTarget.contains(ev.relatedTarget as Node | null)) return
+        const key = episodeKey(Math.max(0, Number(season.current?.value) || 0), Math.max(0, Number(episode.current?.value) || 0))
         if (key !== value) onChange(key)
     }
     const cls = "h-8 w-14 rounded-lg border border-line bg-surface-2 px-2 text-xs"
     return (
-        <div key={value} className="flex items-center gap-1.5">
+        <div key={value} className="flex items-center gap-1.5" onBlur={commit}>
             <span className="text-xs text-subtle">S</span>
-            <input type="number" min={0} defaultValue={s} aria-label="Season" onBlur={ev => commit(Number(ev.target.value), e)} className={cls} />
+            <input ref={season} type="number" min={0} defaultValue={s} aria-label="Season" className={cls} />
             <span className="text-xs text-subtle">E</span>
-            <input type="number" min={0} defaultValue={e} aria-label="Episode" onBlur={ev => commit(s, Number(ev.target.value))} className={cls} />
+            <input ref={episode} type="number" min={0} defaultValue={e} aria-label="Episode" className={cls} />
         </div>
     )
 }
