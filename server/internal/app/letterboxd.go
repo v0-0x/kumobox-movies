@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,7 +75,7 @@ func (a *App) logWatched(ctx context.Context, mediaID int) {
 // the user made.
 func (a *App) UpdateEntry(ctx context.Context, u catalog.EntryUpdate) error {
 	var cur *catalog.ListEntry
-	if u.Status != nil {
+	if u.Status != nil || u.Notes != nil {
 		if coll, err := a.Platform.Collection(ctx, "", false); err == nil && coll != nil {
 			cur = coll.Find(u.MediaID)
 		}
@@ -91,7 +92,33 @@ func (a *App) UpdateEntry(ctx context.Context, u catalog.EntryUpdate) error {
 	case catalog.IsMovie(u.MediaID) && (u.Score != nil || u.Liked != nil):
 		a.rateLogged(ctx, u.MediaID)
 	}
+	// Only a review that changed: the list editor sends the notes back
+	// with every edit, and notes imported from Letterboxd mustn't go back
+	// there as a new review.
+	if u.Notes != nil && catalog.IsMovie(u.MediaID) && (cur == nil || strings.TrimSpace(cur.Notes) != strings.TrimSpace(*u.Notes)) {
+		a.reviewLogged(ctx, u.MediaID, *u.Notes)
+	}
 	return nil
+}
+
+// reviewLogged gives the latest viewing of a movie, when it was logged here
+// and isn't on Letterboxd yet, the review the user just wrote, so that it
+// goes to Letterboxd with it. Only reviews written in KumoBox get there: a
+// review that came from Letterboxd isn't copied into new viewings.
+func (a *App) reviewLogged(ctx context.Context, mediaID int, review string) {
+	a.diary.mu.Lock()
+	defer a.diary.mu.Unlock()
+	latest, err := a.Platform.Diary(ctx, mediaID, 1)
+	if err != nil || len(latest) == 0 {
+		return
+	}
+	d := latest[0]
+	if d.Source != catalog.DiaryKumoBox || d.ExportedAt != 0 || d.Review == strings.TrimSpace(review) {
+		return
+	}
+	if err := a.Platform.ReviewDiary(ctx, d.ID, review); err != nil {
+		log.Printf("letterboxd: reviewing diary entry %d: %v", d.ID, err)
+	}
 }
 
 // rateLogged gives the latest viewing of a movie, when it was logged here

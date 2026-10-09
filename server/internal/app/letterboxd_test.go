@@ -114,6 +114,25 @@ func TestCompletedMovieLogged(t *testing.T) {
 	if d, _ := a.Platform.Diary(ctx, 155, 0); d[0].Rating != 80 || !d[0].Liked {
 		t.Errorf("rated afterwards: %+v", d[0])
 	}
+	// A review written afterwards goes with it too.
+	review := "  Why so serious?  "
+	if err := a.UpdateEntry(ctx, catalog.EntryUpdate{MediaID: 155, Notes: &review}); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := a.Platform.Diary(ctx, 155, 0); d[0].Review != "Why so serious?" {
+		t.Errorf("reviewed afterwards: %q", d[0].Review)
+	}
+	// Notes sent back unchanged with another edit (as the list editor does)
+	// don't overwrite a review written on the diary entry itself.
+	if err := a.Platform.ReviewDiary(ctx, d[0].ID, "Edited in the diary"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.UpdateEntry(ctx, catalog.EntryUpdate{MediaID: 155, Score: &score, Notes: &review}); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := a.Platform.Diary(ctx, 155, 0); d[0].Review != "Edited in the diary" {
+		t.Errorf("unchanged notes: %q", d[0].Review)
+	}
 	// Once on Letterboxd, it's left as it was sent.
 	if err := a.Letterboxd.MarkExported(ctx, []int64{d[0].ID}); err != nil {
 		t.Fatal(err)
@@ -122,8 +141,12 @@ func TestCompletedMovieLogged(t *testing.T) {
 	if err := a.UpdateEntry(ctx, catalog.EntryUpdate{MediaID: 155, Score: &score}); err != nil {
 		t.Fatal(err)
 	}
-	if d, _ := a.Platform.Diary(ctx, 155, 0); d[0].Rating != 80 {
-		t.Errorf("rated after sending: %+v", d[0])
+	review = "Changed my mind"
+	if err := a.UpdateEntry(ctx, catalog.EntryUpdate{MediaID: 155, Score: &score, Notes: &review}); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := a.Platform.Diary(ctx, 155, 0); d[0].Rating != 80 || d[0].Review != "Edited in the diary" {
+		t.Errorf("edited after sending: %+v", d[0])
 	}
 
 	// Put on the Watched list by hand: logged once.

@@ -175,6 +175,18 @@ func (p *Platform) RateDiary(ctx context.Context, id int64, rating int, liked bo
 	return nil
 }
 
+// ReviewDiary sets the review of a viewing.
+func (p *Platform) ReviewDiary(ctx context.Context, id int64, review string) error {
+	res, err := p.db.Write(`UPDATE diary SET review = ? WHERE id = ?`, strings.TrimSpace(review), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		p.hub.Publish(events.DiaryUpdated, nil)
+	}
+	return nil
+}
+
 // DeleteDiary removes a viewing from the diary (gone already is fine). One
 // Letterboxd has (imported from it, or sent to it) is remembered, so that
 // syncing the diary doesn't bring it back (see AddDiary).
