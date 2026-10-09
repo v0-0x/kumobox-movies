@@ -561,6 +561,9 @@ func (s *Server) nuvioRepo(r *http.Request) (any, error) {
 // addNuvioRepo is POST /api/providers/nuvio/repos {url}: checks the
 // repository and keeps it in Settings › Providers.
 func (s *Server) addNuvioRepo(r *http.Request) (any, error) {
+	if !isTrusted(r) {
+		return nil, errLANInstall
+	}
 	var body struct {
 		URL string `json:"url"`
 	}
@@ -578,6 +581,9 @@ func (s *Server) addNuvioRepo(r *http.Request) (any, error) {
 }
 
 func (s *Server) removeNuvioRepo(r *http.Request) (any, error) {
+	if !isTrusted(r) {
+		return nil, errLANInstall
+	}
 	u := strings.TrimSpace(r.URL.Query().Get("url"))
 	cfg := s.app.Settings.Get()
 	repos := []string{}

@@ -316,7 +316,10 @@ func (s *Server) saveSettings(r *http.Request) (any, error) {
 		// Nor the API keys, which they don't see either.
 		next.TMDB.APIKey = cur.TMDB.APIKey
 		next.Letterboxd.APIClientID, next.Letterboxd.APIClientSecret = cur.Letterboxd.APIClientID, cur.Letterboxd.APIClientSecret
-		next.TorrentSources.Torznab = cur.TorrentSources.Torznab
+		// Nor where torrents are searched (an indexer may be on the LAN, a
+		// mirror their own server, sent the indexers' API keys) or where
+		// provider code and addon collections are fetched from.
+		next.TorrentSources, next.Providers = cur.TorrentSources, cur.Providers
 		next.Library.Dir, next.Library.ExtraDirs = cur.Library.Dir, cur.Library.ExtraDirs
 		// Who this computer's library is shared with is its own business.
 		next.Sharing = cur.Sharing

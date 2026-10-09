@@ -2,14 +2,17 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
+	"github.com/v0-0x/kumobox-movies/server/internal/config"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -193,6 +196,54 @@ func TestPluginGrantOnlyFromThisComputer(t *testing.T) {
 	// From this computer it's only refused for not being installed.
 	if w := do(s, "POST", "/api/extensions/some-plugin/grant", "127.0.0.1:5000", "", nil); w.Code == http.StatusForbidden || !strings.Contains(w.Body.String(), "not installed") {
 		t.Errorf("local grant: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Devices on the LAN can't change where torrents are searched (a Torznab
+// indexer may be on the LAN, a mirror could be their own server, getting
+// the API keys) nor where provider code and addon collections come from;
+// the indexers' API keys stay hidden from them.
+func TestLANCantChangeSourcesOrProviders(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, ""
+	cfg.TorrentSources.Torznab = []config.TorznabIndexer{{Name: "Prowlarr", URL: "http://127.0.0.1:9696/1/api", APIKey: "indexer-key", Enabled: true}}
+	cfg.Providers.NuvioRepos = []string{"https://repo.example/manifest.json"}
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lan := "192.168.1.20:5000"
+	evil := s.app.Settings.Get()
+	evil.TorrentSources.Torznab = []config.TorznabIndexer{{Name: "Mine", URL: "http://192.168.1.20:9696/api", Enabled: true}}
+	evil.TorrentSources.EZTV.URL = "http://192.168.1.20:8080"
+	evil.Providers.StremioCatalogs = []string{"https://evil.example/collection.json"}
+	evil.Providers.NuvioRepos = []string{"https://evil.example/manifest.json"}
+	raw, _ := json.Marshal(evil)
+	w := do(s, "PUT", "/api/settings", lan, string(raw), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("LAN save: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "indexer-key") {
+		t.Fatal("LAN device received the indexer's API key")
+	}
+	got := s.app.Settings.Get()
+	if len(got.TorrentSources.Torznab) != 1 || got.TorrentSources.Torznab[0].URL != "http://127.0.0.1:9696/1/api" || got.TorrentSources.Torznab[0].APIKey != "indexer-key" ||
+		got.TorrentSources.EZTV.URL != "" || fmt.Sprint(got.Providers.StremioCatalogs) != fmt.Sprint([]string{config.DefaultStremioCatalog}) ||
+		fmt.Sprint(got.Providers.NuvioRepos) != "[https://repo.example/manifest.json]" {
+		t.Fatalf("LAN device changed the sources or providers: %+v %+v", got.TorrentSources, got.Providers)
+	}
+	if w := do(s, "GET", "/api/settings", lan, "", nil); strings.Contains(w.Body.String(), "indexer-key") {
+		t.Fatal("LAN device can read the indexer's API key")
+	}
+	// Nor keep or forget Nuvio repositories.
+	if w := do(s, "POST", "/api/providers/nuvio/repos", lan, `{"url":"https://evil.example/manifest.json"}`, nil); w.Code != http.StatusForbidden {
+		t.Errorf("LAN keeps a Nuvio repository: %d", w.Code)
+	}
+	if w := do(s, "DELETE", "/api/providers/nuvio/repos?url="+url.QueryEscape("https://repo.example/manifest.json"), lan, "", nil); w.Code != http.StatusForbidden {
+		t.Errorf("LAN forgets a Nuvio repository: %d", w.Code)
+	}
+	if got := s.app.Settings.Get().Providers.NuvioRepos; fmt.Sprint(got) != "[https://repo.example/manifest.json]" {
+		t.Errorf("repositories %v", got)
 	}
 }
 
