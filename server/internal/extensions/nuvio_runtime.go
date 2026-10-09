@@ -275,10 +275,12 @@ func (r *Runtime) callNuvio(ctx context.Context, tmdbID, mediaType string, seaso
 		}
 		return res.raw, res.err
 	case <-ctx.Done():
+		r.unstick()
 		return nil, ctx.Err()
 	case <-r.ctx.Done():
 		return nil, errStopped
 	case <-timeout.C:
+		r.unstick()
 		return nil, errors.New("getStreams() timed out")
 	}
 }

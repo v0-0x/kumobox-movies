@@ -262,6 +262,32 @@ func (r *Runtime) interrupt() {
 	}
 }
 
+// unstickAfter is how long the event loop may take to get to a job after a
+// call was given up on before the JavaScript it runs is taken for stuck.
+const unstickAfter = time.Second
+
+// unstick runs after a call into the extension was given up on (its time
+// ran out): when the event loop doesn't get to a job soon, the code it runs
+// is stuck in an endless loop, which would keep a core busy and the
+// extension unusable until KumoBox quits; it is interrupted.
+func (r *Runtime) unstick() {
+	ran := make(chan struct{})
+	if !r.RunOnLoop(func(*goja.Runtime) { close(ran) }) {
+		return
+	}
+	go func() {
+		t := time.NewTimer(unstickAfter)
+		defer t.Stop()
+		select {
+		case <-ran:
+		case <-r.ctx.Done():
+		case <-t.C:
+			r.log("error", "the extension was stuck: stopped what it was running")
+			r.interrupt()
+		}
+	}()
+}
+
 func (r *Runtime) Logs() []LogLine {
 	r.logMu.Lock()
 	defer r.logMu.Unlock()
@@ -478,10 +504,12 @@ func (r *Runtime) CallProvider(ctx context.Context, method string, args ...any) 
 		}
 		return res.raw, res.err
 	case <-ctx.Done():
+		r.unstick()
 		return nil, ctx.Err()
 	case <-r.ctx.Done():
 		return nil, errStopped
 	case <-timeout.C:
+		r.unstick()
 		return nil, fmt.Errorf("%s() timed out", method)
 	}
 }

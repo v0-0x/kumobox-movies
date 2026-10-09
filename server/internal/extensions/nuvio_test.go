@@ -443,6 +443,20 @@ func TestNuvioSandbox(t *testing.T) {
 	if _, err := rt.callNuvio(ctx, "1", "movie", 0, 0); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v", err)
 	}
+	// A provider stuck in an endless loop is stopped once its call is given
+	// up on: it doesn't keep a core busy, and answers the next call.
+	rt = nuvioRuntime(t, NewFetcher(), `var calls = 0;
+		module.exports = { getStreams: function () { if (++calls === 1) { for (;;) {} } return [{ url: 'https://cdn.example/v.mp4' }]; } };`)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel2()
+	if _, err := rt.callNuvio(ctx2, "1", "movie", 0, 0); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("stuck: err = %v", err)
+	}
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel3()
+	if raw, err := rt.callNuvio(ctx3, "1", "movie", 0, 0); err != nil || !strings.Contains(string(raw), "cdn.example") {
+		t.Errorf("after a stuck call: %s, %v", raw, err)
+	}
 	// A global getStreams (no module.exports) is found too; a rejected
 	// promise is an error.
 	rt = nuvioRuntime(t, NewFetcher(), `function getStreams(id, type, s, e) { return Promise.reject(new Error('site down: ' + id + type + s + e)); }`)
