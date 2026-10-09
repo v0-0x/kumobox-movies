@@ -345,6 +345,11 @@ func h(fn func(r *http.Request) (any, error)) http.HandlerFunc {
 				// A movie, show or season TMDB doesn't have: the UI doesn't
 				// ask again for what isn't there.
 				status = http.StatusNotFound
+			case errors.Is(err, catalog.ErrNoAPIKey), errors.Is(err, catalog.ErrUnauthorized):
+				// No TMDB key, or TMDB refused it: nothing to retry until
+				// it's fixed in Settings › Metadata. (Not 401, which means
+				// this server's own password.)
+				status = http.StatusPreconditionFailed
 			}
 			if errors.Is(err, context.Canceled) {
 				return

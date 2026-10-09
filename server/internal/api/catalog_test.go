@@ -63,7 +63,7 @@ func TestStatusCatalog(t *testing.T) {
 	if _, ok := st["anilistAuthUrl"]; ok {
 		t.Error("status still has AniList's login URL")
 	}
-	if w := do(s, "GET", "/api/media/155", local, "", nil); w.Code == http.StatusOK || !strings.Contains(w.Body.String(), "TMDB") {
+	if w := do(s, "GET", "/api/media/155", local, "", nil); w.Code != http.StatusPreconditionFailed || !strings.Contains(w.Body.String(), "TMDB") {
 		t.Errorf("a title without a key: %d %s", w.Code, w.Body.String())
 	}
 
