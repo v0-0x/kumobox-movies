@@ -1,5 +1,6 @@
-// Command kumobox is the KumoBox anime server. It serves the API and the web UI on
-// 127.0.0.1 (and optionally your LAN) and is started by the desktop app.
+// Command kumobox is the KumoBox server, for movies and TV shows. It serves the
+// API and the web UI on 127.0.0.1 (and optionally your LAN) and is started by
+// the desktop app.
 package main
 
 import (
@@ -37,7 +38,7 @@ func main() {
 		fmt.Println(config.AppName, config.AppVersion)
 		return
 	}
-	// Whatever KumoBox starts (ffmpeg, ani-cli, mpv) ends with it, even when
+	// Whatever KumoBox starts (ffmpeg, mpv, yt-dlp) ends with it, even when
 	// it's killed.
 	if err := util.BindChildren(); err != nil {
 		log.Printf("child processes won't end with KumoBox: %v", err)

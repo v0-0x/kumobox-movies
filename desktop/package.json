@@ -2,7 +2,7 @@
   "name": "kumobox",
   "productName": "KumoBox",
   "version": "1.0.0",
-  "description": "KumoBox desktop window (starts the local KumoBox server)",
+  "description": "KumoBox, a movie and TV show player and tracker: the desktop window (starts the local KumoBox server)",
   "main": "main.js",
   "private": true,
   "license": "GPL-3.0-or-later",

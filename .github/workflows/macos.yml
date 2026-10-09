@@ -1,6 +1,7 @@
-# Builds, tests and packages KumoBox for macOS on a real Mac, then publishes the
-# disk image and the zip of the app as the GitHub Release "KumoBox <version> for
-# macOS", tagged macos-v<version> on the commit it built.
+# Builds, tests and packages KumoBox (movies and TV shows) for macOS on a real
+# Mac, then publishes the disk image and the zip of the app as the GitHub
+# Release "KumoBox <version> for macOS", tagged macos-v<version> on the commit
+# it built.
 #
 # The app is universal: one download for Apple silicon and Intel Macs. The
 # server is built for both (dist/macos/kumobox-arm64 and kumobox-x64) and
@@ -12,10 +13,13 @@
 # highest version and offer it on the Home page (server/internal/update),
 # which downloads the zip.
 #
-# Runs on every push to the repository's default branch (except pushes that
-# only change docs, the Arch or the Windows packaging), and by hand from the
-# Actions tab. Only the newest 10 macOS releases are kept: older ones are
-# deleted, tags included.
+# Builds, tests, packages and starts the app on every push to any branch and
+# for pull requests (except changes to docs or to the other systems'
+# packaging only), and keeps the disk image and the zip as workflow
+# artifacts: a branch can be tried on a Mac before it's merged. Only pushes
+# to the repository's default branch publish the release (and delete old
+# ones); run by hand from the Actions tab, "publish" decides. Only the newest
+# 10 macOS releases are kept: older ones are deleted, tags included.
 #
 # The app isn't signed with an Apple Developer ID nor notarized: it's signed
 # ad hoc, and the release notes say how to open it the first time.
@@ -23,8 +27,16 @@
 name: macOS release
 
 on:
-  # Pushes to other branches are skipped (see the job's condition).
+  # Branches only: the tags the releases create don't start it again.
   push:
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "packaging/arch/**"
+      - "packaging/windows/**"
+  # Pull requests from forks: a branch of this repository is built by its
+  # pushes already (see the jobs' condition).
+  pull_request:
     paths-ignore:
       - "**.md"
       - "packaging/arch/**"
@@ -39,18 +51,23 @@ on:
 permissions:
   contents: write
 
+# A newer push to a branch or a pull request cancels the run still going on
+# it; on the default branch every run finishes, as each publishes a release.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
 
 jobs:
   macos:
     name: Build, test and package (macOS universal)
-    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: macos-latest
     timeout-minutes: 60
     env:
       CGO_ENABLED: "0"
+      # "true" when this run publishes the release: a push to the default
+      # branch, or a run by hand with "publish" ticked.
+      PUBLISH: ${{ (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
     steps:
       # The whole history: the version counts its commits.
       - name: Check out
@@ -257,7 +274,8 @@ jobs:
           if-no-files-found: ignore
 
       # archive: false uploads the files as they are (no zip around them),
-      # named after the file.
+      # named after the file: the run's Summary page lists them for download,
+      # on every branch.
       - name: Upload the disk image
         uses: actions/upload-artifact@v7
         with:
@@ -279,7 +297,7 @@ jobs:
       # name replaced. It isn't marked as the repository's latest release,
       # which stays the Windows one.
       - name: Publish the GitHub Release
-        if: github.event_name == 'push' || inputs.publish
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -291,7 +309,7 @@ jobs:
           repo="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
           notes="$RUNNER_TEMP/release-notes.md"
           cat > "$notes" <<EOF
-          **KumoBox $VERSION for macOS 13 Ventura or newer, on Apple silicon and Intel Macs** (one app for both). On Windows and Arch Linux, see [the README]($repo/blob/$GITHUB_SHA/README.md).
+          **KumoBox $VERSION for macOS 13 Ventura or newer, on Apple silicon and Intel Macs** (one app for both), the app for your movies and TV shows. On Windows and Arch Linux, see [the README]($repo/blob/$GITHUB_SHA/README.md).
 
           | File | What it is |
           |---|---|
@@ -302,7 +320,9 @@ jobs:
 
           KumoBox finds newer releases by itself and updates from its Home page (**Update**), once it's in your Applications folder.
 
-          Some features use other programs: ffmpeg (needed by the in-app player for most files), yt-dlp, ani-cli and mpv. KumoBox downloads them for your Mac from **Settings › App › Programs**, with no Homebrew or password needed; see [packaging/macos/README.md]($repo/blob/$GITHUB_SHA/packaging/macos/README.md).
+          Movie and show details come from TMDB: the first time, KumoBox asks for your free TMDB API key. Letterboxd tracking only needs your Letterboxd username.
+
+          Some features use other programs: ffmpeg (needed by the in-app player for most files), yt-dlp (stream downloads) and mpv (the external player); for torrents, qBittorrent or Transmission (optional). KumoBox downloads ffmpeg and yt-dlp for your Mac from **Settings › App › Programs**, with no Homebrew or password needed (and installs mpv with Homebrew on Apple silicon); see [packaging/macos/README.md]($repo/blob/$GITHUB_SHA/packaging/macos/README.md).
 
           Built from $GITHUB_SHA by [workflow run $GITHUB_RUN_NUMBER]($repo/actions/runs/$GITHUB_RUN_ID).
           EOF
@@ -319,7 +339,7 @@ jobs:
       # Keep the newest 10 macOS releases, by version (numbers compared as
       # numbers), and delete the older ones with their tags.
       - name: Delete old releases
-        if: github.event_name == 'push' || inputs.publish
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -339,7 +359,7 @@ jobs:
   # Mac. It doesn't hold back the release either.
   setup-intel:
     name: Programs setup (macOS Intel)
-    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: macos-15-intel
     timeout-minutes: 20
     steps:

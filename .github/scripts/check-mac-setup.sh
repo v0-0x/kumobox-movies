@@ -30,8 +30,7 @@ check() {
 check ffmpeg "$bin/ffmpeg" -hide_banner -version
 check ffprobe "$bin/ffprobe" -hide_banner -version
 check yt-dlp "$bin/yt-dlp" --version
-# KumoBox gives ani-cli a stand-in player; without one it stops right away.
-check ani-cli env ANI_CLI_PLAYER=true PATH="$bin:/usr/bin:/bin" "$bin/ani-cli" --version
+# mpv only comes with Homebrew, which the check leaves out: nothing to run.
 if [ -n "$failed" ]; then
 	echo "::warning::The programs setup didn't install:$failed"
 	exit 1

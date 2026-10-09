@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=KumoBox
-GenericName=Anime Library
-Comment=Watch, stream and organise your anime
+GenericName=Movie & TV Player
+Comment=Watch, stream and track your movies and TV shows
 Exec=kumobox %U
 Icon=kumobox
 Terminal=false
 Categories=AudioVideo;Video;Player;
-Keywords=anime;anilist;ani-cli;torrent;manga;
+Keywords=movies;tv;shows;series;player;tmdb;letterboxd;torrent;
 StartupWMClass=KumoBox
 StartupNotify=true
