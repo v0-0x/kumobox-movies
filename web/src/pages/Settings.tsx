@@ -1,21 +1,18 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
     AppWindow,
-    BookOpen,
-    Check,
+    ArrowDown,
+    ArrowUp,
     ChevronDown,
     Clapperboard,
     Copy,
     Cpu,
     Download,
-    Eye,
-    EyeOff,
     FileClock,
-    Folder,
-    FolderOpen,
     Gamepad2,
     HardDrive,
     Info,
+    KeyRound,
     LibraryBig,
     Magnet,
     MonitorPlay,
@@ -32,29 +29,34 @@ import {
 import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { toast } from "@/lib/toast"
-import { LoginDialog } from "@/components/LoginDialog"
-import { Badge, Button, Dialog, Input, Select, Switch, Textarea } from "@/components/ui"
+import { LetterboxdMark } from "@/components/LetterboxdDialog"
+import { Badge, Button, Input, Select, Switch } from "@/components/ui"
 import { versionName } from "@/components/UpdateBanner"
 import { api, desktop, type DesktopPrefs } from "@/lib/api"
-import { useCheckUpdate, useOnlineProviders, useSaveSettings, useSharing, useStatus, useUpdateStatus } from "@/lib/queries"
+import { useCheckUpdate, useSaveSettings, useSharing, useStatus, useUpdateStatus } from "@/lib/queries"
 import { exampleMpvPath, installHint, installSource, platformName } from "@/lib/platform"
 import type { Tool } from "@/lib/platform"
 import { canInstallPrograms, useInstallPrograms, useWatchSetup } from "@/lib/programs"
 import { accentPreviewStore } from "@/lib/store"
 import type { Settings, SharingPeer, Status } from "@/lib/types"
-import { cn, copyText, formatBytes, img, relativeTime } from "@/lib/utils"
+import { cn, copyText, formatBytes, HOME_SECTIONS, relativeTime } from "@/lib/utils"
+import { LetterboxdSection } from "./settings/Letterboxd"
+import { MetadataSection } from "./settings/Metadata"
+import { Collapsible, Detect, Group, LinesInput, Password, PathInput, Row, type SectionProps, Stack } from "./settings/parts"
+import { ProvidersSection, TorrentSourcesSection } from "./settings/Sources"
 
 type SectionId =
     | "app"
     | "ui"
     | "library"
+    | "metadata"
+    | "letterboxd"
     | "playback"
     | "mpv"
     | "transcode"
-    | "torrent-provider"
+    | "providers"
+    | "torrent-sources"
     | "torrent-client"
-    | "streaming"
-    | "manga"
     | "discord"
     | "logs"
     | "about"
@@ -64,7 +66,13 @@ const NAV: { items: { id: SectionId; label: string; icon: React.ReactNode }[] }[
         items: [
             { id: "app", label: "App", icon: <AppWindow /> },
             { id: "ui", label: "User Interface", icon: <Palette /> },
-            { id: "library", label: "Local Anime Library", icon: <LibraryBig /> },
+            { id: "library", label: "Local Library", icon: <LibraryBig /> },
+        ],
+    },
+    {
+        items: [
+            { id: "metadata", label: "Metadata (TMDB)", icon: <KeyRound /> },
+            { id: "letterboxd", label: "Letterboxd", icon: <LetterboxdMark className="w-[18px]" /> },
         ],
     },
     {
@@ -76,26 +84,29 @@ const NAV: { items: { id: SectionId; label: string; icon: React.ReactNode }[] }[
     },
     {
         items: [
-            { id: "torrent-provider", label: "Torrent Provider", icon: <Magnet /> },
+            { id: "providers", label: "Providers", icon: <Tv /> },
+            { id: "torrent-sources", label: "Torrent Sources", icon: <Magnet /> },
             { id: "torrent-client", label: "Torrent Client", icon: <Download /> },
         ],
     },
     {
         items: [
-            { id: "streaming", label: "Online Streaming", icon: <Tv /> },
-            { id: "manga", label: "Manga", icon: <BookOpen /> },
             { id: "discord", label: "Discord", icon: <Gamepad2 /> },
-        ],
-    },
-    {
-        items: [
             { id: "logs", label: "Logs & Cache", icon: <FileClock /> },
             { id: "about", label: "About & updates", icon: <Info /> },
         ],
     },
 ]
 
-const ALIASES: Record<string, SectionId> = { "anicli": "streaming", "online-streaming": "streaming" }
+// Older links and other names.
+const ALIASES: Record<string, SectionId> = {
+    anicli: "providers",
+    streaming: "providers",
+    "online-streaming": "providers",
+    downloads: "providers",
+    "torrent-provider": "torrent-sources",
+    tmdb: "metadata",
+}
 const SECTION_IDS: string[] = NAV.flatMap(g => g.items.map(i => i.id))
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
@@ -212,13 +223,14 @@ export default function SettingsPage() {
                     {section === "app" && <AppSection draft={draft} set={set} />}
                     {section === "ui" && <UISection draft={draft} set={set} />}
                     {section === "library" && <LibrarySection draft={draft} set={set} />}
+                    {section === "metadata" && <MetadataSection draft={draft} set={set} />}
+                    {section === "letterboxd" && <LetterboxdSection draft={draft} set={set} />}
                     {section === "playback" && <PlaybackSection draft={draft} set={set} />}
                     {section === "mpv" && <MpvSection draft={draft} set={set} />}
                     {section === "transcode" && <TranscodeSection draft={draft} set={set} />}
-                    {section === "torrent-provider" && <TorrentProviderSection draft={draft} set={set} />}
+                    {section === "providers" && <ProvidersSection draft={draft} set={set} />}
+                    {section === "torrent-sources" && <TorrentSourcesSection draft={draft} set={set} />}
                     {section === "torrent-client" && <TorrentClientSection draft={draft} set={set} />}
-                    {section === "streaming" && <StreamingSection draft={draft} set={set} />}
-                    {section === "manga" && <MangaSection draft={draft} set={set} />}
                     {section === "discord" && <DiscordSection draft={draft} set={set} />}
                     {section === "logs" && <LogsSection />}
                     {section === "about" && <AboutSection />}
@@ -244,190 +256,22 @@ export default function SettingsPage() {
 }
 
 const SUBTITLES: Record<SectionId, string> = {
-    app: "Account, server and network access",
+    app: "Accounts, server and network access",
     ui: "Make KumoBox look the way you like",
-    library: "Manage your local anime library",
-    playback: "How episodes are played and tracked",
+    library: "Your movie and TV folders",
+    metadata: "Where titles, posters and episodes come from",
+    letterboxd: "Sync your diary, ratings and watchlist",
+    playback: "How movies and episodes are played and tracked",
     mpv: "Configure mpv, the desktop media player",
     transcode: "Play every video format in the in-app player",
-    "torrent-provider": "Where torrents are searched",
+    providers: "Streaming providers and downloads",
+    "torrent-sources": "Where torrents are searched",
     "torrent-client": "Configure the torrent client",
-    streaming: "ani-cli and streaming extensions",
-    manga: "Read manga with provider extensions",
     discord: "Show what you're watching on Discord",
     logs: "Server logs and cached data",
     about: "KumoBox's version and updates",
 }
 
-type SectionProps = { draft: Settings; set: <K extends keyof Settings>(k: K, v: Partial<Settings[K]>) => void }
-
-// ---------------------------------------------------------------------------
-// Layout helpers
-
-function Group({ title, children, description }: { title?: string; description?: string; children: React.ReactNode }) {
-    return (
-        <div>
-            {title && <h3 className="mb-1 text-[15px] font-semibold">{title}</h3>}
-            {description && <p className="mb-3 text-[13px] text-muted">{description}</p>}
-            {!description && title && <div className="mb-3" />}
-            <div className="card divide-y divide-line">{children}</div>
-        </div>
-    )
-}
-
-// wide: the value (e.g. a long path) takes the remaining space and wraps
-// instead of pushing out of the card.
-function Row({ label, help, children, wide }: { label: React.ReactNode; help?: React.ReactNode; children: React.ReactNode; wide?: boolean }) {
-    return (
-        <div className="flex items-center justify-between gap-6 px-4 py-3.5">
-            <div className="min-w-0">
-                <p className="text-sm font-medium">{label}</p>
-                {help && <p className="mt-0.5 text-xs text-subtle">{help}</p>}
-            </div>
-            <div className={wide ? "flex min-w-0 flex-1 justify-end" : "shrink-0"}>{children}</div>
-        </div>
-    )
-}
-
-function Stack({ label, help, children }: { label: React.ReactNode; help?: React.ReactNode; children: React.ReactNode }) {
-    return (
-        <div className="flex flex-col gap-2 px-4 py-3.5">
-            <p className="text-sm font-medium">{label}</p>
-            {children}
-            {help && <p className="text-xs text-subtle">{help}</p>}
-        </div>
-    )
-}
-
-function Password({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-    const [show, setShow] = useState(false)
-    return (
-        <div className="relative">
-            <Input type={show ? "text" : "password"} value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)} className="pr-10" />
-            <button type="button" onClick={() => setShow(s => !s)} className="absolute top-1/2 right-3 -translate-y-1/2 text-subtle hover:text-fg">
-                {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-            </button>
-        </div>
-    )
-}
-
-function Collapsible({ title, children }: { title: string; children: React.ReactNode }) {
-    const [open, setOpen] = useState(false)
-    return (
-        <div className="card">
-            <button onClick={() => setOpen(o => !o)} className="flex w-full items-center justify-between px-4 py-3.5 text-[15px] font-medium">
-                {title}
-                <ChevronDown className={cn("size-4 text-muted transition-transform duration-200", open && "rotate-180")} />
-            </button>
-            {open && <div className="divide-y divide-line border-t border-line">{children}</div>}
-        </div>
-    )
-}
-
-function DirPicker({ open, onOpenChange, onPick, start }: { open: boolean; onOpenChange: (v: boolean) => void; onPick: (p: string) => void; start?: string }) {
-    const [path, setPath] = useState(start ?? "")
-    const { data, error } = useQuery({
-        queryKey: ["dirs", path],
-        // roots: the drives on Windows.
-        queryFn: () => api.get<{ path: string; parent: string; dirs: string[]; sep?: string; roots?: string[] | null }>(`/api/fs/dirs?path=${encodeURIComponent(path)}`),
-        enabled: open,
-    })
-    useEffect(() => {
-        if (open) setPath(start ?? "")
-    }, [open, start])
-    return (
-        <Dialog
-            open={open}
-            onOpenChange={onOpenChange}
-            title="Choose a folder"
-            className="w-[min(94vw,620px)]"
-            footer={
-                <Button
-                    variant="primary"
-                    onClick={() => {
-                        if (data) onPick(data.path)
-                        onOpenChange(false)
-                    }}
-                >
-                    Use this folder
-                </Button>
-            }
-        >
-            <Input value={data?.path ?? path} onChange={e => setPath(e.target.value)} onKeyDown={e => e.key === "Enter" && setPath((e.target as HTMLInputElement).value)} icon={<Folder className="size-4" />} />
-            {error && <p className="mt-2 text-sm text-rose-300">{(error as Error).message}</p>}
-            {!!data?.roots?.length && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                    {data.roots.map(r => (
-                        <Button key={r} size="xs" variant={data.path.toLowerCase().startsWith(r.toLowerCase()) ? "primary" : "subtle"} icon={<HardDrive className="size-3.5" />} onClick={() => setPath(r)}>
-                            {r.replace(/\\$/, "")}
-                        </Button>
-                    ))}
-                </div>
-            )}
-            <div className="mt-3 flex max-h-80 flex-col overflow-y-auto">
-                {data && data.parent !== data.path && (
-                    <button onClick={() => setPath(data.parent)} className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted hover:bg-white/[0.05]">
-                        <FolderOpen className="size-4" /> ..
-                    </button>
-                )}
-                {data?.dirs.map(d => (
-                    <button
-                        key={d}
-                        onClick={() => setPath(`${data.path.replace(/[\\/]$/, "")}${data.sep ?? "/"}${d}`)}
-                        className="flex items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-white/[0.05]"
-                    >
-                        <Folder className="size-4 text-brand-strong" /> {d}
-                    </button>
-                ))}
-            </div>
-        </Dialog>
-    )
-}
-
-function PathInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-    const [open, setOpen] = useState(false)
-    const { data: status } = useStatus()
-    return (
-        <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-                <Input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} icon={<Folder className="size-4 text-amber-300" />} />
-                {value && <Check className="absolute top-1/2 right-3 size-4 -translate-y-1/2 text-emerald-400" />}
-            </div>
-            {status?.client !== "lan" && (
-                <button onClick={() => setOpen(true)} className="grid size-10 place-items-center rounded-xl text-muted hover:bg-white/[0.06] hover:text-fg" aria-label="Browse">
-                    <FolderOpen className="size-5" />
-                </button>
-            )}
-            <DirPicker open={open} onOpenChange={setOpen} onPick={onChange} start={value} />
-        </div>
-    )
-}
-
-const toLines = (text: string) => text.split("\n").map(s => s.trim()).filter(Boolean)
-
-// One entry per line. The box keeps the text as typed (blank lines, spaces)
-// and only the cleaned-up list goes into the draft, so typing is never
-// rewritten under the cursor; leaving the box tidies it.
-function LinesInput({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
-    const joined = value.join("\n")
-    const [text, setText] = useState(joined)
-    // The list was replaced from outside (Discard, a save, a change made elsewhere).
-    useEffect(() => setText(t => (toLines(t).join("\n") === joined ? t : joined)), [joined])
-    return (
-        <Textarea
-            value={text}
-            onChange={e => {
-                setText(e.target.value)
-                onChange(toLines(e.target.value))
-            }}
-            onBlur={() => setText(joined)}
-        />
-    )
-}
-
-function Detect({ ok, label }: { ok?: boolean; label: string }) {
-    return ok ? <Badge tone="green">{label} found</Badge> : <Badge tone="red">{label} not found</Badge>
-}
 
 // Where other devices open KumoBox, once LAN access is saved.
 function LanAddresses({ status }: { status?: Status }) {
@@ -469,52 +313,21 @@ function LanAddresses({ status }: { status?: Status }) {
 function AppSection({ draft, set }: SectionProps) {
     const { data: status } = useStatus()
     const [, setSearchParams] = useSearchParams()
-    const [loginOpen, setLoginOpen] = useState(false)
-    const qc = useQueryClient()
     const isDesktop = status?.client === "desktop"
     const lan = status?.client === "lan"
     return (
         <>
-            <Group title="AniList">
-                <div className="flex items-center justify-between gap-4 px-4 py-4">
-                    {status?.user ? (
-                        <div className="flex items-center gap-3">
-                            <img src={img(status.user.avatar.large)} alt="" className="size-11 rounded-full" />
-                            <div>
-                                <p className="font-semibold">{status.user.name}</p>
-                                <p className="text-xs text-subtle">Lists, progress and scores sync with AniList</p>
-                            </div>
-                        </div>
-                    ) : (
-                        <div>
-                            <p className="font-medium">Not connected</p>
-                            <p className="text-xs text-subtle">Your list is stored locally until you log in.</p>
-                        </div>
-                    )}
-                    {status?.user ? (
-                        <Button
-                            variant="danger"
-                            size="sm"
-                            onClick={async () => {
-                                try {
-                                    await api.post("/api/auth/logout")
-                                    qc.invalidateQueries()
-                                } catch (e: any) {
-                                    toast.error(e.message)
-                                }
-                            }}
-                        >
-                            Log out
-                        </Button>
-                    ) : (
-                        <Button variant="primary" size="sm" onClick={() => setLoginOpen(true)}>
-                            Log in with AniList
-                        </Button>
-                    )}
-                </div>
-                <Stack label="AniList client ID" help="KumoBox opens anilist.co/api/v2/oauth/authorize?client_id=…&response_type=token">
-                    <Input value={draft.anilist.clientId} onChange={e => set("anilist", { clientId: e.target.value })} />
-                </Stack>
+            <Group title="Accounts">
+                <Row label="TMDB" help={status?.tmdbConfigured ? "Movies, shows and episodes come from TMDB." : "Add a free API key to search and browse movies and shows."}>
+                    <Button size="sm" variant={status?.tmdbConfigured ? "ghost" : "primary"} onClick={() => setSearchParams({ tab: "metadata" })}>
+                        {status?.tmdbConfigured ? "Settings" : "Set up"}
+                    </Button>
+                </Row>
+                <Row label="Letterboxd" help={status?.letterboxd ? `Connected as ${status.letterboxd.name}` : "Not connected: your list stays on this computer."}>
+                    <Button size="sm" variant={status?.letterboxd ? "ghost" : "primary"} onClick={() => setSearchParams({ tab: "letterboxd" })}>
+                        {status?.letterboxd ? "Settings" : "Connect"}
+                    </Button>
+                </Row>
             </Group>
 
             <Group title="Web UI & network" description="KumoBox only ever talks to this computer and — if you allow it — your home network. Connections from the internet are always refused.">
@@ -544,7 +357,7 @@ function AppSection({ draft, set }: SectionProps) {
             </Group>
 
             <Group title="Library sharing">
-                <Row label="Share libraries with KumoBox on your other computers" help={draft.sharing.enabled ? "On: who gets this computer's library, and the libraries shared with it, are in Local Anime Library." : "In Local Anime Library: turn it on there, on each computer."}>
+                <Row label="Share libraries with KumoBox on your other computers" help={draft.sharing.enabled ? "On: who gets this computer's library, and the libraries shared with it, are in Local Library." : "In Local Library: turn it on there, on each computer."}>
                     <Button size="sm" variant="ghost" onClick={() => setSearchParams({ tab: "library" })}>
                         Open
                     </Button>
@@ -568,7 +381,6 @@ function AppSection({ draft, set }: SectionProps) {
                     </code>
                 </Row>
             </Group>
-            <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} />
         </>
     )
 }
@@ -617,7 +429,7 @@ function DesktopGroup() {
             )}
             <Row
                 label="Free memory while the computer is locked"
-                help="After 5 minutes locked, the window lets go of the page and loads it again when you unlock. Never while a video, the manga reader or Settings is open."
+                help="After 5 minutes locked, the window lets go of the page and loads it again when you unlock. Never while a video or Settings is open."
             >
                 <Switch checked={prefs.freeWhenLocked} onChange={v => change("freeWhenLocked", v)} />
             </Row>
@@ -648,12 +460,10 @@ function ProgramsGroup() {
     const { data: status } = useStatus()
     useWatchSetup(status)
     const f = status?.features
-    const windows = status?.platform === "windows"
     const programs: { tool: Tool; ok?: boolean; use: string }[] = [
-        { tool: "ffmpeg", ok: f?.ffmpeg, use: "The in-app player (most files) and episode downloads" },
-        { tool: "ani-cli", ok: f?.aniCli, use: windows ? "Sub/dub streaming and downloads (it runs in Git's bash)" : "Sub/dub streaming and downloads" },
+        { tool: "ffmpeg", ok: f?.ffmpeg, use: "The in-app player (most files) and downloads of streams" },
         { tool: "mpv", ok: f?.mpv, use: "The external player" },
-        { tool: "yt-dlp", ok: f?.ytDlp, use: "Faster, more reliable episode downloads" },
+        { tool: "yt-dlp", ok: f?.ytDlp, use: "Faster, more reliable downloads of streams" },
     ]
     return (
         <Group title="Programs" description="KumoBox uses these programs for some of what it does.">
@@ -666,7 +476,7 @@ function ProgramsGroup() {
                             p.use
                         ) : (
                             <>
-                                {p.use}. {installSource(status?.platform, p.tool)} <code className="rounded bg-black/30 px-1.5 py-0.5">{installHint(status?.platform, p.tool)}</code>
+                                {p.use}. {installSource(status?.platform)} <code className="rounded bg-black/30 px-1.5 py-0.5">{installHint(status?.platform, p.tool)}</code>
                             </>
                         )
                     }
@@ -679,8 +489,8 @@ function ProgramsGroup() {
                     label="Install missing programs"
                     help={
                         status?.platform === "darwin"
-                            ? "Downloads ffmpeg, yt-dlp and ani-cli for this Mac (Apple silicon or Intel) into KumoBox's folder, in a Terminal window: no Homebrew or password needed. mpv, the external player, comes from Homebrew on Apple silicon Macs that have it. Programs you already have are skipped."
-                            : "Installs Git, ani-cli, ffmpeg, mpv, yt-dlp and the rest of what KumoBox uses with Scoop, for your Windows user (no administrator rights), in a PowerShell window. Programs you already have are skipped. It also offers to sign you in to GitHub, for KumoBox's updates."
+                            ? "Downloads ffmpeg and yt-dlp for this Mac (Apple silicon or Intel) into KumoBox's folder, in a Terminal window: no Homebrew or password needed. mpv, the external player, comes from Homebrew on Apple silicon Macs that have it. Programs you already have are skipped."
+                            : "Installs ffmpeg, mpv, yt-dlp and the rest of what KumoBox uses with Scoop, for your Windows user (no administrator rights), in a PowerShell window. Programs you already have are skipped. It also offers to sign you in to GitHub, for KumoBox's updates."
                     }
                 >
                     <InstallProgramsButton />
@@ -731,8 +541,9 @@ function UISection({ draft, set }: SectionProps) {
                     <Switch checked={draft.ui.reducedMotion} onChange={v => set("ui", { reducedMotion: v })} />
                 </Row>
             </Group>
+            <HomeSectionsGroup draft={draft} set={set} />
             <Group title="Content">
-                <Row label="Hide spoilers" help="Blur thumbnails of episodes you haven't watched yet">
+                <Row label="Hide spoilers" help="Blur the stills and overviews of episodes you haven't watched yet">
                     <Switch checked={draft.ui.blurUnwatched} onChange={v => set("ui", { blurUnwatched: v })} />
                 </Row>
                 <Row label="Show adult content" help="Include 18+ entries in search and discover">
@@ -740,6 +551,57 @@ function UISection({ draft, set }: SectionProps) {
                 </Row>
             </Group>
         </>
+    )
+}
+
+// Which sections Home shows, in which order.
+function HomeSectionsGroup({ draft, set }: SectionProps) {
+    const on = draft.ui.homeSections ?? []
+    const known = new Set(HOME_SECTIONS.map(s => s.id))
+    // Shown ones in their order, then the hidden ones.
+    const order = [...on.filter(id => known.has(id)), ...HOME_SECTIONS.map(s => s.id).filter(id => !on.includes(id))]
+    const save = (ids: string[]) => set("ui", { homeSections: [...ids, ...on.filter(id => !known.has(id))] })
+    const toggle = (id: string, v: boolean) => save(v ? order.filter(x => x === id || on.includes(x)) : on.filter(x => known.has(x) && x !== id))
+    const move = (id: string, dir: -1 | 1) => {
+        const shown = on.filter(x => known.has(x))
+        const i = shown.indexOf(id)
+        const j = i + dir
+        if (i < 0 || j < 0 || j >= shown.length) return
+        const next = [...shown]
+        ;[next[i], next[j]] = [next[j], next[i]]
+        save(next)
+    }
+    return (
+        <Group title="Home page" description="The rows of your list on Home. Your library and Discover's trending rows come after them.">
+            {order.map(id => {
+                const s = HOME_SECTIONS.find(x => x.id === id)!
+                const shown = on.includes(id)
+                const at = on.filter(x => known.has(x)).indexOf(id)
+                return (
+                    <div key={id} className="flex items-center justify-between gap-4 px-4 py-3">
+                        <div className={cn("min-w-0", !shown && "opacity-60")}>
+                            <p className="text-sm font-medium">{s.label}</p>
+                            <p className="mt-0.5 text-xs text-subtle">{s.help}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                            {shown && (
+                                <>
+                                    <button disabled={at === 0} onClick={() => move(id, -1)} className="grid size-8 place-items-center rounded-md text-muted hover:bg-white/[0.06] hover:text-fg disabled:opacity-30" aria-label="Move up">
+                                        <ArrowUp className="size-4" />
+                                    </button>
+                                    <button disabled={at === on.filter(x => known.has(x)).length - 1} onClick={() => move(id, 1)} className="grid size-8 place-items-center rounded-md text-muted hover:bg-white/[0.06] hover:text-fg disabled:opacity-30" aria-label="Move down">
+                                        <ArrowDown className="size-4" />
+                                    </button>
+                                </>
+                            )}
+                            <span className="ml-2">
+                                <Switch checked={shown} onChange={v => toggle(id, v)} />
+                            </span>
+                        </div>
+                    </div>
+                )
+            })}
+        </Group>
     )
 }
 
@@ -776,7 +638,7 @@ function SharingGroup({ draft, set }: SectionProps) {
     return (
         <Group
             title="Library sharing"
-            description="Watch the libraries of KumoBox on your other computers at home, and share yours with them. Each computer decides who gets its library. Watching updates the AniList account (or local list) of the computer you watch on, never the other's. On the same AniList account, Continue watching carries over to the second: to the computer whose files you watch as you watch, and back."
+            description="Watch the libraries of KumoBox on your other computers at home, and share yours with them. Each computer decides who gets its library. Watching updates the list (and Letterboxd diary) of the computer you watch on, never the other's. Connected to the same Letterboxd account, Continue watching carries over to the second: to the computer whose files you watch as you watch, and back."
         >
             <Row label="Library sharing" help="Find the KumoBox apps on this network, and let them find this one. Turn it on on both computers.">
                 <Switch checked={draft.sharing.enabled} disabled={!trusted} onChange={v => set("sharing", { enabled: v })} />
@@ -792,7 +654,7 @@ function SharingGroup({ draft, set }: SectionProps) {
                     <div className="px-4 pt-3.5 pb-1">
                         <p className="text-sm font-medium">KumoBox apps on this network</p>
                         <p className="mt-0.5 text-xs text-subtle">
-                            Turn on <b>Share my library</b> for those that may watch this computer's anime.
+                            Turn on <b>Share my library</b> for those that may watch this computer's movies and shows.
                             {sharing.addresses.length > 0 && <> This computer is at {sharing.addresses.join(", ")}.</>}
                         </p>
                     </div>
@@ -856,8 +718,8 @@ function LibrarySection({ draft, set }: SectionProps) {
     return (
         <>
             <Group title="Local library">
-                <Stack label="Library directory" help="Path of the directory where your media files are located.">
-                    <PathInput value={draft.library.dir} onChange={v => set("library", { dir: v })} placeholder="/mnt/big/Media/Anime" />
+                <Stack label="Library directory" help="Where your movies and shows are, e.g. Movie (2010)/Movie (2010).mkv or Show/Season 01/Show S01E02.mkv.">
+                    <PathInput value={draft.library.dir} onChange={v => set("library", { dir: v })} placeholder="/mnt/media/Movies" />
                 </Stack>
                 <Stack label="Additional library directories" help="Include additional directory paths if your library is spread across multiple locations.">
                     <div className="flex flex-col gap-2">
@@ -887,13 +749,13 @@ function LibrarySection({ draft, set }: SectionProps) {
             </Group>
             <SharingGroup draft={draft} set={set} />
             <Collapsible title="Advanced">
-                <Stack label={`Matching threshold — ${Math.round(draft.library.matchThreshold * 100)}%`} help="How similar a file name must be to an AniList title to match automatically.">
+                <Stack label={`Matching threshold — ${Math.round(draft.library.matchThreshold * 100)}%`} help="How similar a file name must be to a TMDB title to match automatically.">
                     <input type="range" min={0.3} max={0.95} step={0.05} value={draft.library.matchThreshold} onChange={e => set("library", { matchThreshold: Number(e.target.value) })} className="accent-[var(--brand)]" />
                 </Stack>
-                <Row label="Match anime that aren't in my list" help="Search all of AniList when a title isn't on your list">
+                <Row label="Match movies and shows that aren't on my list" help="Search all of TMDB when a title isn't on your list">
                     <Switch checked={draft.library.matchOutsideList} onChange={v => set("library", { matchOutsideList: v })} />
                 </Row>
-                <Stack label="Ignore patterns" help="One glob per line, matched against file and folder names (e.g. *sample*).">
+                <Stack label="Ignore patterns" help="One glob per line, matched against file and folder names (e.g. *sample*, *trailer*).">
                     <LinesInput value={draft.library.ignorePatterns ?? []} onChange={v => set("library", { ignorePatterns: v })} />
                 </Stack>
             </Collapsible>
@@ -902,7 +764,6 @@ function LibrarySection({ draft, set }: SectionProps) {
 }
 
 const LANGS = [
-    { value: "jpn,ja", label: "Japanese" },
     { value: "eng,en", label: "English" },
     { value: "spa,es", label: "Spanish" },
     { value: "por,pt", label: "Portuguese" },
@@ -911,6 +772,8 @@ const LANGS = [
     { value: "ita,it", label: "Italian" },
     { value: "ara,ar", label: "Arabic" },
     { value: "rus,ru", label: "Russian" },
+    { value: "jpn,ja", label: "Japanese" },
+    { value: "kor,ko", label: "Korean" },
     { value: "", label: "File default" },
 ]
 
@@ -930,29 +793,29 @@ function PlaybackSection({ draft, set }: SectionProps) {
                         ]}
                     />
                 </Row>
-                <Row label="Resume where I left off" help="Episodes continue from the saved position in mpv and the in-app player">
+                <Row label="Resume where I left off" help="Movies and episodes continue from the saved position in mpv and the in-app player">
                     <Switch checked={p.resumePlayback} onChange={v => set("playback", { resumePlayback: v })} />
                 </Row>
                 <Row label="Auto play next episode">
                     <Switch checked={p.autoPlayNext} onChange={v => set("playback", { autoPlayNext: v })} />
                 </Row>
-                <Row label="Skip openings automatically" help="Uses AniSkip timestamps (the same source as ani-cli --skip)">
+                <Row label="Skip intros and recaps (chapters)" help="Jumps past chapters named intro, opening or recap, when the file has them">
                     <Switch checked={p.skipIntroAniSkip} onChange={v => set("playback", { skipIntroAniSkip: v })} />
                 </Row>
-                <Row label="Skip endings automatically" help="Jumps past the ending song, also with AniSkip timestamps">
+                <Row label="Skip end credits (chapters)" help="Jumps past chapters named credits or ending">
                     <Switch checked={p.skipOutroAniSkip} onChange={v => set("playback", { skipOutroAniSkip: v })} />
                 </Row>
             </Group>
             <Group title="Progress">
-                <Row label="Update progress automatically" help="Mark the episode as watched on AniList after you finish it">
+                <Row label="Update progress automatically" help="Mark the movie or episode as watched when you finish it (a watched movie is logged in your diary)">
                     <Switch checked={p.autoUpdateProgress} onChange={v => set("playback", { autoUpdateProgress: v })} />
                 </Row>
                 <Stack label={`Count as watched at ${Math.round(p.completionThreshold * 100)}%`}>
                     <input type="range" min={0.5} max={1} step={0.01} value={p.completionThreshold} onChange={e => set("playback", { completionThreshold: Number(e.target.value) })} className="accent-[var(--brand)]" />
                 </Stack>
             </Group>
-            <Group title="Audio & subtitles" description="KumoBox remembers the audio and subtitle track you pick for each anime and uses it for the next episodes.">
-                <Row label="Remember my track choice per anime">
+            <Group title="Audio & subtitles" description="KumoBox remembers the audio and subtitle track you pick for each show and uses it for the next episodes.">
+                <Row label="Remember my track choice per movie or show">
                     <Switch checked={p.rememberTracks} onChange={v => set("playback", { rememberTracks: v })} />
                 </Row>
                 <Row label="Preferred audio language">
@@ -1047,31 +910,6 @@ function TranscodeSection({ draft, set }: SectionProps) {
     )
 }
 
-function TorrentProviderSection({ draft, set }: SectionProps) {
-    const { data: providers } = useQuery({ queryKey: ["torrent-providers"], queryFn: () => api.get<{ id: string; name: string; extension: boolean }[]>("/api/torrents/providers") })
-    return (
-        <Group title="Search">
-            <Row label="Default torrent provider" help="Install more from Extensions › Marketplace">
-                <Select className="w-56" value={draft.torrent.defaultProvider} onChange={v => set("torrent", { defaultProvider: v })} options={[{ value: "all", label: "All providers" }, ...(providers ?? []).map(p => ({ value: p.id, label: p.name + (p.extension ? " (extension)" : "") }))]} />
-            </Row>
-            <Row label="Preferred resolution">
-                <Select
-                    className="w-40"
-                    value={draft.torrent.preferredResolution}
-                    onChange={v => set("torrent", { preferredResolution: v })}
-                    options={[
-                        { value: "", label: "Any" },
-                        { value: "2160", label: "2160p" },
-                        { value: "1080", label: "1080p" },
-                        { value: "720", label: "720p" },
-                        { value: "480", label: "480p" },
-                    ]}
-                />
-            </Row>
-        </Group>
-    )
-}
-
 function ClientFields({ value, onChange, showTags }: { value: Settings["qbittorrent"]; onChange: (v: Partial<Settings["qbittorrent"]>) => void; showTags?: boolean }) {
     return (
         <div className="flex flex-col gap-4 p-4">
@@ -1100,7 +938,7 @@ function ClientFields({ value, onChange, showTags }: { value: Settings["qbittorr
             <label className="flex flex-col gap-1.5">
                 <span className="text-sm font-medium">Tags</span>
                 <Input value={value.tags} onChange={e => onChange({ tags: e.target.value })} />
-                <span className="text-xs text-subtle">Comma separated tags to apply to downloaded torrents. e.g. kumobox,anime</span>
+                <span className="text-xs text-subtle">Comma separated tags to apply to downloaded torrents. e.g. kumobox,movies</span>
             </label>
             {showTags && (
                 <label className="flex flex-col gap-1.5">
@@ -1167,10 +1005,10 @@ function TorrentClientSection({ draft, set }: SectionProps) {
                 <Row label="Show active torrent count" help="Show the number of active torrents in the sidebar.">
                     <Switch checked={draft.torrent.showActiveCount} onChange={v => set("torrent", { showActiveCount: v })} />
                 </Row>
-                <Row label="Create a folder per anime" help="Save each anime into its own folder inside the library">
+                <Row label="Create a folder per movie or show" help="Save each into its own folder inside the library, e.g. Movie (2010)/">
                     <Switch checked={draft.torrent.createSubfolder} onChange={v => set("torrent", { createSubfolder: v })} />
                 </Row>
-                <Row label="Auto downloader" help="Check RSS rules periodically">
+                <Row label="Auto downloader" help="Look for new episodes of your shows periodically">
                     <Switch checked={draft.torrent.autoDownloader} onChange={v => set("torrent", { autoDownloader: v })} />
                 </Row>
                 <Row label="Check every (minutes)">
@@ -1178,140 +1016,6 @@ function TorrentClientSection({ draft, set }: SectionProps) {
                 </Row>
             </Group>
         </>
-    )
-}
-
-function StreamingSection({ draft, set }: SectionProps) {
-    const { data: status } = useStatus()
-    const { data: providers } = useOnlineProviders()
-    const { data: ani } = useQuery({ queryKey: ["anicli-status"], queryFn: () => api.get<{ installed: boolean; path: string; version: string; ytDlp: boolean; ffmpeg: boolean }>("/api/anicli/status") })
-    const a = draft.aniCli
-    return (
-        <>
-            <Group title="Online streaming">
-                <Row label="Enable online streaming">
-                    <Switch checked={draft.onlineStream.enabled} onChange={v => set("onlineStream", { enabled: v })} />
-                </Row>
-                <Row label="Default provider" help="ani-cli is built in; extensions come from the marketplace">
-                    <Select className="w-56" value={draft.onlineStream.defaultProvider} onChange={v => set("onlineStream", { defaultProvider: v })} options={(providers ?? [{ id: "ani-cli", name: "ani-cli", builtin: true } as any]).map(p => ({ value: p.id, label: p.builtin ? "ani-cli" : p.name }))} />
-                </Row>
-                <Row label="Play streams in" help="Other devices on your network always use the in-app player">
-                    <Select
-                        className="w-44"
-                        value={a.player}
-                        onChange={v => set("aniCli", { player: v as "mpv" })}
-                        options={[
-                            { value: "builtin", label: "In-app player" },
-                            { value: "mpv", label: "mpv" },
-                        ]}
-                    />
-                </Row>
-            </Group>
-            <Group title="ani-cli" description="KumoBox drives your installed ani-cli to find sub and dub streams and downloads, so updating ani-cli keeps everything working.">
-                <Row label="Status">
-                    <div className="flex flex-wrap justify-end gap-2">
-                        {ani?.installed ? <Badge tone="green">ani-cli {ani.version}</Badge> : <Badge tone="red">ani-cli not found</Badge>}
-                        <Badge tone={ani?.ytDlp ? "green" : "gray"}>yt-dlp {ani?.ytDlp ? "✓" : "✗"}</Badge>
-                        <Badge tone={ani?.ffmpeg ? "green" : "gray"}>ffmpeg {ani?.ffmpeg ? "✓" : "✗"}</Badge>
-                    </div>
-                </Row>
-                {!ani?.installed && !canInstallPrograms(status) && (
-                    <p className="px-4 py-3 text-sm text-muted">
-                        {installSource(status?.platform, "ani-cli")}: <code className="rounded bg-black/30 px-1.5 py-0.5">{installHint(status?.platform, "ani-cli")}</code>
-                    </p>
-                )}
-                {!ani?.installed && canInstallPrograms(status) && (
-                    <Row
-                        label="Install ani-cli"
-                        help={
-                            status?.platform === "darwin"
-                                ? "With the other programs KumoBox uses, downloaded into KumoBox's folder: Settings › App › Programs."
-                                : "With Git, whose bash runs it, and the other programs KumoBox uses: Settings › App › Programs."
-                        }
-                    >
-                        <InstallProgramsButton />
-                    </Row>
-                )}
-                <Stack label="Executable">
-                    <Input value={a.path} onChange={e => set("aniCli", { path: e.target.value })} icon={<Terminal className="size-4" />} />
-                </Stack>
-                <Row label="Default audio">
-                    <div className="flex rounded-lg bg-white/[0.04] p-0.5">
-                        {(["sub", "dub"] as const).map(m => (
-                            <button key={m} onClick={() => set("aniCli", { defaultMode: m })} className={cn("h-7 rounded-md px-3 text-xs font-medium uppercase transition-colors", a.defaultMode === m ? "bg-white/[0.1] text-fg" : "text-muted hover:text-fg")}>
-                                {m}
-                            </button>
-                        ))}
-                    </div>
-                </Row>
-                <Row label="Quality">
-                    <Select
-                        className="w-40"
-                        value={a.quality}
-                        onChange={v => set("aniCli", { quality: v })}
-                        options={[
-                            { value: "best", label: "Best" },
-                            { value: "1080", label: "1080p" },
-                            { value: "720", label: "720p" },
-                            { value: "480", label: "480p" },
-                            { value: "worst", label: "Worst" },
-                        ]}
-                    />
-                </Row>
-                <Row label="Downloader">
-                    <Select
-                        className="w-40"
-                        value={a.downloader}
-                        onChange={v => set("aniCli", { downloader: v })}
-                        options={[
-                            { value: "auto", label: "Automatic" },
-                            { value: "yt-dlp", label: "yt-dlp" },
-                            { value: "ffmpeg", label: "ffmpeg" },
-                        ]}
-                    />
-                </Row>
-                <Stack label="Download folder" help={`Empty = your library folder (${status?.settings.library.dir || "not set"}). Downloads are matched automatically.`}>
-                    <PathInput value={a.downloadDir} onChange={v => set("aniCli", { downloadDir: v })} placeholder="Library folder" />
-                </Stack>
-            </Group>
-        </>
-    )
-}
-
-function MangaSection({ draft, set }: SectionProps) {
-    const { data } = useQuery({ queryKey: ["manga-providers"], queryFn: () => api.get<{ id: string; name: string }[]>("/api/manga/providers") })
-    return (
-        <Group title="Manga">
-            <Row label="Enable manga">
-                <Switch checked={draft.manga.enabled} onChange={v => set("manga", { enabled: v })} />
-            </Row>
-            <Row label="Default provider" help="Install manga providers from the marketplace">
-                <Select className="w-56" value={draft.manga.defaultProvider} onChange={v => set("manga", { defaultProvider: v })} options={[{ value: "", label: "First installed" }, ...(data ?? []).map(p => ({ value: p.id, label: p.name }))]} />
-            </Row>
-            <Row label="Reading mode">
-                <Select
-                    className="w-44"
-                    value={draft.manga.readingMode}
-                    onChange={v => set("manga", { readingMode: v as "double" })}
-                    options={[
-                        { value: "double", label: "Two pages" },
-                        { value: "paged", label: "Single page" },
-                        { value: "long-strip", label: "Long strip" },
-                    ]}
-                />
-            </Row>
-            <Row label="Reading direction">
-                <Select
-                    className="w-44"
-                    value={draft.manga.direction}
-                    onChange={v => set("manga", { direction: v })}
-                    options={[
-                        { value: "rtl", label: "Right to left (manga)" },
-                        { value: "ltr", label: "Left to right" },
-                    ]}
-                />
-            </Row>
-        </Group>
     )
 }
 
@@ -1352,13 +1056,13 @@ function LogsSection() {
     }
     return (
         <>
-            <Group title="Cache" description="Cached AniList data, episode metadata, search results and probes.">
+            <Group title="Cache" description="Cached TMDB data, season details, search results and probes.">
                 <Row label={`${cache?.entries ?? 0} cached entries`}>
                     <Button variant="danger" size="sm" icon={<Trash2 className="size-4" />} onClick={clear}>
                         Clear cache
                     </Button>
                 </Row>
-                <Row label={`Artwork: ${imgs?.files ?? 0} images (${formatBytes(imgs?.bytes ?? 0)})`} help="Covers, banners and episode thumbnails downloaded for offline use">
+                <Row label={`Artwork: ${imgs?.files ?? 0} images (${formatBytes(imgs?.bytes ?? 0)})`} help="Posters, backdrops and episode stills downloaded for offline use">
                     <Button variant="danger" size="sm" icon={<Trash2 className="size-4" />} onClick={clearImages}>
                         Clear artwork
                     </Button>
