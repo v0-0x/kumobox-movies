@@ -2,6 +2,8 @@ package config
 
 import (
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
@@ -119,5 +121,75 @@ func TestGetReturnsCopies(t *testing.T) {
 	if got.Library.IgnorePatterns[0] == "changed" || got.UI.HomeSections[0] == "changed" || got.Providers.StremioCatalogs[0] == "changed" ||
 		got.Providers.NuvioRepos[0] == "changed" || got.TorrentSources.Torznab[0].APIKey == "changed" {
 		t.Fatal("a copy shares its slices with the live settings")
+	}
+}
+
+// ignoredBy is the pattern a file or folder name matches (the way the
+// library scanner matches them: case-insensitive globs), "" for none.
+func ignoredBy(name string, patterns []string) string {
+	for _, p := range patterns {
+		if ok, _ := filepath.Match(strings.ToLower(p), strings.ToLower(name)); ok {
+			return p
+		}
+	}
+	return ""
+}
+
+// The default ignore patterns skip samples, unfinished downloads and the
+// folders NAS boxes and Windows keep deleted files and thumbnails in, never
+// a movie or an episode.
+func TestDefaultIgnorePatterns(t *testing.T) {
+	patterns := Defaults().Library.IgnorePatterns
+	for _, name := range []string{"Sample", "inception.2010.1080p-sample.mkv", "Movie.2010.mkv.part", "#recycle", "@eaDir", "$RECYCLE.BIN"} {
+		if ignoredBy(name, patterns) == "" {
+			t.Errorf("%q isn't ignored", name)
+		}
+	}
+	for _, name := range []string{
+		"Silenced (2011).mkv", "Sherlock.Holmes.2009.Enhanced.Edition.1080p.mkv", "Unbalanced.2020.mkv",
+		"The Advanced Guide (2015)", "Uncopyrighted.S01E01.mkv", "Trailer.mkv", "Season 01", "Extras",
+	} {
+		if p := ignoredBy(name, patterns); p != "" {
+			t.Errorf("%q is ignored by %q", name, p)
+		}
+	}
+}
+
+// Settings saved by an earlier build lose Kumo's anime ignore patterns
+// ("*NCED*" hid "Silenced" and "Enhanced" editions) and get the new ones;
+// the user's own patterns stay.
+func TestMigrateIgnorePatterns(t *testing.T) {
+	d := openTestDB(t)
+	if err := d.SetKV(settingsKey, map[string]any{
+		"schemaVersion": 1,
+		"library":       map[string]any{"ignorePatterns": []string{"*sample*", "*.part", "*NCOP*", "*NCED*", "*.iso"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewStore(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.Get().Library.IgnorePatterns
+	want := []string{"*sample*", "*.part", "*.iso", "@eaDir", "#recycle", "$RECYCLE.BIN"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("patterns %q, want %q", got, want)
+	}
+	var saved Settings
+	if ok, _ := d.GetKV(settingsKey, &saved); !ok || saved.SchemaVersion != schemaVersion || !slices.Equal(saved.Library.IgnorePatterns, want) {
+		t.Fatalf("saved: version %d, patterns %q", saved.SchemaVersion, saved.Library.IgnorePatterns)
+	}
+	// Removed by hand afterwards: they stay removed.
+	cur := s.Get()
+	cur.Library.IgnorePatterns = []string{"*.part"}
+	if _, err := s.Save(cur); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := NewStore(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s2.Get().Library.IgnorePatterns; !slices.Equal(got, []string{"*.part"}) {
+		t.Fatalf("after a restart: %q", got)
 	}
 }
