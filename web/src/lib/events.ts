@@ -45,14 +45,20 @@ export function connectEvents(qc: QueryClient) {
                 break
             case "history-updated":
                 // Watched on another KumoBox sharing its library: Continue
-                // watching and the episodes' positions.
+                // watching, the episodes' positions and what's unwatched in
+                // the Local library.
                 qc.invalidateQueries({ queryKey: ["collection"] })
                 qc.invalidateQueries({ queryKey: ["entry"] })
+                qc.invalidateQueries({ queryKey: ["library", "titles"] })
                 break
             case "collection-updated":
+                // The list changed (here, on another device, a Letterboxd
+                // sync): everything that shows list entries.
                 qc.invalidateQueries({ queryKey: ["collection"] })
                 qc.invalidateQueries({ queryKey: ["entry"] })
                 qc.invalidateQueries({ queryKey: ["list"] })
+                qc.invalidateQueries({ queryKey: ["library", "titles"] })
+                qc.invalidateQueries({ queryKey: ["schedule"] })
                 break
             case "diary-updated":
                 // A viewing logged (a movie watched to the end), imported,
@@ -72,8 +78,10 @@ export function connectEvents(qc: QueryClient) {
             }
             case "settings-updated":
                 qc.invalidateQueries({ queryKey: ["status"] })
-                // The Internet Archive turned on or off, the default provider...
+                // The Internet Archive turned on or off, the default provider,
+                // the torrent sources...
                 qc.invalidateQueries({ queryKey: ["providers"] })
+                qc.invalidateQueries({ queryKey: ["torrent-providers"] })
                 break
             case "playback-status":
                 playbackStore.set(p)
@@ -81,7 +89,8 @@ export function connectEvents(qc: QueryClient) {
             case "playback-ended":
                 playbackStore.set(null)
                 qc.invalidateQueries({ queryKey: ["collection"] })
-                qc.invalidateQueries({ queryKey: ["entry", p?.mediaId] })
+                qc.invalidateQueries({ queryKey: p?.mediaId ? ["entry", p.mediaId] : ["entry"] })
+                qc.invalidateQueries({ queryKey: ["library", "titles"] })
                 break
             case "download-progress": {
                 qc.setQueryData<DownloadItem[]>(["downloads"], old => {

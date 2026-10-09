@@ -66,12 +66,16 @@ export function useSaveSettings() {
     })
 }
 
-// What changed when the list did: the library views, the raw list and the
-// Letterboxd diary and status (watching a movie logs it).
+// What changed when the list did: the library views (the Local library's
+// titles carry their list entry and what's unwatched), the raw list, the
+// calendar (the shows on the list) and the Letterboxd diary and status
+// (watching a movie logs it).
 export function invalidateList(qc: QueryClient, mediaId?: number) {
     qc.invalidateQueries({ queryKey: mediaId ? ["entry", mediaId] : ["entry"] })
     qc.invalidateQueries({ queryKey: ["collection"] })
+    qc.invalidateQueries({ queryKey: ["library", "titles"] })
     qc.invalidateQueries({ queryKey: ["list"] })
+    qc.invalidateQueries({ queryKey: ["schedule"] })
     qc.invalidateQueries({ queryKey: ["letterboxd"] })
 }
 
