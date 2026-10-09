@@ -4,7 +4,7 @@ import { toast } from "@/lib/toast"
 import { Badge, Button, Select } from "@/components/ui"
 import { api } from "@/lib/api"
 import { useStatus } from "@/lib/queries"
-import { Ext, Group, Password, Row, type SectionProps, Stack } from "./parts"
+import { Ext, Group, LanOnly, Password, Row, type SectionProps, Stack } from "./parts"
 
 const LANGUAGES = [
     ["en-US", "English (US)"],
@@ -70,6 +70,7 @@ const withCurrent = (options: { value: string; label: string }[], current: strin
 // Where every movie's and show's data comes from: The Movie Database.
 export function MetadataSection({ draft, set }: SectionProps) {
     const { data: status } = useStatus()
+    const lan = status?.client === "lan"
     const qc = useQueryClient()
     const t = draft.tmdb
     const savedKey = status?.settings.tmdb?.apiKey ?? ""
@@ -101,8 +102,10 @@ export function MetadataSection({ draft, set }: SectionProps) {
                         </>
                     }
                 >
-                    <Password value={key} onChange={v => set("tmdb", { apiKey: v.trim() })} placeholder="Paste your TMDB API key or token" />
+                    {/* Devices on the network don't see the key, nor change it. */}
+                    <Password value={key} disabled={lan} onChange={v => set("tmdb", { apiKey: v.trim() })} placeholder={lan ? "" : "Paste your TMDB API key or token"} />
                 </Stack>
+                {lan && <LanOnly />}
             </Group>
             <Group title="Language & region">
                 <Row label="Language" help="Titles, overviews and episode names, when TMDB has them in this language (English otherwise).">

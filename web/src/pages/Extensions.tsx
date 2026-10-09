@@ -167,6 +167,8 @@ function Installed() {
 
 function InstalledCard({ ext, update, onChange }: { ext: ExtensionInfo; update?: string; onChange: () => void }) {
     const m = ext.manifest
+    // Extensions are installed and removed on this computer only.
+    const lan = useStatus().data?.client === "lan"
     const [cfgOpen, setCfgOpen] = useState(false)
     const [logsOpen, setLogsOpen] = useState(false)
     const [grantOpen, setGrantOpen] = useState(false)
@@ -239,9 +241,11 @@ function InstalledCard({ ext, update, onChange }: { ext: ExtensionInfo; update?:
                         </IconButton>
                     </a>
                 )}
-                <IconButton size="sm" label="Uninstall" className="ml-auto hover:text-rose-300" onClick={() => confirm(`Uninstall ${m.name}?`) && call(api.del(`/api/extensions/${m.id}`), "Uninstalled")}>
-                    <Trash2 className="size-4" />
-                </IconButton>
+                {!lan && (
+                    <IconButton size="sm" label="Uninstall" className="ml-auto hover:text-rose-300" onClick={() => confirm(`Uninstall ${m.name}?`) && call(api.del(`/api/extensions/${m.id}`), "Uninstalled")}>
+                        <Trash2 className="size-4" />
+                    </IconButton>
+                )}
             </div>
             <ConfigDialog open={cfgOpen} onOpenChange={setCfgOpen} ext={ext} onSaved={onChange} />
             <LogsDialog open={logsOpen} onOpenChange={setLogsOpen} id={m.id} />
@@ -445,6 +449,8 @@ function MarketCard({ e }: { e: MarketEntry }) {
     const [busy, setBusy] = useState(false)
     const [grant, setGrant] = useState<ExtensionInfo | null>(null)
     const qc = useQueryClient()
+    // Installed (and updated from here) on this computer only.
+    const lan = useStatus().data?.client === "lan"
     const install = async () => {
         setBusy(true)
         try {
@@ -495,7 +501,13 @@ function MarketCard({ e }: { e: MarketEntry }) {
                 {!e.supported && <Badge tone="amber">Not supported</Badge>}
             </div>
             <div className="mt-auto flex items-center gap-2 pt-1">
-                {e.installed ? (
+                {lan ? (
+                    e.installed && (
+                        <Badge tone="green">
+                            <CheckCircle2 className="size-3" /> Installed
+                        </Badge>
+                    )
+                ) : e.installed ? (
                     e.hasUpdate ? (
                         <Button size="sm" variant="primary" icon={<ArrowUpCircle className="size-4" />} loading={busy} onClick={install}>
                             Update to {e.version}

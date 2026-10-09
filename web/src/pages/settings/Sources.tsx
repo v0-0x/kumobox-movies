@@ -5,13 +5,14 @@ import { Button, Input, Select, Switch } from "@/components/ui"
 import { api } from "@/lib/api"
 import { useProviders, useStatus } from "@/lib/queries"
 import type { TorrentSource, TorrentSourceSettings, TorznabIndexer } from "@/lib/types"
-import { Ext, Group, ListInput, Password, PathInput, Row, type SectionProps, Stack } from "./parts"
+import { Ext, Group, LanOnly, ListInput, Password, PathInput, Row, type SectionProps, Stack, useLan } from "./parts"
 
 const DEFAULT_STREMIO_CATALOG = "https://api.strem.io/addonscollection.json"
 
 // Where movies and episodes stream from, and where downloads of streams go.
 export function ProvidersSection({ draft, set }: SectionProps) {
     const { data: status } = useStatus()
+    const lan = status?.client === "lan"
     const { data: providers } = useProviders()
     const p = draft.providers
     const dl = draft.downloads
@@ -80,8 +81,11 @@ export function ProvidersSection({ draft, set }: SectionProps) {
             </Group>
 
             <Group title="Downloads" description="Movies and episodes downloaded from streaming providers.">
-                <Stack label="Download folder" help={`Empty: your library folder (${status?.settings.library.dir || "not set"}). Downloads are matched automatically.`}>
-                    <PathInput value={dl?.dir ?? ""} onChange={v => set("downloads", { dir: v })} placeholder="Library folder" />
+                <Stack
+                    label="Download folder"
+                    help={`Empty: your library folder (${status?.settings.library.dir || "not set"}). Downloads are matched automatically.${lan ? " Changed on the computer KumoBox runs on." : ""}`}
+                >
+                    <PathInput value={dl?.dir ?? ""} disabled={lan} onChange={v => set("downloads", { dir: v })} placeholder="Library folder" />
                 </Stack>
                 <Row label="Downloader" help="yt-dlp is faster and more reliable for most streams.">
                     <Select
@@ -114,6 +118,9 @@ const BUILT_IN: BuiltIn[] = [
 // built-in sources.
 export function TorrentSourcesSection({ draft, set }: SectionProps) {
     const { data: providers } = useQuery({ queryKey: ["torrent-providers"], queryFn: () => api.get<{ id: string; name: string; kind: string }[]>("/api/torrents/providers") })
+    // Devices on the network don't see the indexers' API keys, nor change
+    // the indexers.
+    const lan = useLan()
     const ts = draft.torrentSources
     const indexers = ts?.torznab ?? []
     const setIndexers = (v: TorznabIndexer[]) => set("torrentSources", { torznab: v })
@@ -153,27 +160,33 @@ export function TorrentSourcesSection({ draft, set }: SectionProps) {
                 {indexers.map((x, i) => (
                     <div key={i} className="flex flex-col gap-3 px-4 py-3.5">
                         <div className="flex items-center gap-3">
-                            <Switch checked={x.enabled} onChange={v => edit(i, { enabled: v })} />
-                            <Input value={x.name} placeholder="Name" onChange={e => edit(i, { name: e.target.value })} />
-                            <button
-                                onClick={() => setIndexers(indexers.filter((_, j) => j !== i))}
-                                className="grid size-9 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-white/[0.06] hover:text-rose-300"
-                                aria-label={`Remove ${x.name || "indexer"}`}
-                            >
-                                <X className="size-4" />
-                            </button>
+                            <Switch checked={x.enabled} disabled={lan} onChange={v => edit(i, { enabled: v })} />
+                            <Input value={x.name} placeholder="Name" disabled={lan} onChange={e => edit(i, { name: e.target.value })} />
+                            {!lan && (
+                                <button
+                                    onClick={() => setIndexers(indexers.filter((_, j) => j !== i))}
+                                    className="grid size-9 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-white/[0.06] hover:text-rose-300"
+                                    aria-label={`Remove ${x.name || "indexer"}`}
+                                >
+                                    <X className="size-4" />
+                                </button>
+                            )}
                         </div>
                         <div className="grid gap-3 sm:grid-cols-[2fr_1fr]">
-                            <Input value={x.url} placeholder="http://127.0.0.1:9696/1/api" onChange={e => edit(i, { url: e.target.value.trim() })} />
-                            <Password value={x.apiKey} placeholder="API key" onChange={v => edit(i, { apiKey: v.trim() })} />
+                            <Input value={x.url} placeholder="http://127.0.0.1:9696/1/api" disabled={lan} onChange={e => edit(i, { url: e.target.value.trim() })} />
+                            <Password value={x.apiKey} placeholder={lan ? "" : "API key"} disabled={lan} onChange={v => edit(i, { apiKey: v.trim() })} />
                         </div>
                     </div>
                 ))}
-                <div className="px-4 py-3.5">
-                    <Button size="sm" variant="subtle" icon={<Plus className="size-4" />} onClick={() => setIndexers([...indexers, { name: "", url: "", apiKey: "", enabled: true }])}>
-                        Add indexer
-                    </Button>
-                </div>
+                {lan ? (
+                    <LanOnly />
+                ) : (
+                    <div className="px-4 py-3.5">
+                        <Button size="sm" variant="subtle" icon={<Plus className="size-4" />} onClick={() => setIndexers([...indexers, { name: "", url: "", apiKey: "", enabled: true }])}>
+                            Add indexer
+                        </Button>
+                    </div>
+                )}
             </Group>
 
             <Group title="Built-in sources" description="Public sites searched without an indexer. Each can point to a mirror when the site moves.">
