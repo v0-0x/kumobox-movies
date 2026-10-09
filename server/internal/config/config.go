@@ -72,6 +72,12 @@ type Settings struct {
 	UI           UISettings           `json:"ui"`
 	Discord      DiscordSettings      `json:"discord"`
 	Extensions   ExtensionSettings    `json:"extensions"`
+
+	// KumoBox (kumobox.go)
+	TMDB           TMDBSettings          `json:"tmdb"`
+	Letterboxd     LetterboxdSettings    `json:"letterboxd"`
+	Providers      ProviderSettings      `json:"providers"`
+	TorrentSources TorrentSourceSettings `json:"torrentSources"`
 }
 
 type LibrarySettings struct {
@@ -219,7 +225,7 @@ type ExtensionSettings struct {
 // Defaults returns the settings used on first launch.
 func Defaults() Settings {
 	home, _ := os.UserHomeDir()
-	videos := filepath.Join(home, videosFolder, "Anime")
+	videos := filepath.Join(home, videosFolder)
 	return Settings{
 		SchemaVersion: schemaVersion,
 		Library: LibrarySettings{
@@ -238,8 +244,8 @@ func Defaults() Settings {
 			ResumePlayback:      true,
 			AutoPlayNext:        false,
 			RememberTracks:      true,
-			PreferredAudioLang:  "jpn,ja",
-			PreferredSubLang:    "eng,en",
+			PreferredAudioLang:  "",
+			PreferredSubLang:    "",
 		},
 		Mpv: MpvSettings{Path: "mpv"},
 		Transcode: TranscodeSettings{
@@ -280,6 +286,11 @@ func Defaults() Settings {
 		},
 		Discord:    DiscordSettings{RichPresence: false},
 		Extensions: ExtensionSettings{MarketplaceURL: DefaultMarketplaceURL},
+
+		TMDB:           defaultTMDB(),
+		Letterboxd:     defaultLetterboxd(),
+		Providers:      defaultProviders(),
+		TorrentSources: defaultTorrentSources(),
 	}
 }
 
@@ -456,6 +467,7 @@ func sanitize(s Settings) Settings {
 	if s.Playback.DefaultPlayer != "mpv" {
 		s.Playback.DefaultPlayer = "builtin"
 	}
+	sanitizeKumoBox(&s)
 	return s
 }
 
