@@ -120,6 +120,10 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     // stream
     const [sources, setSources] = useState<StreamSource[]>([])
     const [sourceIdx, setSourceIdx] = useState(0)
+    // The source whose way of playing is decided (as is, or converted).
+    const [decided, setDecided] = useState(-1)
+    // Why the last source couldn't be read, to say when none plays.
+    const sourceError = useRef("")
 
     const [subs, setSubs] = useState<SubOption[]>([])
     const [subKey, setSubKey] = useState<string>("off")
@@ -156,7 +160,10 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const hlsMode = useMemo(() => prefersHls(), [])
     const caps = useMemo(() => videoCaps(hlsMode && Hls.isSupported() ? "mse" : "element"), [hlsMode])
     const clientId = useMemo(() => randomId(), [])
-    const base = req.kind === "local" && method !== "direct" && stream ? stream.base : offset
+    // What ffmpeg converts when the browser can't play it as it is: the file,
+    // or the stream's link as the server named it.
+    const convertPath = req.kind === "local" ? req.path : sources[sourceIdx]?.remote
+    const base = method !== "direct" && stream ? stream.base : offset
     const absTime = (v: HTMLVideoElement) => v.currentTime + base
 
     // ------------------------------------------------------------------ load
@@ -243,6 +250,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     setTitle(res.title || playerTitle(e, key, ""))
                     setSources(res.sources)
                     setSourceIdx(0)
+                    setDecided(-1)
                     startAt.current = res.resumeAt || 0
                     applyStreamSubs(res.sources[0])
                 }
@@ -286,11 +294,68 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, false))
     }
 
+    // ---------------------------------------------------------- stream source
+    // How to play a stream: as it is when the browser decodes what's in it,
+    // else converted like a file (most providers link to Matroska, HEVC,
+    // AC-3/DTS audio...). HLS plays as it is. A link that can't be read
+    // is tried as it is all the same.
+    useEffect(() => {
+        if (req.kind !== "stream" || !sources.length || decided === sourceIdx) return
+        const src = sources[sourceIdx]
+        const asIs = () => {
+            setProbe(null)
+            setMethod("direct")
+            setOffset(0)
+            setDecided(sourceIdx)
+        }
+        if (!src?.remote || src.type === "m3u8" || /m3u8/i.test(src.originalUrl ?? "")) {
+            asIs()
+            return
+        }
+        let cancelled = false
+        setLoading(true)
+        api.get<Probe>(`/api/local/probe${qs({ path: src.remote, caps: caps.join(",") })}`)
+            .then(p => {
+                if (cancelled) return
+                setProbe(p)
+                if (p.duration > 0) setDuration(p.duration)
+                const ai = Math.max(0, p.audio?.findIndex(a => a.default) ?? 0)
+                setAudioIndex(ai)
+                const m = p.method === "direct" && ai === 0 ? "direct" : p.method === "direct" ? "remux" : p.method
+                setMethod(m)
+                setOffset(m === "direct" ? 0 : startAt.current)
+                setDecided(sourceIdx)
+                api.get<SkipInterval[]>(`/api/playback/skips${qs({ path: src.remote })}`)
+                    .then(s => !cancelled && setSkips(s ?? []))
+                    .catch(() => {})
+            })
+            .catch((e: any) => {
+                if (cancelled) return
+                sourceError.current = e?.message || ""
+                asIs()
+            })
+            .finally(() => !cancelled && setLoading(false))
+        return () => {
+            cancelled = true
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sources, sourceIdx, decided])
+
+    // The next source, when this one can't be played at all.
+    const nextSource = () => {
+        if (sourceIdx + 1 < sources.length) {
+            toast.warning(`Source failed, trying ${sources[sourceIdx + 1].quality || "the next one"}…`)
+            setStream(null)
+            applyStreamSubs(sources[sourceIdx + 1])
+            setSourceIdx(i => i + 1)
+        } else setError(sources.length > 1 ? `None of the ${sources.length} sources could be played.${sourceError.current ? ` ${sourceError.current}` : ""}` : `This video could not be played.${sourceError.current ? ` ${sourceError.current}` : ""}`)
+    }
+
     // ------------------------------------------------------------ video src
-    // A converted local file: ask the server where the stream will start
+    // A converted file or stream: ask the server where the stream will start
     // (or start an HLS session), then load it.
     useEffect(() => {
-        if (req.kind !== "local" || !probe || method === "direct") {
+        if (!convertPath || !probe || method === "direct" || (req.kind === "stream" && decided !== sourceIdx)) {
             setStream(null)
             return
         }
@@ -299,7 +364,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             try {
                 if (hlsMode) {
                     const s = await api.post<{ id: string; url: string; start: number }>("/api/local/hls", {
-                        path: req.path,
+                        path: convertPath,
                         start: offset,
                         audio: audioIndex,
                         method,
@@ -310,10 +375,10 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 } else {
                     const c = caps.join(",")
                     const sp = await api
-                        .get<{ start: number }>(`/api/local/seekpoint${qs({ path: req.path, t: offset.toFixed(3), audio: audioIndex, method, caps: c })}`)
+                        .get<{ start: number }>(`/api/local/seekpoint${qs({ path: convertPath, t: offset.toFixed(3), audio: audioIndex, method, caps: c })}`)
                         .catch(() => ({ start: offset }))
                     if (!cancelled)
-                        setStream({ url: `/api/local/transcode${qs({ path: req.path, start: sp.start.toFixed(3), audio: audioIndex, method, caps: c })}`, base: sp.start, hls: false })
+                        setStream({ url: `/api/local/transcode${qs({ path: convertPath, start: sp.start.toFixed(3), audio: audioIndex, method, caps: c })}`, base: sp.start, hls: false })
                 }
             } catch (e: any) {
                 if (!cancelled) setError(e.message || String(e))
@@ -323,7 +388,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             cancelled = true
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [req, probe, method, offset, audioIndex, restart])
+    }, [req, convertPath, decided, probe, method, offset, audioIndex, restart])
 
     // End the HLS session when the player closes.
     const sessionRef = useRef<string | undefined>(undefined)
@@ -343,8 +408,10 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             if (method === "direct") return `/api/local/file${qs({ path: req.path })}`
             return stream?.url ?? ""
         }
+        if (decided !== sourceIdx) return ""
+        if (method !== "direct") return stream?.url ?? ""
         return sources[sourceIdx]?.url ?? ""
-    }, [req, probe, method, stream, sources, sourceIdx])
+    }, [req, probe, method, stream, sources, sourceIdx, decided])
 
     useEffect(() => {
         const v = videoRef.current
@@ -352,11 +419,12 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         hlsRef.current?.destroy()
         hlsRef.current = null
         const src = sources[sourceIdx]
-        const localHls = req.kind === "local" && method !== "direct" && !!stream?.hls
+        // A converted file or stream, as HLS (Safari) or progressive.
+        const convHls = method !== "direct" && !!stream?.hls
         // HLS can start right where asked; the progressive stream starts at
         // its keyframe (stream.base).
-        const resume = localHls ? Math.max(0, offset - stream!.base) : req.kind === "local" ? (method === "direct" ? startAt.current : 0) : startAt.current
-        const isHls = localHls || (req.kind === "stream" && (src?.type === "m3u8" || /m3u8/i.test(src?.originalUrl ?? "")))
+        const resume = convHls ? Math.max(0, offset - stream!.base) : method !== "direct" ? 0 : startAt.current
+        const isHls = convHls || (req.kind === "stream" && method === "direct" && (src?.type === "m3u8" || /m3u8/i.test(src?.originalUrl ?? "")))
         if (isHls && Hls.isSupported()) {
             // A local session's playlist grows while it's converted: give a
             // start, or players begin at its end like a live stream.
@@ -364,7 +432,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             // episode by the end); keep the last 90s for going back, and up
             // to 30 MB (at least 60s) ahead.
             const hls = new Hls({
-                startPosition: localHls ? resume : resume > 0 ? resume : -1,
+                startPosition: convHls ? resume : resume > 0 ? resume : -1,
                 maxBufferLength: 60,
                 maxBufferSize: 30 * 1000 * 1000,
                 backBufferLength: 90,
@@ -373,7 +441,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             hls.attachMedia(v)
             hls.on(Hls.Events.ERROR, (_, data) => {
                 if (!data.fatal) return
-                if (localHls) {
+                if (convHls) {
                     // The session ended (e.g. paused for a long time): start
                     // a new one here. Anything else: convert everything.
                     const at = v.currentTime + (stream?.base ?? 0)
@@ -381,13 +449,12 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     setOffset(at)
                     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setRestart(n => n + 1)
                     else if (method === "remux") setMethod("transcode")
+                    else if (req.kind === "stream") nextSource()
                     else setError("This video could not be played (" + data.details + ")")
                     return
                 }
-                if (sourceIdx + 1 < sources.length) {
-                    toast.warning(`Source failed, trying ${sources[sourceIdx + 1].quality || "the next one"}…`)
-                    setSourceIdx(i => i + 1)
-                } else setError("The stream could not be played (" + data.details + ")")
+                if (sourceIdx + 1 < sources.length) nextSource()
+                else setError("The stream could not be played (" + data.details + ")")
             })
             hlsRef.current = hls
         } else {
@@ -508,7 +575,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         if (!v) return
         const total = duration || v.duration || 0
         t = Math.max(0, Math.min(total > 0 ? total - 0.5 : t, t))
-        if (req.kind === "local" && method !== "direct") {
+        if (method !== "direct" && stream) {
             // HLS can seek within what's converted so far.
             if (stream?.hls && v.seekable.length) {
                 const rel = t - stream.base
@@ -556,7 +623,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     }
     const changeSource = (i: number) => {
         const v = videoRef.current
-        startAt.current = v ? v.currentTime : 0
+        startAt.current = v ? absTime(v) : 0
+        setStream(null)
         setSourceIdx(i)
         applyStreamSubs(sources[i])
     }
@@ -771,7 +839,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 }}
                 onLoadedMetadata={e => {
                     const v = e.currentTarget
-                    if (req.kind !== "local" || method === "direct") setDuration(v.duration || duration)
+                    if (method === "direct") setDuration(v.duration || duration)
                 }}
                 onEnded={() => {
                     if (ended.current) return
@@ -780,14 +848,15 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     if (settings?.playback.autoPlayNext && nextEp) playNext()
                 }}
                 onError={() => {
-                    if (req.kind === "local" && method === "direct") {
+                    const v = videoRef.current
+                    if (method === "direct" && convertPath && probe) {
+                        // The browser couldn't play it as it is: convert it.
                         toast.info("Switching to compatibility mode…")
-                        const v = videoRef.current
+                        const at = v && v.currentTime > 0 ? v.currentTime : startAt.current
                         startAt.current = 0
-                        setOffset(v ? v.currentTime : 0)
+                        setOffset(at)
                         setMethod("remux")
-                    } else if (req.kind === "local" && method === "remux") {
-                        const v = videoRef.current
+                    } else if (method === "remux" && convertPath && !hlsRef.current) {
                         setOffset(v ? absTime(v) : offset)
                         setMethod("transcode")
                     } else if (req.kind === "local" && !hlsRef.current) {
@@ -795,8 +864,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                         // than spin forever.
                         setError("This video could not be played, even converted.")
                     } else if (req.kind === "stream" && !hlsRef.current) {
-                        if (sourceIdx + 1 < sources.length) setSourceIdx(i => i + 1)
-                        else setError("This video could not be played.")
+                        nextSource()
                     }
                 }}
             />
@@ -832,7 +900,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 </button>
                 <div className="min-w-0">
                     <p className="truncate text-lg font-semibold text-white">{title}</p>
-                    {req.kind === "local" && probe && (
+                    {probe && (
                         <p className="text-xs text-white/60">
                             {method === "direct" ? "Direct play" : method === "remux" ? "Direct stream (remuxed)" : "Transcoding"} · {probe.video?.[0]?.codec?.toUpperCase()}{" "}
                             {probe.video?.[0]?.height ? `${probe.video[0].height}p` : ""}
@@ -933,7 +1001,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                             </DropdownContent>
                         </Dropdown>
                         {/* audio */}
-                        {req.kind === "local" && (probe?.audio?.length ?? 0) > 1 && (
+                        {!!convertPath && (probe?.audio?.length ?? 0) > 1 && (
                             <Dropdown>
                                 <DropdownTrigger asChild>
                                     <button className="grid size-10 place-items-center rounded-full hover:bg-white/15" aria-label="Audio track">
@@ -971,7 +1039,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                                         <DropdownSeparator />
                                     </>
                                 )}
-                                {req.kind === "local" && method !== "transcode" && (
+                                {!!convertPath && !!probe && method !== "transcode" && (
                                     <>
                                         <DropdownItem
                                             onSelect={() => {

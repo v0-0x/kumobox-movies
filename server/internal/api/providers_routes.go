@@ -268,11 +268,18 @@ func playerSource(st stream.Stream, addonSubs []providers.Subtitle, cfg config.S
 	if typ == providers.StreamUnknown {
 		typ = "unknown"
 	}
-	return map[string]any{
+	src := map[string]any{
 		"id": st.ID, "url": stream.ProxyURL(st.URL, headers), "originalUrl": st.URL, "type": typ, "quality": st.Quality,
 		"label": firstLine(st.Title), "server": st.ProviderName, "provider": st.Provider, "subtitles": subs,
 		"headers": headers, "referrer": referrer, "notWebReady": st.NotWebReady,
 	}
+	// What the player converts with ffmpeg when the browser can't play the
+	// link as it is (Matroska, HEVC, AC-3/DTS audio...): the link named for
+	// the conversion endpoints (stream/remote.go). HLS plays as it is.
+	if typ != providers.StreamM3U8 {
+		src["remote"] = stream.RegisterRemote(st.URL, headers)
+	}
+	return src
 }
 
 func firstLine(s string) string {

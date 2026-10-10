@@ -93,7 +93,14 @@ func (s *Server) routes() {
 	// A shared file's requests go to its host (see sharing.go).
 	m.HandleFunc("GET /api/local/probe", func(w http.ResponseWriter, r *http.Request) {
 		if !s.forwardShared(w, r, "probe") {
-			h(func(r *http.Request) (any, error) { return s.app.Local.Probe(r.Context(), r.URL.Query().Get("path")) })(w, r)
+			h(func(r *http.Request) (any, error) {
+				p, err := s.app.Local.Probe(r.Context(), r.URL.Query().Get("path"))
+				// What this player decodes decides how it's played.
+				if err == nil && r.URL.Query().Has("caps") {
+					s.app.Local.Decide(p, stream.ParseCaps(r.URL.Query().Get("caps")))
+				}
+				return p, err
+			})(w, r)
 		}
 	})
 	m.HandleFunc("GET /api/local/file", func(w http.ResponseWriter, r *http.Request) {

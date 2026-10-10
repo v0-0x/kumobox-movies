@@ -96,7 +96,7 @@ func (h *HLS) Start(ctx context.Context, req HLSRequest) (*HLSSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, err := h.local.Probe(ctx, file)
+	p, err := h.local.Probe(ctx, req.Path)
 	if err != nil {
 		return nil, err
 	}

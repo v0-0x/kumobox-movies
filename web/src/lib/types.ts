@@ -590,6 +590,9 @@ export type StreamSource = {
     headers: Record<string, string>
     referrer?: string
     notWebReady?: boolean
+    // The link named for the conversion endpoints (/api/local/probe,
+    // transcode, hls…), when the browser may not play it as it is.
+    remote?: string
 }
 
 // ---------------------------------------------------------------------------

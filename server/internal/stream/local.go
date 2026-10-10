@@ -85,8 +85,13 @@ type Probe struct {
 
 var ErrNotInLibrary = errors.New("file is not part of the library")
 
-// resolve makes sure only indexed library files can be read.
+// resolve makes sure only indexed library files can be read, and gives
+// what ffmpeg reads: the file, or for an online stream (a "remote:" path,
+// see remote.go) the relay's URL.
 func (l *Local) resolve(path string) (string, error) {
+	if IsRemoteInput(path) {
+		return remoteInput(path)
+	}
 	path = filepath.Clean(path)
 	f, err := l.files.Get(path)
 	if err != nil || f == nil {
@@ -99,6 +104,9 @@ func (l *Local) resolve(path string) (string, error) {
 }
 
 func (l *Local) Probe(ctx context.Context, path string) (*Probe, error) {
+	if IsRemoteInput(path) {
+		return l.probeRemote(ctx, path)
+	}
 	path, err := l.resolve(path)
 	if err != nil {
 		return nil, err
@@ -142,6 +150,51 @@ func (l *Local) Probe(ctx context.Context, path string) (*Probe, error) {
 	p.Path, p.Size, p.ModTime = path, st.Size(), st.ModTime().UnixNano()
 	p.ExternalSubs = externalSubs(path)
 	l.db.SetCache(key, p, 30*24*time.Hour)
+	p.Method, p.Reason = decide(p, cfg.Transcode.Mode, 0, nil)
+	return p, nil
+}
+
+// probeRemote probes an online stream (see remote.go). Its probe is kept
+// for as long as the link is: the player asks for it again on each seek.
+func (l *Local) probeRemote(ctx context.Context, path string) (*Probe, error) {
+	input, err := remoteInput(path)
+	if err != nil {
+		return nil, err
+	}
+	cfg := l.settings.Get()
+	key := probeKey(path)
+	var cached Probe
+	if l.db.GetCache(key, &cached) {
+		cached.Method, cached.Reason = decide(&cached, cfg.Transcode.Mode, 0, nil)
+		return &cached, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, cfg.Transcode.FfprobePath, "-v", "error", "-rw_timeout", "20000000",
+		"-print_format", "json", "-show_format", "-show_streams", "-show_chapters", input).Output()
+	if err != nil {
+		var exit *exec.ExitError
+		switch {
+		case ctx.Err() != nil:
+			return nil, errors.New("the stream took too long to answer")
+		case errors.As(err, &exit):
+			msg := strings.TrimSpace(string(exit.Stderr))
+			if i := strings.LastIndexByte(msg, '\n'); i >= 0 {
+				msg = msg[i+1:]
+			}
+			if msg == "" {
+				msg = err.Error()
+			}
+			return nil, fmt.Errorf("the stream couldn't be read: %s", msg)
+		}
+		return nil, fmt.Errorf("ffprobe failed (install ffmpeg: %s): %w", util.InstallHint("ffmpeg"), err)
+	}
+	p, err := parseProbe(out)
+	if err != nil {
+		return nil, err
+	}
+	p.Path = path
+	l.db.SetCache(key, p, remoteKeep)
 	p.Method, p.Reason = decide(p, cfg.Transcode.Mode, 0, nil)
 	return p, nil
 }
@@ -385,6 +438,11 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 		}
 		args = append(args, "-ss", strconv.FormatFloat(start, 'f', 3, 64))
 	}
+	if strings.HasPrefix(path, "http://") {
+		// An online stream, through the relay (remote.go): don't hang on a
+		// stalled link, and pick up again after a dropped connection.
+		args = append(args, "-rw_timeout", "30000000", "-reconnect", "1", "-reconnect_delay_max", "10")
+	}
 	args = append(args, "-i", path, "-map", "0:v:0?")
 	if len(p.Audio) > 0 {
 		args = append(args, "-map", fmt.Sprintf("0:a:%d?", pl.audio))
@@ -425,7 +483,7 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 // keyframe + seekMargin, and a keyframe followed that closely by another
 // one (a scene cut) is passed over for the next.
 func (l *Local) SeekPoint(ctx context.Context, path string, t float64, audio int, method string, caps Caps, hls bool) (float64, error) {
-	path, err := l.resolve(path)
+	input, err := l.resolve(path)
 	if err != nil {
 		return 0, err
 	}
@@ -433,7 +491,7 @@ func (l *Local) SeekPoint(ctx context.Context, path string, t float64, audio int
 	if err != nil {
 		return 0, err
 	}
-	return l.startFor(ctx, path, l.plan(p, method, audio, caps, hls), t), nil
+	return l.startFor(ctx, input, l.plan(p, method, audio, caps, hls), t), nil
 }
 
 const seekMargin = 0.4
@@ -508,6 +566,10 @@ func (l *Local) seekKeyframe(ctx context.Context, path string, t float64) (float
 
 // ServeFile streams the raw file with range support (direct play).
 func (l *Local) ServeFile(w http.ResponseWriter, r *http.Request, path string) {
+	if IsRemoteInput(path) {
+		http.Error(w, "an online stream plays from its link", http.StatusBadRequest)
+		return
+	}
 	path, err := l.resolve(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
@@ -535,7 +597,7 @@ func (l *Local) ServeFile(w http.ResponseWriter, r *http.Request, path string) {
 // ServeTranscode pipes ffmpeg output as fragmented MP4 starting at `start`
 // (see SeekPoint), for players that decode caps.
 func (l *Local) ServeTranscode(w http.ResponseWriter, r *http.Request, path string, start float64, audio int, method string, caps Caps) {
-	path, err := l.resolve(path)
+	input, err := l.resolve(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
@@ -548,7 +610,7 @@ func (l *Local) ServeTranscode(w http.ResponseWriter, r *http.Request, path stri
 	}
 	pl := l.plan(p, method, audio, caps, false)
 	method = pl.method
-	args := append(pl.args(cfg, p, path, start), "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1")
+	args := append(pl.args(cfg, p, input, start), "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1")
 
 	// ffmpeg is stopped when the request ends, or as soon as the player stops
 	// reading (see below).
@@ -600,6 +662,12 @@ func (h *headWriter) Write(p []byte) (int, error) {
 // ServeSubtitle extracts an embedded text subtitle (or reads an external
 // subtitle file) and returns WebVTT.
 func (l *Local) ServeSubtitle(w http.ResponseWriter, r *http.Request, path string, index int, external string) {
+	// Reading a subtitle track means reading the whole file: fine on disk,
+	// not through a stream's link.
+	if IsRemoteInput(path) {
+		http.Error(w, "subtitles inside an online stream can't be shown in the app (mpv shows them)", http.StatusUnprocessableEntity)
+		return
+	}
 	path, err := l.resolve(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
