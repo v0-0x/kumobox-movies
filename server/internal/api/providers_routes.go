@@ -119,6 +119,10 @@ type providerPlayBody struct {
 	// Player is "builtin", "mpv" or "" (the default player).
 	Player string   `json:"player"`
 	Start  *float64 `json:"start"`
+	// Refresh asks the providers again rather than using the links found a
+	// moment ago: the player does when none of them could be read (links
+	// expire, often within minutes).
+	Refresh bool `json:"refresh"`
 }
 
 // providerPlay is POST /api/providers/play. A direct link opens in mpv or
@@ -179,7 +183,7 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 		}
 		sess, err := s.app.Player.PlayMpv(player.PlayRequest{
 			MediaID: media.ID, Episode: episode, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
-			Source: "stream", Target: st.URL, Headers: headers, Referrer: referrer, SubFiles: files, Start: body.Start,
+			Source: "stream", Target: stream.CleanLink(st.URL), Headers: headers, Referrer: referrer, SubFiles: files, Start: body.Start,
 			Provider: st.Provider,
 		})
 		if err != nil {
@@ -223,6 +227,12 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 
 // pickStream finds the stream a play request is about.
 func (s *Server) pickStream(ctx context.Context, media *catalog.Media, episode int, body providerPlayBody) (stream.Stream, *stream.Result, error) {
+	if body.Refresh {
+		if _, err := s.app.Stream.Streams(ctx, media, episode, body.Provider, true); err != nil {
+			return stream.Stream{}, nil, err
+		}
+		return s.app.Stream.Best(ctx, media, episode, body.Provider)
+	}
 	if body.StreamID != "" {
 		st, res, err := s.app.Stream.Find(ctx, media, episode, body.StreamID)
 		if err == nil || body.Stream == nil {

@@ -124,6 +124,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const [decided, setDecided] = useState(-1)
     // Why the last source couldn't be read, to say when none plays.
     const sourceError = useRef("")
+    // The providers were asked again for fresh links (once).
+    const refreshed = useRef(false)
 
     const [subs, setSubs] = useState<SubOption[]>([])
     const [subKey, setSubKey] = useState<string>("off")
@@ -307,6 +309,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             setMethod("direct")
             setOffset(0)
             setDecided(sourceIdx)
+            setLoading(false)
         }
         if (!src?.remote || src.type === "m3u8" || /m3u8/i.test(src.originalUrl ?? "")) {
             asIs()
@@ -348,6 +351,25 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             setStream(null)
             applyStreamSubs(sources[sourceIdx + 1])
             setSourceIdx(i => i + 1)
+        } else if (!refreshed.current) {
+            // Links expire, often within minutes: ask the providers again.
+            refreshed.current = true
+            toast.info("Asking the providers for fresh links…")
+            setStream(null)
+            setDecided(-1)
+            setLoading(true)
+            api.post<PlayResult>("/api/providers/play", { mediaId, episode, provider: "", player: "builtin", refresh: true })
+                .then(res => {
+                    if (res.action !== "builtin" || !res.sources?.length) throw new Error("no direct link found")
+                    sourceError.current = ""
+                    setSources(res.sources)
+                    setSourceIdx(0)
+                    applyStreamSubs(res.sources[0])
+                })
+                .catch((e: any) => {
+                    setLoading(false)
+                    setError(`None of the sources could be played.${sourceError.current ? ` ${sourceError.current}` : ` ${e?.message ?? ""}`}`)
+                })
         } else setError(sources.length > 1 ? `None of the ${sources.length} sources could be played.${sourceError.current ? ` ${sourceError.current}` : ""}` : `This video could not be played.${sourceError.current ? ` ${sourceError.current}` : ""}`)
     }
 

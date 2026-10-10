@@ -490,3 +490,38 @@ func TestProviderInstallsFromLAN(t *testing.T) {
 		t.Fatalf("kept: %v", repos)
 	}
 }
+
+// A play request with refresh asks the providers again rather than using
+// the links found a moment ago (they expire); its sources can be converted
+// (a "remote:" path), except HLS.
+func TestProviderPlayRefresh(t *testing.T) {
+	s := newProvidersServer(t)
+	addon := installTestAddon(t, s)
+	count := func() int {
+		addon.mu.Lock()
+		defer addon.mu.Unlock()
+		n := 0
+		for _, p := range addon.paths {
+			if p == "/stream/movie/tt0468569.json" {
+				n++
+			}
+		}
+		return n
+	}
+	var played struct {
+		Action  string
+		Sources []struct{ OriginalURL, Remote string }
+	}
+	decodeBody(t, do(s, "POST", "/api/providers/play", local, jsonBody(t, map[string]any{"mediaId": 155, "player": "builtin"}), nil), &played)
+	decodeBody(t, do(s, "POST", "/api/providers/play", local, jsonBody(t, map[string]any{"mediaId": 155, "player": "builtin"}), nil), &played)
+	if n := count(); n != 1 {
+		t.Fatalf("asked %d times for two plays a moment apart", n)
+	}
+	decodeBody(t, do(s, "POST", "/api/providers/play", local, jsonBody(t, map[string]any{"mediaId": 155, "player": "builtin", "refresh": true}), nil), &played)
+	if n := count(); n != 2 || played.Action != "builtin" || len(played.Sources) == 0 {
+		t.Fatalf("refresh: asked %d times, %+v", n, played)
+	}
+	if src := played.Sources[0]; !strings.HasPrefix(src.Remote, stream.RemotePrefix) || src.OriginalURL != "https://cdn.example/dk.1080p.mp4" {
+		t.Fatalf("source: %+v", src)
+	}
+}

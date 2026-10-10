@@ -147,7 +147,7 @@ func ServeProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad url", http.StatusBadRequest)
 		return
 	}
-	target := string(rawU)
+	target := CleanLink(string(rawU))
 	tu, err := url.Parse(target)
 	if err != nil || (tu.Scheme != "http" && tu.Scheme != "https") {
 		http.Error(w, "bad url", http.StatusBadRequest)

@@ -188,7 +188,7 @@ func (a *App) resolveStreamDownload(ctx context.Context, it *downloads.Item) (*d
 	if err != nil {
 		return nil, err
 	}
-	r := &downloads.Resolved{URL: s.URL}
+	r := &downloads.Resolved{URL: stream.CleanLink(s.URL)}
 	switch s.Type {
 	case providers.StreamMKV, providers.StreamWebM:
 		r.Container = s.Type // kept as it is

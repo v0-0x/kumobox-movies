@@ -169,10 +169,14 @@ func serveRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := fetchRemote(r.Context(), r.Method, src, r.Header.Get("Range"))
 	if err != nil {
+		log.Printf("stream relay: %s: %v", hostOf(src.url), err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		log.Printf("stream relay: %s answered %s", hostOf(src.url), resp.Status)
+	}
 	for _, k := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified", "ETag"} {
 		if v := resp.Header.Get(k); v != "" {
 			w.Header().Set(k, v)
@@ -184,9 +188,18 @@ func serveRelay(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// hostOf is a link's host, for the logs (links often carry tokens).
+func hostOf(link string) string {
+	if u, err := url.Parse(CleanLink(link)); err == nil {
+		return u.Host
+	}
+	return "?"
+}
+
 // fetchRemote requests a stream's link the way the stream proxy does.
 func fetchRemote(ctx context.Context, method string, src *remoteSource, rng string) (*http.Response, error) {
-	u, err := url.Parse(src.url)
+	link := CleanLink(src.url)
+	u, err := url.Parse(link)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, errors.New("not a web link")
 	}
@@ -194,7 +207,7 @@ func fetchRemote(ctx context.Context, method string, src *remoteSource, rng stri
 	if strings.EqualFold(u.Hostname(), "localhost") && !local {
 		return nil, errors.New("forbidden")
 	}
-	req, err := http.NewRequestWithContext(ctx, method, src.url, nil)
+	req, err := http.NewRequestWithContext(ctx, method, link, nil)
 	if err != nil {
 		return nil, err
 	}
