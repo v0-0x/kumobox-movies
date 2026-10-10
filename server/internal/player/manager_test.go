@@ -450,6 +450,42 @@ func TestBuiltinStartsWatchingOncePerViewing(t *testing.T) {
 	}
 }
 
+// What the in-app player's viewings did is forgotten a day after their
+// last report, so it doesn't pile up with every episode watched; viewings
+// still going are kept.
+func TestBuiltinViewingsForgotten(t *testing.T) {
+	m, _ := newTestManager(t, nil)
+	m.started = func(int, int) {}
+	view := func(mediaID, episode, end int) {
+		m.ResetBuiltinProgress(mediaID, episode, end)
+		m.ReportProgress(ProgressReport{MediaID: mediaID, Episode: episode, Position: 600, Duration: 1400, Source: "stream"})
+	}
+	view(3, 1001, 1002) // a two-episode file
+	view(3, 1003, 0)
+	view(4, 1, 0)
+	// 1001's viewing was a day and more ago, 1003's an hour ago.
+	m.builtinMu.Lock()
+	m.builtinSeen[episodeKey{3, 1001}] = time.Now().Add(-builtinForgetAfter - time.Minute)
+	m.builtinSeen[episodeKey{3, 1003}] = time.Now().Add(-time.Hour)
+	m.builtinMu.Unlock()
+
+	m.ResetBuiltinProgress(5, 1, 0) // a new viewing
+	m.builtinMu.Lock()
+	defer m.builtinMu.Unlock()
+	old := episodeKey{3, 1001}
+	if m.builtinStarted[old] || m.builtinEnd[old] != 0 || !m.builtinSeen[old].IsZero() {
+		t.Error("the day-old viewing is remembered")
+	}
+	for _, k := range []episodeKey{{3, 1003}, {4, 1}} {
+		if !m.builtinStarted[k] {
+			t.Errorf("viewing %v forgotten", k)
+		}
+	}
+	if len(m.builtinSeen) != 3 {
+		t.Errorf("%d viewings remembered, want 3", len(m.builtinSeen))
+	}
+}
+
 // mpv reports the position all the time: the title goes on the watching
 // list once per viewing (mpv session), from 10 s in. A resumed session
 // starts out at its resume position, which counts once mpv has loaded the

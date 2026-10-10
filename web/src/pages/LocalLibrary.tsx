@@ -14,7 +14,7 @@ import { usePlay } from "@/lib/play"
 import { useCollection, useEpisodeMarker, useLibraryTitles, useScan, useSharedLibraries, useStatus } from "@/lib/queries"
 import { scanStore, useStore } from "@/lib/store"
 import type { LibraryTitle, LocalFile } from "@/lib/types"
-import { banner, cn, cover, entryUrl, formatBytes, formatLabel, LIST_STATUS, relativeTime, title, year } from "@/lib/utils"
+import { cn, cover, entryUrl, formatBytes, formatLabel, LIST_STATUS, poster, relativeTime, title, year } from "@/lib/utils"
 
 // "Local library": only movies and shows that have files on this computer
 // (or on another KumoBox sharing its library). The server sums each title's
@@ -270,7 +270,7 @@ export default function LocalLibraryPage() {
                                 return (
                                     <EpisodeCard
                                         key={`${m.id}:${latest}`}
-                                        image={banner(m) || cover(m)}
+                                        image={m.bannerImage || cover(m)}
                                         label={show ? formatKey(play.episode) : "Movie"}
                                         title={title(m)}
                                         subtitle={`${show ? episodeRanges(keys) : year(m) || "Movie"} · added ${relativeTime(latest)}`}
@@ -382,7 +382,7 @@ function LibraryRow({ item: t, trusted, onOpen, onPlay }: { item: LibraryTitle; 
         <div className="card overflow-hidden">
             <div className="flex items-center gap-4 p-3 pr-4">
                 <Link to={entryUrl(m)} className="shrink-0">
-                    <img src={cover(m)} alt="" loading="lazy" className="h-24 w-16 rounded-lg object-cover ring-1 ring-line" style={{ backgroundColor: m.coverImage?.color || undefined }} />
+                    <img {...poster(m, 64)} alt="" loading="lazy" decoding="async" className="h-24 w-16 rounded-lg object-cover ring-1 ring-line" style={{ backgroundColor: m.coverImage?.color || undefined }} />
                 </Link>
                 <div className="min-w-0 flex-1">
                     <Link to={entryUrl(m)} className="line-clamp-1 text-[15px] font-semibold hover:underline">

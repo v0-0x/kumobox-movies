@@ -1,5 +1,5 @@
 import { Check, CheckCheck, Clock, HardDrive, Minus, Play } from "lucide-react"
-import { cn, formatDuration, img } from "@/lib/utils"
+import { backdrop, cn, formatDuration } from "@/lib/utils"
 import { Tooltip } from "./ui"
 
 type Props = {
@@ -45,9 +45,10 @@ export function EpisodeCard({ image, label, title, subtitle, runtime, watched, h
             <div className="relative aspect-video overflow-hidden rounded-lg bg-surface-2">
                 {image ? (
                     <img
-                        src={img(image)}
+                        {...backdrop(image, large ? 400 : 300)}
                         alt=""
                         loading="lazy"
+                        decoding="async"
                         className={cn(
                             "size-full object-cover transition-[filter,opacity] duration-300 group-hover/ep:brightness-[0.8]",
                             blur && !watched && "scale-110 blur-xl",

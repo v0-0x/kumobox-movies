@@ -256,6 +256,40 @@ func TestStreamsTimeout(t *testing.T) {
 	}
 }
 
+// Results are dropped once expired, without waiting for another search.
+func TestStreamsCacheExpires(t *testing.T) {
+	p := &fakeProvider{id: "p", name: "P", streams: []providers.Stream{{URL: "https://p.example/x.mp4"}}}
+	s := newTestService(Options{}, p)
+	now := time.Unix(1_700_000_000, 0)
+	s.now = func() time.Time { return now }
+	var expire []func()
+	s.afterFunc = func(d time.Duration, f func()) {
+		if d != DefaultTTL {
+			t.Errorf("expires after %s", d)
+		}
+		expire = append(expire, f)
+	}
+	if _, err := s.Streams(context.Background(), movie(), 1, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(expire) != 1 {
+		t.Fatalf("%d expiries scheduled", len(expire))
+	}
+	// While fresh (asked for again since: the older search's expiry comes
+	// first), it's kept.
+	expire[0]()
+	if len(s.cache) != 1 {
+		t.Fatal("dropped before its time")
+	}
+	now = now.Add(DefaultTTL)
+	expire[0]()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.cache) != 0 {
+		t.Errorf("%d results kept after they expired", len(s.cache))
+	}
+}
+
 func TestStreamsCache(t *testing.T) {
 	p := &fakeProvider{id: "p", name: "P", streams: []providers.Stream{{URL: "https://p.example/x.mp4"}}}
 	q := &fakeProvider{id: "q", name: "Q"}

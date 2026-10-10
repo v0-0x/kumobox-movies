@@ -102,6 +102,12 @@ type Runtime struct {
 	cancel context.CancelFunc
 	closed atomic.Bool
 
+	// calls counts the calls into the extension in progress, lastUsed is
+	// when one last started or ended (unix nanoseconds): a provider's
+	// runtime nobody used for a while is unloaded (idle.go).
+	calls    atomic.Int32
+	lastUsed atomic.Int64
+
 	prefs   map[string]string
 	store   *MemStore
 	storage *Storage
@@ -156,6 +162,7 @@ func NewRuntime(m *Manifest, prog *goja.Program, opts RuntimeOptions) (*Runtime,
 	if r.prefs == nil {
 		r.prefs = map[string]string{}
 	}
+	r.touch()
 	loop.Start()
 
 	errCh := make(chan error, 1)
@@ -294,11 +301,14 @@ func (r *Runtime) Logs() []LogLine {
 	return append([]LogLine(nil), r.logs...)
 }
 
+// maxLogLines is how many console lines an extension keeps.
+const maxLogLines = 300
+
 func (r *Runtime) log(level, msg string) {
 	r.logMu.Lock()
 	r.logs = append(r.logs, LogLine{Time: time.Now().Unix(), Level: level, Message: msg})
-	if len(r.logs) > 300 {
-		r.logs = r.logs[len(r.logs)-300:]
+	if len(r.logs) > maxLogLines {
+		r.logs = r.logs[len(r.logs)-maxLogLines:]
 	}
 	r.logMu.Unlock()
 	if level == "error" || level == "warn" {
@@ -449,6 +459,7 @@ func intProp(o *goja.Object, name string) int64 {
 // CallProvider instantiates the global Provider class and calls a method,
 // awaiting Promises. The result is returned as JSON.
 func (r *Runtime) CallProvider(ctx context.Context, method string, args ...any) (json.RawMessage, error) {
+	defer r.use()()
 	type result struct {
 		raw json.RawMessage
 		err error
@@ -516,6 +527,7 @@ func (r *Runtime) CallProvider(ctx context.Context, method string, args ...any) 
 
 // HasMethod reports whether Provider.prototype has the method.
 func (r *Runtime) HasMethod(method string) bool {
+	defer r.use()()
 	ch := make(chan bool, 1)
 	ok := r.RunOnLoop(func(vm *goja.Runtime) {
 		has := false

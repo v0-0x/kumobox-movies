@@ -2,7 +2,7 @@ import { Search } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useCollection, useSearch } from "@/lib/queries"
 import type { Media } from "@/lib/types"
-import { cn, cover, mediaSummary, originalTitle, title } from "@/lib/utils"
+import { cn, mediaSummary, originalTitle, poster, title } from "@/lib/utils"
 import { Dialog, ErrorState, Input, Spinner, Tabs } from "./ui"
 
 // Search TMDB (and the user's list) to pick a movie or show. type limits
@@ -83,7 +83,7 @@ export function MediaPicker({
                         }}
                         className="flex items-center gap-4 rounded-xl p-2 text-left transition hover:bg-white/[0.06]"
                     >
-                        <img src={cover(m)} alt="" className="h-16 w-11 rounded-lg object-cover" />
+                        <img {...poster(m, 44)} alt="" className="h-16 w-11 rounded-lg object-cover" />
                         <div className="min-w-0 flex-1">
                             <p className="truncate font-semibold">{title(m)}</p>
                             <p className="truncate text-sm text-muted">

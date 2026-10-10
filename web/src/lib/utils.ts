@@ -31,6 +31,39 @@ export function cover(m?: Media | null) {
     return img(m?.coverImage?.extraLarge || m?.coverImage?.large || m?.coverImage?.medium || "")
 }
 
+// The poster attributes of an <img> shown `width` CSS pixels wide: the sizes
+// TMDB has (w342, w500, w780) in srcSet, so the browser loads the smallest
+// one that is sharp on this screen. Cards and thumbnails don't need the
+// biggest: decoded, a w780 poster takes 3.6 MB of memory, a w342 one 0.7 MB.
+export function poster(m: Media | null | undefined, width: number) {
+    const c = m?.coverImage
+    const sizes: [string | undefined, number][] = [
+        [c?.medium, 342],
+        [c?.large, 500],
+        [c?.extraLarge, 780],
+    ]
+    const set = sizes.filter(([u]) => u).map(([u, w]) => `${img(u)} ${w}w`)
+    if (set.length < 2) return { src: cover(m) }
+    return { src: img(c?.large || c?.extraLarge), srcSet: set.join(", "), sizes: `${width}px`, onError: withoutSrcSet }
+}
+
+// The attributes of an <img> showing a TMDB backdrop (w1280) `width` CSS
+// pixels wide: with the smaller sizes TMDB has (w300, w780), for the
+// browser to load the one the screen needs. Decoded, a w1280 backdrop takes
+// 3.7 MB of memory, a w300 one 0.3 MB.
+export function backdrop(url: string | undefined, width: number) {
+    const full = img(url)
+    if (!url || !url.includes("/w1280/")) return { src: full }
+    const at = (size: string) => img(url.replace("/w1280/", `/${size}/`))
+    return { src: full, srcSet: `${at("w300")} 300w, ${at("w780")} 780w, ${full} 1280w`, sizes: `${width}px`, onError: withoutSrcSet }
+}
+
+// A size picked from srcSet that can't be loaded (offline, and never
+// downloaded) falls back to src: the size KumoBox keeps for offline use.
+function withoutSrcSet(e: React.SyntheticEvent<HTMLImageElement>) {
+    e.currentTarget.removeAttribute("srcset")
+}
+
 export function banner(m?: Media | null) {
     return img(m?.bannerImage || m?.coverImage?.extraLarge || "")
 }

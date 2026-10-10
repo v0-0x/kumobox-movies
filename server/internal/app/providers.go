@@ -41,7 +41,14 @@ type ProviderInfo struct {
 // collectionTTL is how long an addon collection is kept.
 const collectionTTL = 30 * time.Minute
 
+// collectionCache keeps the addon collections downloaded lately. A
+// collection holds hundreds of manifests (megabytes): it's forgotten once
+// stale rather than kept until it's asked for again.
 type collectionCache struct {
+	// Replaced in tests.
+	now       func() time.Time
+	afterFunc func(time.Duration, func())
+
 	mu      sync.Mutex
 	entries map[string]collectionEntry
 }
@@ -49,6 +56,40 @@ type collectionCache struct {
 type collectionEntry struct {
 	addons []stremio.Addon
 	at     time.Time
+}
+
+func newCollectionCache() *collectionCache {
+	return &collectionCache{
+		now:       time.Now,
+		afterFunc: func(d time.Duration, f func()) { time.AfterFunc(d, f) },
+		entries:   map[string]collectionEntry{},
+	}
+}
+
+// get returns the addons of the collection at url, when they're fresh.
+func (c *collectionCache) get(url string) ([]stremio.Addon, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[url]
+	if !ok || c.now().Sub(e.at) > collectionTTL {
+		return nil, false
+	}
+	return e.addons, true
+}
+
+// put keeps the addons of the collection at url for collectionTTL.
+func (c *collectionCache) put(url string, addons []stremio.Addon) {
+	at := c.now()
+	c.mu.Lock()
+	c.entries[url] = collectionEntry{addons: addons, at: at}
+	c.mu.Unlock()
+	c.afterFunc(collectionTTL, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if e, ok := c.entries[url]; ok && e.at.Equal(at) { // not downloaded again since
+			delete(c.entries, url)
+		}
+	})
 }
 
 // streamOptions are the settings the stream service reads.
@@ -71,7 +112,7 @@ func (a *App) wireProviders() error {
 		return err
 	}
 	a.Stremio = store
-	a.collections = &collectionCache{entries: map[string]collectionEntry{}}
+	a.collections = newCollectionCache()
 	store.OnChange = func() {
 		a.Stream.Invalidate()
 		a.Hub.Publish(providersUpdated, nil)
@@ -160,21 +201,16 @@ func (a *App) ProviderInfos() []ProviderInfo {
 // StremioCollection downloads an addon collection (kept half an hour) and
 // marks the addons installed.
 func (a *App) StremioCollection(ctx context.Context, url string, refresh bool) ([]stremio.Addon, error) {
-	c := a.collections
-	c.mu.Lock()
-	e, ok := c.entries[url]
-	c.mu.Unlock()
-	if !ok || refresh || time.Since(e.at) > collectionTTL {
+	addons, ok := a.collections.get(url)
+	if !ok || refresh {
 		list, err := a.Stremio.Client().FetchCollection(ctx, url)
 		if err != nil {
 			return nil, err
 		}
-		e = collectionEntry{addons: list, at: time.Now()}
-		c.mu.Lock()
-		c.entries[url] = e
-		c.mu.Unlock()
+		a.collections.put(url, list)
+		addons = list
 	}
-	return a.Stremio.MarkInstalled(append([]stremio.Addon(nil), e.addons...)), nil
+	return a.Stremio.MarkInstalled(append([]stremio.Addon(nil), addons...)), nil
 }
 
 // resolveStreamDownload finds a fresh link for a queued download: from the

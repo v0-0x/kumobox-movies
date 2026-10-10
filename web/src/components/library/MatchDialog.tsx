@@ -5,7 +5,7 @@ import { toast } from "@/lib/toast"
 import { api } from "@/lib/api"
 import { episodeKey, episodeKeys, formatKey, keyAtIndex, MOVIE_EPISODE, mediaIsShow, splitKey } from "@/lib/ids"
 import type { LocalFile, Media } from "@/lib/types"
-import { cn, cover, mediaSummary, title } from "@/lib/utils"
+import { cn, mediaSummary, poster, title } from "@/lib/utils"
 import { MediaPicker } from "../MediaPicker"
 import { Button, Dialog, Input } from "../ui"
 
@@ -228,7 +228,7 @@ export function MatchDialog({
         >
             {target && (
                 <div className="flex items-center gap-4 rounded-xl border border-line bg-surface-2/60 p-3">
-                    <img src={cover(target)} alt="" className="h-20 w-14 rounded-lg object-cover" />
+                    <img {...poster(target, 56)} alt="" className="h-20 w-14 rounded-lg object-cover" />
                     <div className="min-w-0">
                         <p className="truncate font-semibold">{title(target)}</p>
                         <p className="text-sm text-muted">{mediaSummary(target)}</p>

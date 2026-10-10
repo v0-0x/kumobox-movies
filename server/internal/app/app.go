@@ -314,7 +314,9 @@ func (a *App) progressFromHistory(finished []history.Entry) {
 }
 
 // PrefetchCollectionArt downloads covers and banners of everything in the
-// list and library so they are available offline.
+// list and library so they are available offline. Cards show the medium
+// or large cover (the size the screen needs), title pages up to the extra
+// large one.
 func (a *App) PrefetchCollectionArt(view *library.CollectionView) {
 	if view == nil {
 		return
@@ -325,7 +327,8 @@ func (a *App) PrefetchCollectionArt(view *library.CollectionView) {
 			if it.Media == nil {
 				continue
 			}
-			urls = append(urls, it.Media.CoverImage.ExtraLarge, it.Media.CoverImage.Large, it.Media.BannerImage)
+			c := it.Media.CoverImage
+			urls = append(urls, c.Medium, c.Large, c.ExtraLarge, it.Media.BannerImage)
 		}
 	}
 	for _, l := range view.Lists {
@@ -352,7 +355,8 @@ func (a *App) PrefetchDiscoverArt(d *catalog.Discover) {
 	}
 	for _, row := range [][]*catalog.Media{d.Trending, d.PopularMovies, d.PopularShows, d.NowPlaying, d.OnTheAir, d.TopRatedMovies, d.TopRatedShows, d.Upcoming} {
 		for _, m := range row[:min(len(row), 8)] {
-			urls = append(urls, m.CoverImage.ExtraLarge)
+			// The sizes cards load (the screen's density picks one).
+			urls = append(urls, m.CoverImage.Medium, m.CoverImage.Large)
 		}
 	}
 	a.Images.Prefetch(urls...)
@@ -363,7 +367,8 @@ func (a *App) PrefetchEntryArt(e *library.EntryView) {
 	if e == nil || e.Media == nil {
 		return
 	}
-	urls := []string{e.Media.CoverImage.ExtraLarge, e.Media.CoverImage.Large, e.Media.BannerImage, e.Images.Fanart, e.Images.Banner, e.Images.Poster, e.Images.Clearlogo}
+	c := e.Media.CoverImage
+	urls := []string{c.Medium, c.Large, c.ExtraLarge, e.Media.BannerImage, e.Images.Fanart, e.Images.Banner, e.Images.Poster, e.Images.Clearlogo}
 	for _, ep := range e.Episodes {
 		urls = append(urls, ep.Image)
 	}

@@ -215,7 +215,12 @@ func (m *Manager) launchPlugin(ctx context.Context, l *Loaded) {
 	l.mu.Lock()
 	cfg := l.UserConfig
 	l.mu.Unlock()
-	payload, prefs, cfgErr := ApplyUserConfig(man, l.payload, &cfg)
+	code, err := l.code()
+	if err != nil {
+		fail(err)
+		return
+	}
+	payload, prefs, cfgErr := ApplyUserConfig(man, code, &cfg)
 	l.setConfigError(cfgErr)
 	prog, err := Compile(man, payload)
 	if err != nil {
