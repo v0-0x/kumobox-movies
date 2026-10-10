@@ -54,6 +54,8 @@ type Service struct {
 
 	options func() Options
 	now     func() time.Time
+	// afterFunc runs a function later (time.AfterFunc; replaced in tests).
+	afterFunc func(time.Duration, func())
 
 	mu      sync.Mutex
 	cache   map[string]*cached
@@ -81,7 +83,10 @@ func NewService(opts func() Options) *Service {
 	if opts == nil {
 		opts = func() Options { return Options{} }
 	}
-	return &Service{options: opts, now: time.Now, cache: map[string]*cached{}, flights: map[string]*flight{}}
+	return &Service{
+		options: opts, now: time.Now, afterFunc: func(d time.Duration, f func()) { time.AfterFunc(d, f) },
+		cache: map[string]*cached{}, flights: map[string]*flight{},
+	}
 }
 
 // Stream kinds: how a stream plays.
@@ -347,6 +352,14 @@ func (s *Service) lookup(ctx context.Context, key string, refresh bool, fn func(
 			if len(res.streams) > 0 || len(res.errors) == 0 {
 				s.cache[key] = res
 				s.pruneLocked()
+				// Dropped once expired, also when no other search comes:
+				// the streams of a few titles from many providers are
+				// megabytes.
+				s.afterFunc(s.ttl(), func() {
+					s.mu.Lock()
+					s.pruneLocked()
+					s.mu.Unlock()
+				})
 			}
 			s.mu.Unlock()
 			close(f.done)
