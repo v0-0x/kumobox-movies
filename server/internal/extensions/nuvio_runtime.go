@@ -234,6 +234,7 @@ func installNuvioCrypto(vm *goja.Runtime) {
 // callNuvio calls the provider's getStreams(tmdbId, mediaType, season,
 // episode) and returns its result as JSON.
 func (r *Runtime) callNuvio(ctx context.Context, tmdbID, mediaType string, season, episode int) (json.RawMessage, error) {
+	defer r.use()()
 	type result struct {
 		raw json.RawMessage
 		err error

@@ -37,7 +37,9 @@ type Loaded struct {
 	removed     bool          // uninstalled or replaced by an update
 	err         string
 	configError string
-	lastLogs    []LogLine // output of a plugin that failed to start
+	// lastLogs is the output of a plugin that failed to start, or of a
+	// provider's runtimes unloaded while idle (idle.go).
+	lastLogs []LogLine
 }
 
 // runtimeStart is a provider runtime start in progress. Concurrent callers
@@ -55,6 +57,7 @@ type runtimeStart struct {
 func (l *Loaded) Runtime() (*Runtime, error) {
 	l.mu.Lock()
 	if rt := l.rt; rt != nil {
+		rt.touch() // about to be used: not idle
 		l.mu.Unlock()
 		return rt, nil
 	}
@@ -100,6 +103,9 @@ func (l *Loaded) Runtime() (*Runtime, error) {
 			rt.Close()
 		}
 		rt, err = nil, errStopped
+	}
+	if rt != nil {
+		l.mgr.startUnloading()
 	}
 	s.rt, s.err = rt, err
 	close(s.done)
@@ -183,6 +189,13 @@ type Manager struct {
 
 	// loadTimeout bounds loading a payload, and a plugin's init.
 	loadTimeout time.Duration
+
+	// idleAfter is how long an unused provider's runtime is kept (idle.go;
+	// never unloaded when 0). quit ends the loop that unloads them.
+	idleAfter time.Duration
+	unloading sync.Once
+	quit      chan struct{}
+	quitOnce  sync.Once
 }
 
 func NewManager(d *db.DB, s *config.Store, hub *events.Hub) *Manager {
@@ -190,7 +203,7 @@ func NewManager(d *db.DB, s *config.Store, hub *events.Hub) *Manager {
 		db: d, settings: s, hub: hub, fetcher: NewFetcher(),
 		exts: map[string]*Loaded{}, stores: map[string]*MemStore{},
 		plugins: map[string]*PluginHost{}, pluginSlots: map[string]*pluginSlot{},
-		loadTimeout: defaultLoadTimeout,
+		loadTimeout: defaultLoadTimeout, idleAfter: defaultIdleAfter, quit: make(chan struct{}),
 	}
 }
 
@@ -505,7 +518,8 @@ func (m *Manager) Logs(id string) []LogLine {
 	rt, last := l.rt, append([]LogLine(nil), l.lastLogs...)
 	l.mu.Unlock()
 	if rt != nil {
-		return rt.Logs()
+		// A provider unloaded while idle and started again: both runs.
+		return joinLogs(last, rt.Logs())
 	}
 	return last
 }
@@ -728,6 +742,7 @@ func (m *Manager) OnlineStreamProvider(id string) (*OnlineStreamProvider, error)
 // Shutdown stops every runtime (in parallel: each stop is bounded, but a
 // few stuck extensions shouldn't add up).
 func (m *Manager) Shutdown() {
+	m.quitOnce.Do(func() { close(m.quit) })
 	m.mu.RLock()
 	list := make([]*Loaded, 0, len(m.exts))
 	for _, l := range m.exts {
