@@ -423,3 +423,38 @@ func TestInvalidIDs(t *testing.T) {
 		t.Errorf("Media(-3): %v", err)
 	}
 }
+
+// Find returns the entry Entries has for a title (custom lists and entries
+// without their media left out, the first one when a title is listed
+// twice), without allocating.
+func TestCollectionFind(t *testing.T) {
+	m := func(id int) *Media { return &Media{ID: id} }
+	first := &ListEntry{MediaID: 1, Status: "CURRENT", Media: m(1)}
+	c := &Collection{Lists: []*List{
+		{Name: "Custom", IsCustomList: true, Entries: []*ListEntry{{MediaID: 3, Media: m(3)}}},
+		{Name: "Watching", Entries: []*ListEntry{{MediaID: 2}, first}},
+		{Name: "Watched", Entries: []*ListEntry{{MediaID: 1, Status: "COMPLETED", Media: m(1)}, {MediaID: 2, Media: m(2)}}},
+	}}
+	for _, id := range []int{1, 2, 3, 4} {
+		var want *ListEntry
+		for _, e := range c.Entries() {
+			if e.MediaID == id {
+				want = e
+				break
+			}
+		}
+		if got := c.Find(id); got != want {
+			t.Errorf("Find(%d) = %+v, want %+v", id, got, want)
+		}
+	}
+	if c.Find(1) != first {
+		t.Error("not the first entry")
+	}
+	if n := testing.AllocsPerRun(100, func() { c.Find(2) }); n != 0 {
+		t.Errorf("Find allocates %v times", n)
+	}
+	var none *Collection
+	if none.Find(1) != nil {
+		t.Error("found in a nil collection")
+	}
+}

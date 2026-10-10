@@ -556,11 +556,22 @@ func (c *Collection) Entries() []*ListEntry {
 	return out
 }
 
-// Find returns the entry for a media id.
+// Find returns the entry for a media id: the one Entries has. It looks
+// through the lists without building Entries' slice, which for a list of
+// a thousand titles looked up one by one (a page of the diary, a batch of
+// titles) made hundreds of megabytes of garbage.
 func (c *Collection) Find(mediaID int) *ListEntry {
-	for _, e := range c.Entries() {
-		if e.MediaID == mediaID {
-			return e
+	if c == nil {
+		return nil
+	}
+	for _, l := range c.Lists {
+		if l.IsCustomList {
+			continue
+		}
+		for _, e := range l.Entries {
+			if e.MediaID == mediaID && e.Media != nil {
+				return e
+			}
 		}
 	}
 	return nil
