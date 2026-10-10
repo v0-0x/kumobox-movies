@@ -208,3 +208,23 @@ func TestServiceMatches(t *testing.T) {
 		t.Fatalf("after the manual match: %+v %v", res, err)
 	}
 }
+
+// An extension's subtitles reach mpv's --sub-file: like every other
+// provider's, only web links are kept, never paths on this computer.
+func TestServerStreamsKeepsOnlyWebSubtitles(t *testing.T) {
+	srv := &extensions.OSServer{Server: "s", VideoSources: []extensions.OSVideoSource{{
+		URL: "https://cdn.example/v.m3u8",
+		Subtitles: []extensions.OSSubtitle{
+			{URL: "https://cdn.example/en.vtt", Language: "en"},
+			{URL: "/tmp/local.srt", Language: "fr"},
+			{URL: "not a link", Language: "de"},
+		},
+	}}}
+	got := serverStreams("Title", srv, false)
+	if len(got) != 1 {
+		t.Fatalf("streams = %d, want 1", len(got))
+	}
+	if subs := got[0].Subtitles; len(subs) != 1 || subs[0].URL != "https://cdn.example/en.vtt" {
+		t.Fatalf("subtitles = %+v, want only the https one", subs)
+	}
+}

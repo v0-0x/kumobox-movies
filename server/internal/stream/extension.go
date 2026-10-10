@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -385,13 +386,25 @@ func serverStreams(title string, srv *extensions.OSServer, dub bool) []providers
 			}
 		}
 		for _, sub := range vs.Subtitles {
-			if sub.URL != "" {
+			// mpv loads these as it starts (--sub-file): web links only,
+			// as from every other provider, never a path on this computer.
+			if isWebLink(sub.URL) {
 				s.Subtitles = append(s.Subtitles, providers.Subtitle{URL: sub.URL, Language: sub.Language})
 			}
 		}
 		out = append(out, s)
 	}
 	return out
+}
+
+// isWebLink reports whether raw is an http(s) address with a host.
+func isWebLink(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	s := strings.ToLower(u.Scheme)
+	return s == "http" || s == "https"
 }
 
 func containsFold(list []string, s string) bool {
