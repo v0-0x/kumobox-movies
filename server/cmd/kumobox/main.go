@@ -38,6 +38,7 @@ func main() {
 		fmt.Println(config.AppName, config.AppVersion)
 		return
 	}
+	limitMemory(os.Getenv)
 	// Whatever KumoBox starts (ffmpeg, mpv, yt-dlp) ends with it, even when
 	// it's killed.
 	if err := util.BindChildren(); err != nil {
