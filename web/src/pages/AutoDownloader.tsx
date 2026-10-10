@@ -9,7 +9,7 @@ import { api } from "@/lib/api"
 import { formatKey, mediaIsShow, mediaRef, seasonEpisodeCount, splitKey } from "@/lib/ids"
 import { fetchEntry, useAutoItems, useAutoRules, useCollection, useRuleWanted, useSaveSettings, useStatus } from "@/lib/queries"
 import type { AutoItem, AutoRule, AutoRunReport, Media } from "@/lib/types"
-import { cn, cover, entryUrl, relativeTime, title } from "@/lib/utils"
+import { cn, entryUrl, poster, relativeTime, title } from "@/lib/utils"
 import { PathInput } from "./settings/parts"
 
 const RESOLUTIONS = [
@@ -219,7 +219,7 @@ function RuleCard({ rule, shows, onEdit }: { rule: AutoRule; shows: Media[]; onE
     return (
         <div className={cn("card flex gap-4 p-3 pr-4", !rule.enabled && "opacity-70")}>
             <Link to={entryUrl({ id: rule.mediaId })} className="shrink-0">
-                {media ? <img src={cover(media)} alt="" className="h-24 w-16 rounded-lg object-cover" /> : <div className="h-24 w-16 rounded-lg bg-white/[0.05]" />}
+                {media ? <img {...poster(media, 64)} alt="" className="h-24 w-16 rounded-lg object-cover" /> : <div className="h-24 w-16 rounded-lg bg-white/[0.05]" />}
             </Link>
             <div className="min-w-0 flex-1">
                 <div className="flex items-start gap-2">

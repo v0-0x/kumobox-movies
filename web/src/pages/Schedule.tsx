@@ -7,7 +7,7 @@ import { usePersisted } from "@/lib/hooks"
 import { formatKey, splitKey } from "@/lib/ids"
 import { useCollection, useSchedule } from "@/lib/queries"
 import type { ListEntry, ScheduleItem } from "@/lib/types"
-import { banner, cn, cover, LIST_STATUS, title } from "@/lib/utils"
+import { backdrop, cn, cover, LIST_STATUS, title } from "@/lib/utils"
 
 const DAY = 86400
 
@@ -141,14 +141,14 @@ function CalendarCard({ item, entry }: { item: ScheduleItem; entry?: ListEntry }
     const m = item.media
     const e = entry ?? m.mediaListEntry
     const watched = e?.status === "COMPLETED" || (e?.progress ?? 0) >= item.episode
-    const image = banner(m) || cover(m)
+    const image = m.bannerImage ? backdrop(m.bannerImage, 220) : { src: cover(m) }
     return (
         <Link
             to={`/entry?id=${m.id}&tab=episodes&season=${splitKey(item.episode)[0]}`}
             className="group card flex flex-col overflow-hidden p-0 transition hover:border-line-strong"
         >
             <div className="relative aspect-video bg-surface-3">
-                {image && <img src={image} alt="" loading="lazy" className="size-full object-cover transition-[filter] duration-300 group-hover:brightness-110" />}
+                {image.src && <img {...image} alt="" loading="lazy" decoding="async" className="size-full object-cover transition-[filter] duration-300 group-hover:brightness-110" />}
                 <span className="absolute bottom-1.5 left-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[11px] font-semibold text-white tabular-nums">{formatKey(item.episode)}</span>
                 {watched && (
                     <span className="absolute top-1.5 left-1.5 grid size-5 place-items-center rounded-full bg-emerald-500 text-white" aria-label="Watched">

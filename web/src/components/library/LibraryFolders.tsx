@@ -8,7 +8,7 @@ import { fileLabel } from "@/lib/files"
 import { mediaRef } from "@/lib/ids"
 import { useCollection, useLibraryFiles, useLibraryFolders, useStatus } from "@/lib/queries"
 import type { FolderInfo, LocalFile, Media } from "@/lib/types"
-import { cn, cover, formatBytes, plural, title } from "@/lib/utils"
+import { cn, formatBytes, plural, poster, title } from "@/lib/utils"
 import { Badge, Button, EmptyState, IconButton, Input, Tooltip } from "../ui"
 import { MatchDialog, naturalCompare } from "./MatchDialog"
 
@@ -291,7 +291,7 @@ function FolderRow({
                         <Badge tone="amber">Unmatched</Badge>
                     ) : primary || f.matches.length === 1 ? (
                         <Link to={`/entry?id=${f.matches[0].mediaId}`} className="flex min-w-0 items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-white/[0.05]">
-                            {primary && <img src={cover(primary)} alt="" className="h-9 w-6 rounded object-cover" />}
+                            {primary && <img {...poster(primary, 24)} alt="" className="h-9 w-6 rounded object-cover" />}
                             <span className="max-w-64 truncate text-sm text-fg/85">{primary ? title(primary) : mediaRef(f.matches[0].mediaId)}</span>
                         </Link>
                     ) : (

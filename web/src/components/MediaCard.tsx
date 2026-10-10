@@ -3,7 +3,7 @@ import { isValidElement, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { airedEpisodes, episodeIndex, formatKey, mediaIsShow, totalEpisodes } from "@/lib/ids"
 import type { ListEntry, Media } from "@/lib/types"
-import { airsIn, cn, cover, entryUrl, formatLabel, starText, title, year } from "@/lib/utils"
+import { airsIn, cn, cover, entryUrl, formatLabel, poster, starText, title, year } from "@/lib/utils"
 import { Dropdown, DropdownContent, DropdownTrigger, IconButton } from "./ui"
 
 type Props = {
@@ -43,9 +43,10 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
             <div className="relative aspect-[2/3] overflow-hidden rounded-lg bg-surface-2">
                 {cover(media) && (
                     <img
-                        src={cover(media)}
+                        {...poster(media, 220)}
                         alt=""
                         loading="lazy"
+                        decoding="async"
                         className="size-full object-cover transition-[filter] duration-300 group-hover/card:brightness-110"
                         style={{ backgroundColor: media.coverImage?.color || undefined }}
                     />

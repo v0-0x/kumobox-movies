@@ -17,7 +17,7 @@ import { airedEpisodes, episodeIndex, episodeKeyOf, formatKey, MOVIE_EPISODE, me
 import { usePlay } from "@/lib/play"
 import { useEntry, useEpisodeMarker, useStatus } from "@/lib/queries"
 import type { EntryView } from "@/lib/types"
-import { airsIn, banner, cleanDescription, cn, cover, externalLinks, img, originalTitle, runtimeLabel, statusLabel, title, year } from "@/lib/utils"
+import { airsIn, banner, cleanDescription, cn, externalLinks, img, originalTitle, poster, runtimeLabel, statusLabel, title, year } from "@/lib/utils"
 
 type Tab = "episodes" | "overview" | "stream" | "torrents"
 
@@ -166,7 +166,7 @@ function EntryHero({ entry, onTab }: { entry: EntryView; onTab: (t: Tab) => void
             </div>
             <div className="relative z-10 flex flex-col gap-8 px-6 pt-[200px] pb-8 md:flex-row md:px-8 xl:px-10">
                 <div className="w-40 shrink-0 md:w-52">
-                    <img src={cover(media)} alt="" className="aspect-[2/3] w-full rounded-lg object-cover shadow-2xl shadow-black/60 ring-1 ring-white/10 fade-in" />
+                    <img {...poster(media, 208)} alt="" className="aspect-[2/3] w-full rounded-lg object-cover shadow-2xl shadow-black/60 ring-1 ring-white/10 fade-in" />
                 </div>
                 <div className="flex min-w-0 flex-1 flex-col justify-end gap-4 fade-in">
                     <div>

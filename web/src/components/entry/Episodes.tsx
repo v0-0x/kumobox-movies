@@ -7,7 +7,7 @@ import { episodeKey, episodeKeyOf, formatKey, MOVIE_EPISODE, nextEpisode, splitK
 import { usePlay } from "@/lib/play"
 import { useEpisodeMarker, useEpisodes, useSeason, useStatus } from "@/lib/queries"
 import type { EntryView, Episode, EpisodeView, LocalFile, Season } from "@/lib/types"
-import { banner, cleanDescription, cover, formatBytes, formatDate, formatDuration, plural, today } from "@/lib/utils"
+import { backdrop, banner, cleanDescription, cover, formatBytes, formatDate, formatDuration, plural, today } from "@/lib/utils"
 import { Badge, Button, Dropdown, DropdownContent, DropdownItem, DropdownTrigger, Progress, Select, Skeleton, Tabs } from "../ui"
 
 // What a show's episodes are, from TMDB (season details) and the library
@@ -294,7 +294,7 @@ function Extras({ entry, extras }: { entry: EntryView; extras: EpisodeView[] }) 
                     <EpisodeCard
                         // A file holding two specials is listed for each.
                         key={`${x.file!.path}#${episodeKeyOf(x)}`}
-                        image={x.image || banner(media) || cover(media)}
+                        image={x.image || media.bannerImage || cover(media)}
                         title={x.title || x.file!.name}
                         subtitle={extraLabel(x)}
                         hasFile
@@ -344,7 +344,7 @@ export function MovieLibrary({ entry, onStream, onTorrents }: { entry: EntryView
         <section className="flex flex-col gap-6">
             <div className="card flex flex-wrap items-center gap-4 p-3 pr-4">
                 <button onClick={() => playLocal(f.path, media.id, MOVIE_EPISODE)} className="group relative aspect-video w-44 shrink-0 overflow-hidden rounded-md bg-surface-3" aria-label="Play">
-                    {(banner(media) || cover(media)) && <img src={banner(media) || cover(media)} alt="" className="size-full object-cover transition-[filter] group-hover:brightness-75" />}
+                    {(banner(media) || cover(media)) && <img {...(media.bannerImage ? backdrop(media.bannerImage, 176) : { src: cover(media) })} alt="" className="size-full object-cover transition-[filter] group-hover:brightness-75" />}
                     <span className="absolute inset-0 grid place-items-center opacity-0 transition-opacity group-hover:opacity-100">
                         <span className="grid size-9 place-items-center rounded-full bg-white/95 text-neutral-950">
                             <Play className="ml-0.5 size-4 fill-current" />
