@@ -164,9 +164,10 @@ type Manager struct {
 	gen uint64 // bumped whenever mpv is stopped; a pending auto play next checks it
 
 	builtinMu      sync.Mutex
-	builtinStarted map[episodeKey]bool // in-app player: list status already checked this viewing
-	builtinSent    map[episodeKey]bool // in-app player: progress already sent this viewing
-	builtinEnd     map[episodeKey]int  // in-app player: the last episode of the multi-episode file playing
+	builtinStarted map[episodeKey]bool      // in-app player: list status already checked this viewing
+	builtinSent    map[episodeKey]bool      // in-app player: progress already sent this viewing
+	builtinEnd     map[episodeKey]int       // in-app player: the last episode of the multi-episode file playing
+	builtinSeen    map[episodeKey]time.Time // in-app player: when the viewing was last opened or reported
 
 	// listMu serializes the list updates playback makes, so that the status
 	// set when an episode starts can't land after (and undo) the update made
@@ -188,7 +189,7 @@ type episodeKey struct{ mediaID, episode int }
 func NewManager(s *config.Store, h *history.Store, d *db.DB, p *catalog.Platform, hub *events.Hub) *Manager {
 	return &Manager{
 		settings: s, history: h, Tracks: NewTrackStore(d), platform: p, hub: hub, db: d,
-		builtinStarted: map[episodeKey]bool{}, builtinSent: map[episodeKey]bool{}, builtinEnd: map[episodeKey]int{},
+		builtinStarted: map[episodeKey]bool{}, builtinSent: map[episodeKey]bool{}, builtinEnd: map[episodeKey]int{}, builtinSeen: map[episodeKey]time.Time{},
 		launch: LaunchMpv, trackGuard: defaultTrackGuard, trackSettle: defaultTrackSettle,
 	}
 }
@@ -851,6 +852,7 @@ func (m *Manager) claimBuiltin(claims map[episodeKey]bool, mediaID, episode int)
 	m.builtinMu.Lock()
 	defer m.builtinMu.Unlock()
 	k := episodeKey{mediaID, episode}
+	m.builtinSeen[k] = time.Now()
 	if claims[k] {
 		return false
 	}
@@ -864,7 +866,9 @@ func (m *Manager) claimBuiltin(claims map[episodeKey]bool, mediaID, episode int)
 // (S01E01E02), 0 otherwise.
 func (m *Manager) ResetBuiltinProgress(mediaID, episode, end int) {
 	k := episodeKey{mediaID, episode}
+	now := time.Now()
 	m.builtinMu.Lock()
+	defer m.builtinMu.Unlock()
 	delete(m.builtinStarted, k)
 	delete(m.builtinSent, k)
 	if end > episode {
@@ -872,5 +876,19 @@ func (m *Manager) ResetBuiltinProgress(mediaID, episode, end int) {
 	} else {
 		delete(m.builtinEnd, k)
 	}
-	m.builtinMu.Unlock()
+	m.builtinSeen[k] = now
+	// Viewings nobody reported on for a day are over: forgotten, so the
+	// maps don't keep every episode watched while KumoBox runs.
+	for old, at := range m.builtinSeen {
+		if now.Sub(at) > builtinForgetAfter {
+			delete(m.builtinStarted, old)
+			delete(m.builtinSent, old)
+			delete(m.builtinEnd, old)
+			delete(m.builtinSeen, old)
+		}
+	}
 }
+
+// builtinForgetAfter is how long an in-app player's viewing is remembered
+// after its last report.
+const builtinForgetAfter = 24 * time.Hour
