@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Ellipsis, HardDrive, Star } from "lucide-react"
-import { isValidElement, useRef, useState } from "react"
+import { Children, isValidElement, useEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { airedEpisodes, episodeIndex, formatKey, mediaIsShow, totalEpisodes } from "@/lib/ids"
 import type { ListEntry, Media } from "@/lib/types"
@@ -169,6 +169,30 @@ function CardMenu({ menu, className, children }: { menu: React.ReactNode; classN
     )
 }
 
+// useProgressive renders big collections of cards (a diary of hundreds of
+// films, a whole library) a step at a time: the first `step`, then more as
+// the end comes within a screen or so of being seen. Cards nobody scrolls to
+// cost no memory (their elements, their artwork). The returned sentinel
+// marks the end: put it after the last card shown.
+function useProgressive(total: number, step: number, axis: "x" | "y") {
+    const [shown, setShown] = useState(step)
+    const ref = useRef<HTMLDivElement>(null)
+    const more = shown < total
+    useEffect(() => {
+        const el = ref.current
+        if (!more || !el) return
+        // The element that scrolls: the carousel, else the page.
+        const root = axis === "x" ? el.parentElement : el.closest("#main-scroll")
+        const io = new IntersectionObserver(entries => entries.some(e => e.isIntersecting) && setShown(n => n + step), {
+            root,
+            rootMargin: axis === "x" ? "0px 1500px" : "1500px 0px",
+        })
+        io.observe(el)
+        return () => io.disconnect()
+    }, [more, shown, step, axis])
+    return { shown, sentinel: more ? ref : null }
+}
+
 export function MediaGrid({ children, className, size = "md" }: { children: React.ReactNode; className?: string; size?: string }) {
     const cols =
         size === "sm"
@@ -176,7 +200,14 @@ export function MediaGrid({ children, className, size = "md" }: { children: Reac
             : size === "lg"
               ? "grid-cols-[repeat(auto-fill,minmax(200px,1fr))]"
               : "grid-cols-[repeat(auto-fill,minmax(160px,1fr))]"
-    return <div className={cn("grid gap-x-4 gap-y-6", cols, className)}>{children}</div>
+    const items = Children.toArray(children)
+    const { shown, sentinel } = useProgressive(items.length, 60, "y")
+    return (
+        <div className={cn("relative grid gap-x-4 gap-y-6", cols, className)}>
+            {items.slice(0, shown)}
+            {sentinel && <div ref={sentinel} aria-hidden className="pointer-events-none absolute bottom-0 left-0 h-px w-px" />}
+        </div>
+    )
 }
 
 export function MediaCardSkeleton() {
@@ -190,6 +221,7 @@ export function MediaCardSkeleton() {
 
 export function Carousel({ children, className, itemClassName }: { children: React.ReactNode[]; className?: string; itemClassName?: string }) {
     const ref = useRef<HTMLDivElement>(null)
+    const { shown, sentinel } = useProgressive(children.length, 24, "x")
     const [edges, setEdges] = useState({ left: false, right: true })
     const update = () => {
         const el = ref.current
@@ -200,13 +232,14 @@ export function Carousel({ children, className, itemClassName }: { children: Rea
     return (
         <div className={cn("group/carousel relative", className)}>
             <div ref={ref} onScroll={update} className="no-scrollbar -mx-2 flex snap-x scroll-px-2 gap-4 overflow-x-auto scroll-smooth px-2 pt-1 pb-3">
-                {children.map((c, i) => (
+                {children.slice(0, shown).map((c, i) => (
                     // The card's own key: a row that changes order (sorting,
                     // filters) keeps each card's state with its card.
                     <div key={(isValidElement(c) && c.key) || i} className={cn("w-[160px] shrink-0 snap-start", itemClassName)}>
                         {c}
                     </div>
                 ))}
+                {sentinel && <div ref={sentinel} aria-hidden className="w-px shrink-0" />}
             </div>
             {edges.left && (
                 <button
