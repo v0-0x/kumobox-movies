@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"io/fs"
 	"net/http"
 	"os"
@@ -365,8 +367,16 @@ func (s *Server) serverLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// One attempt at a time, each wrong one holding the next for a second:
+	// guesses sent side by side wait their turn instead of all being
+	// answered at once. Asked again meanwhile, the device is told to wait.
+	if !s.loginMu.TryLock() {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts: try again in a moment"})
+		return
+	}
+	defer s.loginMu.Unlock()
 	cfg := s.app.Settings.Get()
-	if cfg.Server.Password == "" || constEq(body.Password, cfg.Server.Password) {
+	if cfg.Server.Password == "" || passwordEq(body.Password, cfg.Server.Password) {
 		http.SetCookie(w, &http.Cookie{Name: "kumobox_session", Value: s.sessionToken(), Path: "/", HttpOnly: true,
 			SameSite: http.SameSiteStrictMode, Expires: time.Now().Add(365 * 24 * time.Hour)})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -374,6 +384,13 @@ func (s *Server) serverLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	time.Sleep(time.Second) // slow down guessing
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "wrong password"})
+}
+
+// passwordEq compares passwords in a time that says nothing about them, not
+// even their length.
+func passwordEq(a, b string) bool {
+	ha, hb := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
 }
 
 func startDetached(name string, args ...string) error {

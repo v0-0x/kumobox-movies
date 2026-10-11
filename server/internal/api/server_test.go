@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -226,6 +227,42 @@ func TestLoopbackHostNames(t *testing.T) {
 		if w := do(s, "GET", "/api/status", "192.168.1.20:5000", "", withHost(host)); w.Code != http.StatusOK {
 			t.Errorf("LAN device with Host %s: got %d", host, w.Code)
 		}
+	}
+}
+
+// Password attempts are answered one at a time: attempts sent side by side
+// don't each get their own second, they wait or are told to come back.
+func TestServerLoginOneAttemptAtATime(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, "hunter2"
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lan := "192.168.1.20:5000"
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := do(s, "POST", "/api/auth/server-login", lan, `{"password":"wrong"}`, nil)
+			mu.Lock()
+			codes[w.Code]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if codes[http.StatusUnauthorized] > 2 || codes[http.StatusTooManyRequests] < 18 {
+		t.Fatalf("20 attempts at once were all checked: %v", codes)
+	}
+	// Once they're answered, the right password gets in.
+	if w := do(s, "POST", "/api/auth/server-login", lan, `{"password":"hunter2"}`, nil); w.Code != http.StatusOK {
+		t.Fatalf("login after the attempts: %d %s", w.Code, w.Body.String())
+	}
+	if passwordEq("hunter2", "hunter") || !passwordEq("hunter2", "hunter2") {
+		t.Fatal("passwordEq")
 	}
 }
 

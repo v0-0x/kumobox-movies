@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,8 +15,6 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
-
-func constEq(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
 
 // ---------------------------------------------------------------------------
 // Server-sent events

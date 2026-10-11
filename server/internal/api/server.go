@@ -32,6 +32,8 @@ type Server struct {
 	mu   sync.Mutex
 	srv  *http.Server
 	addr string
+	// loginMu lets one password attempt in at a time (serverLogin).
+	loginMu sync.Mutex
 	// ForceWebUI is set when no desktop shell can exist (headless mode).
 	ForceWebUI bool
 }
