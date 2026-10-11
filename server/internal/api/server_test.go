@@ -366,14 +366,15 @@ func TestLANKeysInURLsAndMarketplace(t *testing.T) {
 
 	evil := s.app.Settings.Get()
 	evil.Extensions.MarketplaceURL = "https://evil.example/market.json"
+	evil.Extensions.AutoUpdate = true
 	evil.UI.AccentColor = "#22c3a6"
 	raw, _ := json.Marshal(settingsFor(httptest.NewRequest("GET", "/", nil).WithContext(context.WithValue(context.Background(), ctxKey{}, clientLAN)), evil))
 	if w := do(s, "PUT", "/api/settings", lan, string(raw), nil); w.Code != http.StatusOK {
 		t.Fatalf("LAN save: %d %s", w.Code, w.Body.String())
 	}
 	got := s.app.Settings.Get()
-	if got.Extensions.MarketplaceURL != config.DefaultMarketplaceURL || got.UI.AccentColor != "#22c3a6" {
-		t.Errorf("LAN save: marketplace %q, accent %q", got.Extensions.MarketplaceURL, got.UI.AccentColor)
+	if got.Extensions.MarketplaceURL != config.DefaultMarketplaceURL || got.Extensions.AutoUpdate || got.UI.AccentColor != "#22c3a6" {
+		t.Errorf("LAN save: extensions %+v, accent %q", got.Extensions, got.UI.AccentColor)
 	}
 	// Saving the settings it was shown keeps the feed's key.
 	if got.TorrentSources.Torznab[0].URL != feed {

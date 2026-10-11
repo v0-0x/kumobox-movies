@@ -330,9 +330,9 @@ func (s *Server) saveSettings(r *http.Request) (any, error) {
 		// mirror their own server, sent the indexers' API keys) or where
 		// provider code and addon collections are fetched from.
 		next.TorrentSources, next.Providers = cur.TorrentSources, cur.Providers
-		// Extensions too: the marketplace is where they're installed and
-		// updated from on this computer.
-		next.Extensions.MarketplaceURL = cur.Extensions.MarketplaceURL
+		// Nor the extension settings: the marketplace is where they're
+		// installed and updated from on this computer.
+		next.Extensions = cur.Extensions
 		next.Library.Dir, next.Library.ExtraDirs = cur.Library.Dir, cur.Library.ExtraDirs
 		// Who this computer's library is shared with is its own business.
 		next.Sharing = cur.Sharing
