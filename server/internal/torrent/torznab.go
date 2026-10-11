@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
+	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
 // Newznab categories.
@@ -418,12 +419,22 @@ func (t *Torznab) ownsURL(u string) bool {
 // magnet link. Indexers that only know a torrent's magnet redirect to it.
 func (t *Torznab) torrentMagnet(ctx context.Context, link string) (string, error) {
 	c := *t.client()
+	own := ""
+	if u, err := url.Parse(link); err == nil {
+		own = strings.ToLower(u.Hostname())
+	}
 	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 			return http.ErrUseLastResponse
 		}
 		if len(via) >= 5 {
 			return errors.New("too many redirects")
+		}
+		// The indexer may run on the LAN (Jackett, Prowlarr), and send the
+		// file from a tracker's server; but a redirect elsewhere on this
+		// computer or the LAN is refused.
+		if h := strings.ToLower(req.URL.Hostname()); h != own && util.IsLocalHostname(h) {
+			return errors.New("the indexer redirected the torrent download to a local address")
 		}
 		return nil
 	}

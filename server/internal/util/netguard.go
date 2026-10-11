@@ -41,6 +41,32 @@ func IsPrivateIP(ip net.IP) bool {
 	return false
 }
 
+// IsLocalHostname reports whether a URL's host names this computer or the
+// LAN by itself: a private address, localhost, a single-label name ("nas")
+// or a local domain (.local, .lan, .home.arpa...). A public name that
+// resolves to the LAN is only caught when connecting (PublicDialContext).
+func IsLocalHostname(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return true
+	}
+	if i := strings.IndexByte(host, '%'); i >= 0 { // an IPv6 zone
+		host = host[:i]
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return IsPrivateIP(ip)
+	}
+	if host == "localhost" || !strings.Contains(host, ".") {
+		return true
+	}
+	for _, suffix := range []string{".localhost", ".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".intranet", ".corp"} {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func isZero(b []byte) bool {
 	for _, c := range b {
 		if c != 0 {

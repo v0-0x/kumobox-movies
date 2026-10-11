@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
+	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
 // The info hashes of the .torrent fixtures, as computed by the Python
@@ -337,5 +338,23 @@ func TestBencode(t *testing.T) {
 	}
 	if _, err := readTorrent([]byte("d4:infod12:meta versioni2e4:name1:x9:file treedeee")); !errors.Is(err, errV2Only) {
 		t.Errorf("v2: %v", err)
+	}
+}
+
+// The indexer may be on the LAN and send the .torrent from elsewhere, but
+// not redirect its download to another address on this computer or the
+// LAN.
+func TestTorznabTorrentRedirectStaysOffTheLAN(t *testing.T) {
+	srv := newSrcRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://192.168.1.50:8080/admin.torrent", http.StatusFound)
+	})
+	tz := newTestTorznab(srv, "secret")
+	if _, err := tz.torrentMagnet(context.Background(), srv.URL+"/dl/1"); err == nil || !strings.Contains(err.Error(), "local address") {
+		t.Fatalf("redirected to the LAN: %v", err)
+	}
+	for host, local := range map[string]bool{"192.168.1.50": true, "localhost": true, "nas": true, "box.lan": true, "[fe80::1%eth0]": true, "tracker.example.org": false, "1.1.1.1": false} {
+		if got := util.IsLocalHostname(strings.Trim(host, "[]")); got != local {
+			t.Errorf("IsLocalHostname(%q) = %v", host, got)
+		}
 	}
 }
