@@ -685,7 +685,8 @@ func (m *Manager) ytdlp(r *run, res *Resolved, out string) error {
 		}
 		args = append(args, "--add-header", k+":"+v)
 	}
-	args = append(args, res.URL)
+	// After "--", a link is never read as one of yt-dlp's options.
+	args = append(args, "--", res.URL)
 	cmd := exec.CommandContext(r.ctx, "yt-dlp", args...)
 	// An interrupt lets yt-dlp stop the ffmpeg it may have started; it gets
 	// killed if it's still running 10s later. Windows has no interrupt to

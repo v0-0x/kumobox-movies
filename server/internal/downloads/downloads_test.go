@@ -694,8 +694,9 @@ printf 'video' > "$out"
 		{"ffmpeg", "mp4", []string{"-c copy", "-movflags +faststart"}, []string{"aac_adtstoasc"}},
 		{"ffmpeg", "webm", []string{"-c copy"}, []string{"aac_adtstoasc", "-movflags"}},
 		{"ffmpeg", "mkv", []string{"-c copy"}, []string{"aac_adtstoasc", "-movflags"}},
-		{"yt-dlp", "mkv", []string{"--merge-output-format mkv"}, []string{"--merge-output-format mp4"}},
-		{"yt-dlp", "mp4", []string{"--merge-output-format mp4"}, nil},
+		// The link after "--": yt-dlp never reads it as an option.
+		{"yt-dlp", "mkv", []string{"--merge-output-format mkv", " -- https://cdn.example/play"}, []string{"--merge-output-format mp4"}},
+		{"yt-dlp", "mp4", []string{"--merge-output-format mp4", " -- https://cdn.example/play"}, nil},
 	} {
 		_ = os.Remove(argsFile)
 		m, _ := newTestManager(t, func(cfg *config.Settings) {
