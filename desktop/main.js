@@ -129,15 +129,37 @@ function startedAtLogin() {
 }
 
 // Where the server writes server.json and the shell token: the same folder
-// as its config.RuntimeDir().
+// as its config.RuntimeDir(). On Linux and macOS the server falls back to
+// <user cache dir>/kumobox/run when the usual folder ($XDG_RUNTIME_DIR/kumobox
+// or $TMPDIR/kumobox) isn't a real directory this user owns — a symlink, or
+// one another user made in a shared /tmp, whose shell token could be planted
+// or read by them. The window must look in the same place, so it mirrors the
+// check (config/paths_unix.go, paths_darwin.go). Windows is unchanged.
 function serverRuntimeDir() {
     if (isWindows) {
         const local = process.env.LOCALAPPDATA
         return local ? path.join(local, "KumoBox", "run") : path.join(os.tmpdir(), "kumobox")
     }
     // macOS: $TMPDIR, the user's own temporary folder.
-    if (isMac) return path.join(os.tmpdir(), "kumobox")
-    return path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "kumobox")
+    const base = isMac ? os.tmpdir() : process.env.XDG_RUNTIME_DIR || os.tmpdir()
+    const primary = path.join(base, "kumobox")
+    if (ownRuntimeDir(primary)) return primary
+    const cache = isMac ? path.join(os.homedir(), "Library", "Caches") : process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache")
+    return path.join(cache, "kumobox", "run")
+}
+
+// ownRuntimeDir reports whether dir is safe to read the shell token from: it
+// must be a real directory (not a symlink or other file) that this user owns,
+// or not exist yet (the server creates it owned by this user). Anything else
+// is another user's, and its token can't be trusted.
+function ownRuntimeDir(dir) {
+    try {
+        const st = fs.lstatSync(dir)
+        if (!st.isDirectory()) return false
+        return typeof process.getuid !== "function" || st.uid === process.getuid()
+    } catch (err) {
+        return err.code === "ENOENT"
+    }
 }
 
 function serverCandidates() {
