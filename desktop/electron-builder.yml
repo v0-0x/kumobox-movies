@@ -23,6 +23,20 @@ extraMetadata:
 publish: null # the workflows upload the releases; KumoBox updates itself
 npmRebuild: false # no native modules
 
+# Electron fuses, flipped into the packaged binary before signing. KumoBox is
+# a plain GUI app (it never runs as Node, never reads NODE_OPTIONS and never
+# takes --inspect), so these only close ways to turn its own binary into an
+# arbitrary-code runner — e.g. a shortcut or another process relaunching it
+# with ELECTRON_RUN_AS_NODE. onlyLoadAppFromAsar stops it loading a swapped-in
+# app folder beside the asar. resetAdHocDarwinSignature re-applies the ad hoc
+# macOS signature after the fuses change the binary (see the mac block).
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  onlyLoadAppFromAsar: true
+  resetAdHocDarwinSignature: true
+
 directories:
   output: ../dist/windows/release
 
