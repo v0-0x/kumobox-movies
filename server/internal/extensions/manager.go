@@ -356,7 +356,7 @@ func (m *Manager) start(ctx context.Context, man *Manifest, payload string, pref
 		Prefs:       prefs,
 		Store:       m.store(man.ID),
 		Storage:     NewStorage(m.db, man.ID),
-		Fetcher:     m.fetcher,
+		Fetcher:     m.fetcher.Isolated(), // own cookie jar, not shared across extensions
 	})
 }
 

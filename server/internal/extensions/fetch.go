@@ -59,6 +59,29 @@ func (f *Fetcher) WithDomains(domains []string) *Fetcher {
 	return &c
 }
 
+// Isolated returns a copy with its own HTTP clients, each with a fresh
+// cookie jar. Extensions share the manager's Fetcher, and req clients keep
+// a cookie jar by default, so without this one extension's cookies (e.g. a
+// site's session) would be sent on another extension's requests to the same
+// host — a malicious extension could ride another's authenticated session.
+// Cloning keeps cookies persistent within one extension (across its calls
+// and redirects, as providers expect) while isolating them between
+// extensions. The transports (Chrome impersonation, the public-only dialer,
+// redirect policy, timeout) are preserved.
+func (f *Fetcher) Isolated() *Fetcher {
+	c := *f
+	if f.follow != nil {
+		c.follow = f.follow.Clone()
+	}
+	if f.noFollow != nil {
+		c.noFollow = f.noFollow.Clone()
+	}
+	if f.plain != nil {
+		c.plain = f.plain.Clone()
+	}
+	return &c
+}
+
 // Hosts every plugin may reach, whatever its manifest allows: code hosting
 // and the movie and TV trackers. Anything else must be in its manifest.
 var builtinPluginDomains = []string{
