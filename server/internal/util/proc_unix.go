@@ -7,7 +7,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -48,10 +50,46 @@ func Resume(p *os.Process) error { return p.Signal(syscall.SIGCONT) }
 
 // openCommand opens a folder or a web address with the desktop's app for it.
 func openCommand(target string) *exec.Cmd {
-	if runtime.GOOS == "darwin" {
-		return exec.Command("open", target)
+	name, args := opener(runtime.GOOS, target)
+	return exec.Command(name, args...)
+}
+
+// opener is the program, and its arguments, that opens target on goos.
+// macOS's open starts an app or installs a plugin it's given (a folder
+// named Something.app, which a torrent can have) rather than showing it:
+// those are shown in Finder, selected, instead.
+func opener(goos, target string) (string, []string) {
+	if goos != "darwin" {
+		return "xdg-open", []string{target}
 	}
-	return exec.Command("xdg-open", target)
+	if isBundle(target) {
+		return "open", []string{"-R", target}
+	}
+	return "open", []string{target}
+}
+
+// macBundles are the folder extensions macOS opens as an app or a plugin.
+var macBundles = map[string]bool{
+	".app": true, ".appex": true, ".bundle": true, ".plugin": true, ".framework": true, ".kext": true,
+	".prefpane": true, ".saver": true, ".qlgenerator": true, ".mdimporter": true, ".workflow": true, ".action": true,
+}
+
+// isBundle reports whether target is a folder macOS treats as a bundle, by
+// its own name or, for a symlink, the name of the folder it points at.
+func isBundle(target string) bool {
+	if st, err := os.Stat(target); err != nil || !st.IsDir() {
+		return false
+	}
+	names := []string{filepath.Clean(target)}
+	if real, err := filepath.EvalSymlinks(target); err == nil {
+		names = append(names, real)
+	}
+	for _, n := range names {
+		if macBundles[strings.ToLower(filepath.Ext(n))] {
+			return true
+		}
+	}
+	return false
 }
 
 // DialIPC connects to a local IPC endpoint: a Unix socket here, a named pipe
