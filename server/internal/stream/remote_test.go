@@ -3,13 +3,17 @@ package stream
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/v0-0x/kumobox-movies/server/internal/config"
 )
 
 // An online stream the browser can't play as it is (a Matroska file here)
@@ -128,5 +132,75 @@ func TestRelay(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown name: %d", resp.StatusCode)
+	}
+}
+
+// A link that answers with a playlist or a manifest isn't passed on to
+// ffmpeg, which would fetch what it names itself, past the relay: here a
+// LAN address it must never reach.
+func TestRelayRefusesPlaylists(t *testing.T) {
+	l, _ := newFfmpegLocal(t, "libx264")
+	var lanHits atomic.Int32
+	lan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lanHits.Add(1)
+	}))
+	defer lan.Close()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/movie.mp4":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			fmt.Fprintf(w, "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n%s/admin/reboot.ts\n#EXT-X-ENDLIST\n", lan.URL)
+		case "/plain.mkv":
+			w.Header().Set("Content-Type", "video/x-matroska")
+			fmt.Fprintf(w, "\n#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n%s/seg.ts\n", lan.URL)
+		case "/manifest.mkv":
+			fmt.Fprintf(w, `<?xml version="1.0"?><MPD><BaseURL>%s/</BaseURL></MPD>`, lan.URL)
+		case "/list.mkv":
+			fmt.Fprintf(w, "ffconcat version 1.0\nfile '%s/seg.ts'\n", lan.URL)
+		case "/session.mkv":
+			fmt.Fprint(w, "v=0\r\no=- 0 0 IN IP4 192.168.1.1\r\nc=IN IP4 192.168.1.1\r\nm=video 5004 RTP/AVP 96\r\n")
+		}
+	}))
+	defer provider.Close()
+	defer func(old func() []string) { LocalHosts = old }(LocalHosts)
+	u, _ := url.Parse(provider.URL)
+	LocalHosts = func() []string { return []string{HostKey(u)} } // stands for a public host
+
+	for _, name := range []string{"/movie.mp4", "/plain.mkv", "/manifest.mkv", "/list.mkv", "/session.mkv"} {
+		if _, err := l.Probe(context.Background(), RegisterRemote(provider.URL+name, nil)); err == nil {
+			t.Errorf("%s: probed", name)
+		}
+		input, _ := remoteInput(RegisterRemote(provider.URL+name, nil))
+		resp, err := http.Get(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnsupportedMediaType {
+			t.Errorf("%s: relayed with %d", name, resp.StatusCode)
+		}
+	}
+	if n := lanHits.Load(); n > 0 {
+		t.Fatalf("ffprobe reached a LAN address %d times", n)
+	}
+	for in, want := range map[string]bool{
+		"\x1aE\xdf\xa3": false, "\x00\x00\x00\x20ftypisom": false, "G@\x11": false,
+		"#EXTM3U\n": true, "\xef\xbb\xbf #EXTM3U": true, "<MPD": true, "  <?xml": true,
+		"ffconcat version 1.0": true, "FFCONCAT": true, "v=0\r\n": true,
+	} {
+		if got := isManifest("application/octet-stream", []byte(in)); got != want {
+			t.Errorf("isManifest(%q) = %v", in, got)
+		}
+	}
+	if !isManifest("application/dash+xml", nil) || !isManifest("audio/x-mpegurl", nil) || !isManifest("application/sdp", nil) || isManifest("video/mp4", nil) {
+		t.Error("isManifest by type")
+	}
+	// What reads the relay may speak plain HTTP to it, nothing else.
+	if a := strings.Join(relayInputArgs(), " "); a != "-protocol_whitelist http,tcp" {
+		t.Errorf("relay input options %q", a)
+	}
+	var pl plan
+	if a := strings.Join(pl.args(config.Settings{}, &Probe{}, "http://127.0.0.1:1/r/x", 0), " "); !strings.Contains(a, "-protocol_whitelist http,tcp -rw_timeout") {
+		t.Errorf("ffmpeg's options for a relay input: %s", a)
 	}
 }

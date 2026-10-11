@@ -170,8 +170,9 @@ func (l *Local) probeRemote(ctx context.Context, path string) (*Probe, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, cfg.Transcode.FfprobePath, "-v", "error", "-rw_timeout", "20000000",
-		"-print_format", "json", "-show_format", "-show_streams", "-show_chapters", input).Output()
+	args := append(relayInputArgs(), "-v", "error", "-rw_timeout", "20000000",
+		"-print_format", "json", "-show_format", "-show_streams", "-show_chapters", input)
+	out, err := exec.CommandContext(ctx, cfg.Transcode.FfprobePath, args...).Output()
 	if err != nil {
 		var exit *exec.ExitError
 		switch {
@@ -446,7 +447,7 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 	if strings.HasPrefix(path, "http://") {
 		// An online stream, through the relay (remote.go): don't hang on a
 		// stalled link, and pick up again after a dropped connection.
-		args = append(args, "-rw_timeout", "30000000", "-reconnect", "1", "-reconnect_delay_max", "10")
+		args = append(append(args, relayInputArgs()...), "-rw_timeout", "30000000", "-reconnect", "1", "-reconnect_delay_max", "10")
 	}
 	args = append(args, "-i", path, "-map", "0:v:0?")
 	if len(p.Audio) > 0 {
@@ -529,9 +530,14 @@ func (l *Local) seekKeyframe(ctx context.Context, path string, t float64) (float
 	ffprobe := l.settings.Get().Transcode.FfprobePath
 	for _, window := range []float64{20, 120} {
 		from := max(0, t-window)
-		out, err := exec.CommandContext(ctx, ffprobe, "-v", "error", "-select_streams", "v:0",
+		var args []string
+		if strings.HasPrefix(path, "http://") {
+			args = relayInputArgs() // an online stream, through the relay
+		}
+		args = append(args, "-v", "error", "-select_streams", "v:0",
 			"-show_entries", "packet=pts_time,flags", "-of", "csv=p=0",
-			"-read_intervals", fmt.Sprintf("%.3f%%%.3f", from, t+seekAhead+1), path).Output()
+			"-read_intervals", fmt.Sprintf("%.3f%%%.3f", from, t+seekAhead+1), path)
+		out, err := exec.CommandContext(ctx, ffprobe, args...).Output()
 		if err != nil {
 			return 0, false
 		}
