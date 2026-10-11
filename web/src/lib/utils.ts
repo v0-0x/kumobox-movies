@@ -19,6 +19,25 @@ export function originalTitle(m?: Media | null) {
     return t && t !== title(m) ? t : ""
 }
 
+// safeUrl returns url only when it's safe to use as a link or a window to
+// open — http(s), mailto, or a relative/in-page path — and "" otherwise.
+// Untrusted content (plugin UI, extension/addon manifests, provider data)
+// can supply "javascript:", "data:", "blob:" or "file:" URLs that would run
+// code on the app's origin or reach the shell; this keeps those out of href,
+// window.open and openExternal.
+export function safeUrl(url?: string | null): string {
+    if (!url) return ""
+    const u = url.trim()
+    // Relative links and in-page anchors stay on our own origin.
+    if (/^[/.#?]/.test(u)) return u
+    try {
+        const scheme = new URL(u, location.origin).protocol
+        return scheme === "http:" || scheme === "https:" || scheme === "mailto:" ? u : ""
+    } catch {
+        return ""
+    }
+}
+
 // Artwork is downloaded once by the server and served from its local cache
 // (/api/img), so posters keep working offline.
 export function img(url?: string | null) {

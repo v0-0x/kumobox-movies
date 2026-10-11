@@ -129,15 +129,37 @@ function startedAtLogin() {
 }
 
 // Where the server writes server.json and the shell token: the same folder
-// as its config.RuntimeDir().
+// as its config.RuntimeDir(). On Linux and macOS the server falls back to
+// <user cache dir>/kumobox/run when the usual folder ($XDG_RUNTIME_DIR/kumobox
+// or $TMPDIR/kumobox) isn't a real directory this user owns — a symlink, or
+// one another user made in a shared /tmp, whose shell token could be planted
+// or read by them. The window must look in the same place, so it mirrors the
+// check (config/paths_unix.go, paths_darwin.go). Windows is unchanged.
 function serverRuntimeDir() {
     if (isWindows) {
         const local = process.env.LOCALAPPDATA
         return local ? path.join(local, "KumoBox", "run") : path.join(os.tmpdir(), "kumobox")
     }
     // macOS: $TMPDIR, the user's own temporary folder.
-    if (isMac) return path.join(os.tmpdir(), "kumobox")
-    return path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "kumobox")
+    const base = isMac ? os.tmpdir() : process.env.XDG_RUNTIME_DIR || os.tmpdir()
+    const primary = path.join(base, "kumobox")
+    if (ownRuntimeDir(primary)) return primary
+    const cache = isMac ? path.join(os.homedir(), "Library", "Caches") : process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache")
+    return path.join(cache, "kumobox", "run")
+}
+
+// ownRuntimeDir reports whether dir is safe to read the shell token from: it
+// must be a real directory (not a symlink or other file) that this user owns,
+// or not exist yet (the server creates it owned by this user). Anything else
+// is another user's, and its token can't be trusted.
+function ownRuntimeDir(dir) {
+    try {
+        const st = fs.lstatSync(dir)
+        if (!st.isDirectory()) return false
+        return typeof process.getuid !== "function" || st.uid === process.getuid()
+    } catch (err) {
+        return err.code === "ENOENT"
+    }
 }
 
 function serverCandidates() {
@@ -290,11 +312,45 @@ function startServer() {
     })
 }
 
+// allowedTokenOrigin is the one origin the shell token may be sent to: the
+// KumoBox server this window talks to. The port can change in Settings, so it
+// is read from server.json (which the server keeps current) with a short
+// cache, falling back to the origin the window booted from.
+let allowedTokenOrigin = null
+let allowedTokenAt = 0
+
+function kumoboxOrigin() {
+    const now = Date.now()
+    if (now - allowedTokenAt > 1000) {
+        allowedTokenAt = now
+        const port = readJSON(path.join(runtimeDir, "server.json"))?.port
+        if (port) allowedTokenOrigin = `http://127.0.0.1:${port}`
+        else
+            try {
+                allowedTokenOrigin = baseUrl ? new URL(baseUrl).origin : null
+            } catch {
+                allowedTokenOrigin = null
+            }
+    }
+    return allowedTokenOrigin
+}
+
 function installShellHeader() {
     const filter = { urls: ["http://127.0.0.1/*", "http://127.0.0.1:*/*"] }
     session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, cb) => {
+        // Only KumoBox's own server gets the shell token, which grants full
+        // desktop-window rights. Another local service the page or a plugin
+        // makes the window request — a logo, script or stream at a different
+        // 127.0.0.1 port — must never receive it, or it could turn around and
+        // drive the API as the trusted window.
+        let origin = null
+        try {
+            origin = new URL(details.url).origin
+        } catch {
+            /* leave null */
+        }
         const token = readToken()
-        if (token) details.requestHeaders["X-KumoBox-Shell"] = token
+        if (token && origin && origin === kumoboxOrigin()) details.requestHeaders["X-KumoBox-Shell"] = token
         cb({ requestHeaders: details.requestHeaders })
     })
 }
@@ -354,6 +410,18 @@ function createWindow() {
             e.preventDefault()
             if (/^https?:\/\//.test(url)) shell.openExternal(url)
         }
+    })
+    // A navigation to a scheme the app never uses — smb:, file:, ms-msdt:, a
+    // custom protocol handler… — would otherwise be handed to the OS to
+    // open, which on Windows and macOS is a way to reach the shell. A
+    // sandboxed plugin webview (untrusted HTML) can start one by itself (an
+    // <a href="smb://…"> it clicks, a location change), and will-navigate
+    // only covers the top frame, so guard every frame. The web schemes the
+    // UI and plugin webviews legitimately load (http(s) and the in-page
+    // about:/data:/blob: documents) are left to proceed; the top frame
+    // opening an external web link is handled in will-navigate above.
+    mainWindow.webContents.on("will-frame-navigate", details => {
+        if (!/^(https?|about|data|blob):/i.test(details.url)) details.preventDefault()
     })
     mainWindow.webContents.on("before-input-event", (_e, input) => {
         if (input.type === "keyDown" && input.key === "F11") mainWindow.setFullScreen(!mainWindow.isFullScreen())

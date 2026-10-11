@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query"
 import { toast } from "@/lib/toast"
 import { playbackStore, pluginStore, scanStore, torrentCountStore, trayOpenStore } from "./store"
 import type { DownloadItem, LetterboxdStatus, PluginState, Status, UpdateStatus } from "./types"
+import { safeUrl } from "./utils"
 
 type ServerEvent = { type: string; payload: any }
 
@@ -206,9 +207,12 @@ function handlePluginEvent(p: { pluginId: string; type: string; payload: any }) 
         case "tray-close":
             trayOpenStore.set(null)
             break
-        case "open-url":
-            if (p.payload?.url) window.open(p.payload.url, "_blank", "noopener")
+        case "open-url": {
+            // The URL comes from a plugin: only open real web links.
+            const url = safeUrl(p.payload?.url)
+            if (url) window.open(url, "_blank", "noopener")
             break
+        }
         case "clipboard":
             navigator.clipboard?.writeText(p.payload?.text ?? "").catch(() => {})
             break

@@ -234,6 +234,33 @@ func queryInt(r *http.Request, name string) int {
 // ---------------------------------------------------------------------------
 // Static UI
 
+// uiContentSecurityPolicy guards the web UI page. It keeps the strong
+// anti-abuse directives — no framing (frame-ancestors), no plugins/embeds
+// (object-src), no <base> or form hijacking — while allowing what the app and
+// its plugin webviews actually need:
+//   - inline script and style: plugin "css" nodes render a <style>, React
+//     sets style attributes, and plugin webviews are sandboxed srcdoc frames
+//     whose inline bridge and plugin scripts inherit this page's policy.
+//   - img/media/connect to remote http(s): posters, addon and plugin icons,
+//     and streams that play straight from a provider's URL (remote HLS is
+//     fetched by hls.js, which also runs in a blob: worker).
+//   - frame-src for the YouTube trailer and the plugin webview documents.
+//
+// It is not a defence against script injection on this origin (the app uses
+// no HTML sinks and React escapes), but it blocks clickjacking and narrows
+// what injected markup could reach.
+const uiContentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self' 'unsafe-inline' blob:; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob: https: http:; " +
+	"media-src 'self' blob: data: https: http:; " +
+	"font-src 'self' data:; " +
+	"connect-src 'self' blob: data: https: http: ws: wss:; " +
+	"worker-src 'self' blob:; " +
+	"frame-src 'self' https: data: blob:; " +
+	"child-src 'self' https: data: blob:; " +
+	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
 func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -248,6 +275,10 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == "index.html" {
 		w.Header().Set("Cache-Control", "no-cache")
+		// The UI document: no other site may frame it (clickjacking), and a
+		// policy that still lets the app and its plugin webviews work.
+		w.Header().Set("Content-Security-Policy", uiContentSecurityPolicy)
+		w.Header().Set("X-Frame-Options", "DENY")
 	} else if strings.HasPrefix(p, "assets/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}

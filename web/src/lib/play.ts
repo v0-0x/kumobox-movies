@@ -5,6 +5,7 @@ import { isShow } from "./ids"
 import { useStatus } from "./queries"
 import { playerStore } from "./store"
 import type { PlayResult, ProviderStream } from "./types"
+import { safeUrl } from "./utils"
 
 // The streaming provider last played from for a movie or show (remembered
 // by this browser), or "".
@@ -25,10 +26,14 @@ export function rememberProvider(mediaId: number, provider: string) {
 }
 
 // Opens a web page in the browser (the system's, from the desktop app).
+// The URL can come from untrusted data (a provider's stream, an addon's
+// configure page), so only real web links are ever opened.
 export function openExternal(url: string) {
+    const safe = safeUrl(url)
+    if (!safe) return
     const d = desktop()
-    if (d) d.openExternal(url)
-    else window.open(url, "_blank", "noopener,noreferrer")
+    if (d) d.openExternal(safe)
+    else window.open(safe, "_blank", "noopener,noreferrer")
 }
 
 // The page a YouTube video or web page stream opens.

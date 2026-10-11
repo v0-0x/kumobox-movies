@@ -450,3 +450,35 @@ func TestLANLogsAndUpdateEvents(t *testing.T) {
 		t.Fatal("other events changed")
 	}
 }
+
+// TestUIFramingAndCSP checks the web UI page can't be framed by other sites
+// (clickjacking) and carries a Content-Security-Policy that still permits the
+// resources the app and its plugin webviews rely on.
+func TestUIFramingAndCSP(t *testing.T) {
+	s := newTestServer(t)
+	w := do(s, "GET", "/", "127.0.0.1:5000", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("serving the UI: got %d", w.Code)
+	}
+	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("X-Frame-Options = %q, want DENY", got)
+	}
+	csp := w.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("the UI page has no Content-Security-Policy")
+	}
+	// Clickjacking and injection-narrowing directives must be present and strict.
+	for _, want := range []string{"frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP missing %q: %s", want, csp)
+		}
+	}
+	// ...without blocking what the app needs: inline styles/scripts (plugin
+	// css nodes and the sandboxed plugin webviews that inherit this policy),
+	// remote media/images, and frames for the trailer and plugin webviews.
+	for _, want := range []string{"'unsafe-inline'", "media-src", "frame-src", "blob:"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP too strict, missing %q: %s", want, csp)
+		}
+	}
+}
