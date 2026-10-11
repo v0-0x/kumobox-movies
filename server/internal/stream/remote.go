@@ -1,6 +1,8 @@
 package stream
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -177,6 +179,24 @@ func serveRelay(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode >= 400 {
 		log.Printf("stream relay: %s answered %s", hostOf(src.url), resp.Status)
 	}
+	// ffmpeg reads the links in playlists and manifests (HLS, DASH...) by
+	// itself, not through the relay: they could name this computer or the
+	// LAN. Only media files are passed on (HLS plays through the proxy,
+	// which rewrites its playlists).
+	body := io.Reader(resp.Body)
+	if resp.StatusCode < 300 {
+		var head []byte
+		if r.Method == http.MethodGet && fromStart(resp) {
+			br := bufio.NewReader(resp.Body)
+			head, _ = br.Peek(512)
+			body = br
+		}
+		if isManifest(resp.Header.Get("Content-Type"), head) {
+			log.Printf("stream relay: %s answered with a playlist, not a video file", hostOf(src.url))
+			http.Error(w, "a playlist, not a video file", http.StatusUnsupportedMediaType)
+			return
+		}
+	}
 	for _, k := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified", "ETag"} {
 		if v := resp.Header.Get(k); v != "" {
 			w.Header().Set(k, v)
@@ -184,8 +204,34 @@ func serveRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	if r.Method == http.MethodGet {
-		_, _ = io.Copy(w, resp.Body)
+		_, _ = io.Copy(w, body)
 	}
+}
+
+// fromStart reports an answer that starts at the file's first byte.
+func fromStart(resp *http.Response) bool {
+	return resp.StatusCode == http.StatusOK ||
+		resp.StatusCode == http.StatusPartialContent && strings.HasPrefix(resp.Header.Get("Content-Range"), "bytes 0-")
+}
+
+// isManifest reports a playlist or manifest (HLS, DASH, Smooth Streaming,
+// IMF...) by its type or its first bytes (no media container starts with
+// text like those).
+func isManifest(ctype string, head []byte) bool {
+	ct := strings.ToLower(ctype)
+	if strings.Contains(ct, "mpegurl") || strings.Contains(ct, "dash+xml") || strings.Contains(ct, "vnd.ms-sstr") {
+		return true
+	}
+	head = bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n")
+	return bytes.HasPrefix(head, []byte("#EXTM3U")) || bytes.HasPrefix(head, []byte("<"))
+}
+
+// relayInputArgs are ffmpeg's and ffprobe's options for an input read
+// from the relay: plain HTTP to it only, so nothing in the stream (an SDP
+// description, a demuxer opening other resources) has them open files,
+// HTTPS or RTP/UDP addresses themselves.
+func relayInputArgs() []string {
+	return []string{"-protocol_whitelist", "http,tcp"}
 }
 
 // hostOf is a link's host, for the logs (links often carry tokens).
