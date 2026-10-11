@@ -181,6 +181,54 @@ func TestCrossSiteRequests(t *testing.T) {
 	}
 }
 
+// Connections from this computer only take names that always mean this
+// computer: a local network name (.local, .lan, a single label, a
+// tailnet's .ts.net...) could be pointed at 127.0.0.1 by another device and
+// make its page one of ours. Devices of the network may still use them.
+func TestLoopbackHostNames(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, ""
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	withHost := func(host string) func(r *http.Request) {
+		return func(r *http.Request) {
+			r.Host = host
+			r.Header.Set("Origin", "http://"+host)
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+		}
+	}
+	for _, host := range []string{"evil.local:43311", "attacker:43311", "box.lan:43311", "pc.tail1234.ts.net", "a.home.arpa:43311", "LOCALHOST.:43311"} {
+		next := s.app.Settings.Get()
+		next.Mpv.Path = "/tmp/not-mpv"
+		raw, _ := json.Marshal(next)
+		if w := do(s, "PUT", "/api/settings", "127.0.0.1:5000", string(raw), withHost(host)); w.Code != http.StatusForbidden {
+			t.Errorf("local connection with Host %s: got %d", host, w.Code)
+		}
+		if got := s.app.Settings.Get().Mpv.Path; got == "/tmp/not-mpv" {
+			t.Fatalf("Host %s changed the settings", host)
+		}
+	}
+	for _, host := range []string{"127.0.0.1:43311", "localhost:43311", "[::1]:43311", "127.0.1.1:43311"} {
+		if w := do(s, "GET", "/api/status", "127.0.0.1:5000", "", withHost(host)); w.Code != http.StatusOK {
+			t.Errorf("local connection with Host %s: got %d", host, w.Code)
+		}
+	}
+	if name, _ := os.Hostname(); name != "" {
+		name, _, _ = strings.Cut(name, ".")
+		if w := do(s, "GET", "/api/status", "127.0.0.1:5000", "", withHost(name+":43311")); w.Code != http.StatusOK {
+			t.Errorf("local connection with this computer's name %s: got %d", name, w.Code)
+		}
+	}
+	// Devices of the network open KumoBox by the computer's local name.
+	for _, host := range []string{"mypc.local:43311", "mypc:43311", "mypc.tail1234.ts.net:43311"} {
+		if w := do(s, "GET", "/api/status", "192.168.1.20:5000", "", withHost(host)); w.Code != http.StatusOK {
+			t.Errorf("LAN device with Host %s: got %d", host, w.Code)
+		}
+	}
+}
+
 // A plugin's permissions (files it may read and write, commands it may
 // run) are granted on this computer, as plugins are installed there.
 func TestPluginGrantOnlyFromThisComputer(t *testing.T) {
