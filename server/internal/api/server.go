@@ -317,8 +317,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 	})
 }
 
+// kindOf is who sent r. Requests the middleware didn't classify (other
+// KumoBox apps' /api/peer/ requests) are trusted no more than the LAN.
 func kindOf(r *http.Request) clientKind {
-	k, _ := r.Context().Value(ctxKey{}).(clientKind)
+	k, ok := r.Context().Value(ctxKey{}).(clientKind)
+	if !ok {
+		return clientLAN
+	}
 	return k
 }
 

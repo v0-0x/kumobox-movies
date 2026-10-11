@@ -267,6 +267,14 @@ func TestServerLoginOneAttemptAtATime(t *testing.T) {
 	}
 }
 
+// A request the browsers' middleware didn't see (another KumoBox's) isn't
+// this computer's.
+func TestUnclassifiedRequestNotTrusted(t *testing.T) {
+	if isTrusted(httptest.NewRequest("GET", "/api/peer/files", nil)) {
+		t.Fatal("a request with no client kind is trusted")
+	}
+}
+
 // A plugin's permissions (files it may read and write, commands it may
 // run) are granted on this computer, as plugins are installed there.
 func TestPluginGrantOnlyFromThisComputer(t *testing.T) {
