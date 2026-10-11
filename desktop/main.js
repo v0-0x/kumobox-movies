@@ -411,6 +411,18 @@ function createWindow() {
             if (/^https?:\/\//.test(url)) shell.openExternal(url)
         }
     })
+    // A navigation to a scheme the app never uses — smb:, file:, ms-msdt:, a
+    // custom protocol handler… — would otherwise be handed to the OS to
+    // open, which on Windows and macOS is a way to reach the shell. A
+    // sandboxed plugin webview (untrusted HTML) can start one by itself (an
+    // <a href="smb://…"> it clicks, a location change), and will-navigate
+    // only covers the top frame, so guard every frame. The web schemes the
+    // UI and plugin webviews legitimately load (http(s) and the in-page
+    // about:/data:/blob: documents) are left to proceed; the top frame
+    // opening an external web link is handled in will-navigate above.
+    mainWindow.webContents.on("will-frame-navigate", details => {
+        if (!/^(https?|about|data|blob):/i.test(details.url)) details.preventDefault()
+    })
     mainWindow.webContents.on("before-input-event", (_e, input) => {
         if (input.type === "keyDown" && input.key === "F11") mainWindow.setFullScreen(!mainWindow.isFullScreen())
         if (input.type === "keyDown" && input.control && input.shift && input.key.toLowerCase() === "i") mainWindow.webContents.toggleDevTools()
