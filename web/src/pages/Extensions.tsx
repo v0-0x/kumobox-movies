@@ -29,7 +29,7 @@ import { Badge, Button, Dialog, EmptyState, Field, IconButton, Input, Select, Sw
 import { api } from "@/lib/api"
 import { useExtensions, useMarketplace, useStatus, useStremioAddons } from "@/lib/queries"
 import type { ExtensionInfo, MarketEntry } from "./extensionTypes"
-import { cn } from "@/lib/utils"
+import { cn, safeUrl } from "@/lib/utils"
 import { BuiltInTab } from "./providers/BuiltIn"
 import { NuvioTab } from "./providers/Nuvio"
 import { ExtIcon, LogsDialog } from "./providers/parts"
@@ -235,7 +235,7 @@ function InstalledCard({ ext, update, onChange }: { ext: ExtensionInfo; update?:
                     Logs
                 </Button>
                 {m.website && (
-                    <a href={m.website} target="_blank" rel="noopener noreferrer">
+                    <a href={safeUrl(m.website) || undefined} target="_blank" rel="noopener noreferrer">
                         <IconButton size="sm" label="Website">
                             <ExternalLink className="size-4" />
                         </IconButton>
@@ -523,7 +523,7 @@ function MarketCard({ e }: { e: MarketEntry }) {
                     </Button>
                 )}
                 {e.permalink && (
-                    <a href={e.permalink} target="_blank" rel="noopener noreferrer" className="ml-auto text-xs text-subtle hover:text-fg" title="VirusTotal scan">
+                    <a href={safeUrl(e.permalink) || undefined} target="_blank" rel="noopener noreferrer" className="ml-auto text-xs text-subtle hover:text-fg" title="VirusTotal scan">
                         VT {e.flags}
                     </a>
                 )}

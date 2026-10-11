@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react"
 import { api } from "@/lib/api"
 import type { UINode } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn, safeUrl } from "@/lib/utils"
 import { Badge, Button, Dialog, Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger, Popover, Select, Switch, Tooltip } from "../ui"
 
 // Renders the component trees produced by plugin trays (the marketplace's
@@ -40,6 +40,17 @@ function Items({ items }: { items?: any[] }) {
 
 function gap(n?: number) {
     return n === undefined ? "0.5rem" : `${n * 0.25}rem`
+}
+
+// safeCss removes the CSS constructs that make network requests, so a
+// plugin's styles can't fetch remote assets or leak DOM state from the app's
+// origin. Ordinary styling (colours, layout, fonts by name, animations) is
+// left untouched.
+function safeCss(css: string): string {
+    return css
+        .replace(/@import[^;]*;?/gi, "")
+        .replace(/url\s*\([^)]*\)/gi, "none")
+        .replace(/expression\s*\([^)]*\)/gi, "none")
 }
 
 const intentVariant = (intent?: string) => {
@@ -125,13 +136,13 @@ function Node({ node }: { node: UINode }) {
             )
         case "anchor":
             return (
-                <a href={p.href} target={p.target ?? "_blank"} rel="noopener noreferrer" onClick={p.onClick ? click : undefined} className={cn("text-brand hover:underline", cls)} style={style}>
+                <a href={safeUrl(p.href) || undefined} target={p.target ?? "_blank"} rel="noopener noreferrer" onClick={p.onClick ? click : undefined} className={cn("text-brand hover:underline", cls)} style={style}>
                     {String(p.text ?? "")}
                 </a>
             )
         case "a":
             return (
-                <a href={p.href} target={p.target ?? "_blank"} rel="noopener noreferrer" onClick={p.onClick ? click : undefined} className={cls} style={style}>
+                <a href={safeUrl(p.href) || undefined} target={p.target ?? "_blank"} rel="noopener noreferrer" onClick={p.onClick ? click : undefined} className={cls} style={style}>
                     <Items items={p.items} />
                 </a>
             )
@@ -155,7 +166,12 @@ function Node({ node }: { node: UINode }) {
             )
         }
         case "css":
-            return <style>{String(p.css ?? "")}</style>
+            // A plugin's styles land in the app document, so strip the parts
+            // that reach the network — url(), @import, legacy expression() —
+            // which would let a plugin pull in remote assets or exfiltrate
+            // DOM state (attribute selectors + background:url) from our own
+            // origin, bypassing its sandboxed fetch allowlist.
+            return <style>{safeCss(String(p.css ?? ""))}</style>
         case "tooltip":
             return (
                 <Tooltip content={String(p.text ?? "")} side={p.side}>
