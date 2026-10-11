@@ -312,11 +312,45 @@ function startServer() {
     })
 }
 
+// allowedTokenOrigin is the one origin the shell token may be sent to: the
+// KumoBox server this window talks to. The port can change in Settings, so it
+// is read from server.json (which the server keeps current) with a short
+// cache, falling back to the origin the window booted from.
+let allowedTokenOrigin = null
+let allowedTokenAt = 0
+
+function kumoboxOrigin() {
+    const now = Date.now()
+    if (now - allowedTokenAt > 1000) {
+        allowedTokenAt = now
+        const port = readJSON(path.join(runtimeDir, "server.json"))?.port
+        if (port) allowedTokenOrigin = `http://127.0.0.1:${port}`
+        else
+            try {
+                allowedTokenOrigin = baseUrl ? new URL(baseUrl).origin : null
+            } catch {
+                allowedTokenOrigin = null
+            }
+    }
+    return allowedTokenOrigin
+}
+
 function installShellHeader() {
     const filter = { urls: ["http://127.0.0.1/*", "http://127.0.0.1:*/*"] }
     session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, cb) => {
+        // Only KumoBox's own server gets the shell token, which grants full
+        // desktop-window rights. Another local service the page or a plugin
+        // makes the window request — a logo, script or stream at a different
+        // 127.0.0.1 port — must never receive it, or it could turn around and
+        // drive the API as the trusted window.
+        let origin = null
+        try {
+            origin = new URL(details.url).origin
+        } catch {
+            /* leave null */
+        }
         const token = readToken()
-        if (token) details.requestHeaders["X-KumoBox-Shell"] = token
+        if (token && origin && origin === kumoboxOrigin()) details.requestHeaders["X-KumoBox-Shell"] = token
         cb({ requestHeaders: details.requestHeaders })
     })
 }
