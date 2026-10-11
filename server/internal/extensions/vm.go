@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dlclark/regexp2/v2"
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/buffer"
 	"github.com/dop251/goja_nodejs/eventloop"
@@ -23,6 +24,24 @@ import (
 
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
+
+// regexpMatchTimeout bounds one regexp match. goja runs patterns that Go's
+// RE2 engine can't compile (backreferences, lookaround) on the backtracking
+// regexp2 engine, whose match is a single Go call that goja's Interrupt
+// can't stop; left unbounded (regexp2's default is "forever") a
+// catastrophic-backtracking pattern in an extension would pin a CPU core
+// for good and keep the runtime from ever closing — neither the call
+// timeout nor Close could reclaim it. A timeout turns such a match into a
+// (caught, no-match) result so control returns to the VM, where the usual
+// timeouts and interrupts take over. It is far above any legitimate match
+// (microseconds) and only affects the regexp2 fallback; RE2 is linear and
+// needs none.
+const regexpMatchTimeout = 5 * time.Second
+
+func init() {
+	// goja reads this when it compiles a pattern to regexp2.
+	regexp2.DefaultMatchTimeout = regexpMatchTimeout
+}
 
 // Compile turns a payload into goja-ready JavaScript.
 func Compile(m *Manifest, payload string) (*goja.Program, error) {

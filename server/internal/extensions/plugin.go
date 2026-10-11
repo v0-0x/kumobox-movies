@@ -247,7 +247,7 @@ func (m *Manager) launchPlugin(ctx context.Context, l *Loaded) {
 		Prefs:       prefs,
 		Store:       m.store(man.ID),
 		Storage:     storage,
-		Fetcher:     m.fetcher.WithDomains(domains),
+		Fetcher:     m.fetcher.Isolated().WithDomains(domains), // own cookie jar, not shared across plugins
 		Extra:       h.install,
 	})
 	if err != nil {

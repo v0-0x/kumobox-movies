@@ -64,7 +64,7 @@ func (m *Manager) startNuvio(ctx context.Context, man *Manifest, payload string)
 		LoadTimeout: m.loadTimeout,
 		Store:       m.store(man.ID),
 		Storage:     NewStorage(m.db, man.ID),
-		Fetcher:     m.fetcher,
+		Fetcher:     m.fetcher.Isolated(), // own cookie jar, not shared across extensions
 		Extra:       installNuvio,
 	})
 }
