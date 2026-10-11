@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,10 +10,12 @@ import (
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
+	"github.com/v0-0x/kumobox-movies/server/internal/events"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
+	"github.com/v0-0x/kumobox-movies/server/internal/update"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -31,6 +34,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	ch, unsub := s.app.Hub.Subscribe()
 	defer unsub()
+	trusted := isTrusted(r)
 	_, _ = fmt.Fprint(w, "retry: 3000\n\n")
 	flusher.Flush()
 	ping := time.NewTicker(25 * time.Second)
@@ -46,10 +50,34 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			if !trusted {
+				msg = eventFor(r, msg)
+			}
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", msg)
 			flusher.Flush()
 		}
 	}
+}
+
+// eventFor leaves out of an event what devices on the LAN don't get from
+// the HTTP routes either: the update's build log and commands.
+func eventFor(r *http.Request, msg []byte) []byte {
+	var ev struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if json.Unmarshal(msg, &ev) != nil || ev.Type != events.UpdateStatus {
+		return msg
+	}
+	var st update.Status
+	if json.Unmarshal(ev.Payload, &st) != nil {
+		return msg
+	}
+	out, err := json.Marshal(events.Event{Type: ev.Type, Payload: updateFor(r, st)})
+	if err != nil {
+		return msg
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

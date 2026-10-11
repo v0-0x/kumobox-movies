@@ -19,7 +19,7 @@ func (s *Server) updateStatus(r *http.Request) (any, error) {
 // updateFor leaves out what devices on the LAN can't do or use.
 func updateFor(r *http.Request, st update.Status) update.Status {
 	if !isTrusted(r) {
-		st.CanApply, st.ApplyNote, st.ManualCommand = false, "", ""
+		st.CanApply, st.ApplyNote, st.ManualCommand, st.Log = false, "", "", nil
 	}
 	return st
 }

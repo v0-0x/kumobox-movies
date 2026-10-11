@@ -15,6 +15,8 @@ import (
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
+	"github.com/v0-0x/kumobox-movies/server/internal/events"
+	"github.com/v0-0x/kumobox-movies/server/internal/update"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -415,5 +417,36 @@ func TestSettingsSlicesNotShared(t *testing.T) {
 	c.Library.ExtraDirs[0] = "/changed"
 	if s.app.Settings.Get().Library.ExtraDirs[0] != "/srv/anime-a" {
 		t.Fatal("Get returned a slice shared with the live settings")
+	}
+}
+
+// Devices on the LAN don't read this computer's server log, nor the
+// update's build log and commands from the event stream.
+func TestLANLogsAndUpdateEvents(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, ""
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lan := "192.168.1.20:5000"
+	if w := do(s, "GET", "/api/logs", lan, "", nil); w.Code != http.StatusForbidden {
+		t.Fatalf("LAN logs: %d", w.Code)
+	}
+	if w := do(s, "GET", "/api/logs", "127.0.0.1:5000", "", nil); w.Code != http.StatusOK {
+		t.Fatalf("local logs: %d", w.Code)
+	}
+
+	msg, _ := json.Marshal(events.Event{Type: events.UpdateStatus, Payload: update.Status{
+		Available: true, CanApply: true, ManualCommand: "sudo pacman -U /home/me/kumobox.pkg.tar.zst", Log: []string{"building in /home/me/..."},
+	}})
+	// A request the middleware didn't classify counts as the LAN's.
+	r := httptest.NewRequest("GET", "/api/events", nil)
+	out := string(eventFor(r, msg))
+	if strings.Contains(out, "pacman") || strings.Contains(out, "/home/me") || !strings.Contains(out, `"available":true`) {
+		t.Fatalf("LAN update event: %s", out)
+	}
+	if other := []byte(`{"type":"collection-updated"}`); string(eventFor(r, other)) != string(other) {
+		t.Fatal("other events changed")
 	}
 }
