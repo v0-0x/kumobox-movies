@@ -215,15 +215,20 @@ func fromStart(resp *http.Response) bool {
 }
 
 // isManifest reports a playlist or manifest (HLS, DASH, Smooth Streaming,
-// IMF...) by its type or its first bytes (no media container starts with
-// text like those).
+// IMF, ffconcat, SDP...) by its type or its first bytes (no media
+// container starts with text like those).
 func isManifest(ctype string, head []byte) bool {
 	ct := strings.ToLower(ctype)
-	if strings.Contains(ct, "mpegurl") || strings.Contains(ct, "dash+xml") || strings.Contains(ct, "vnd.ms-sstr") {
+	if strings.Contains(ct, "mpegurl") || strings.Contains(ct, "dash+xml") || strings.Contains(ct, "vnd.ms-sstr") || strings.Contains(ct, "sdp") {
 		return true
 	}
 	head = bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n")
-	return bytes.HasPrefix(head, []byte("#EXTM3U")) || bytes.HasPrefix(head, []byte("<"))
+	for _, p := range []string{"#EXTM3U", "<", "ffconcat", "v=0"} {
+		if len(head) >= len(p) && bytes.EqualFold(head[:len(p)], []byte(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 // relayInputArgs are ffmpeg's and ffprobe's options for an input read

@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/v0-0x/kumobox-movies/server/internal/config"
 )
 
 // An online stream the browser can't play as it is (a Matroska file here)
@@ -153,6 +155,10 @@ func TestRelayRefusesPlaylists(t *testing.T) {
 			fmt.Fprintf(w, "\n#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n%s/seg.ts\n", lan.URL)
 		case "/manifest.mkv":
 			fmt.Fprintf(w, `<?xml version="1.0"?><MPD><BaseURL>%s/</BaseURL></MPD>`, lan.URL)
+		case "/list.mkv":
+			fmt.Fprintf(w, "ffconcat version 1.0\nfile '%s/seg.ts'\n", lan.URL)
+		case "/session.mkv":
+			fmt.Fprint(w, "v=0\r\no=- 0 0 IN IP4 192.168.1.1\r\nc=IN IP4 192.168.1.1\r\nm=video 5004 RTP/AVP 96\r\n")
 		}
 	}))
 	defer provider.Close()
@@ -160,7 +166,7 @@ func TestRelayRefusesPlaylists(t *testing.T) {
 	u, _ := url.Parse(provider.URL)
 	LocalHosts = func() []string { return []string{HostKey(u)} } // stands for a public host
 
-	for _, name := range []string{"/movie.mp4", "/plain.mkv", "/manifest.mkv"} {
+	for _, name := range []string{"/movie.mp4", "/plain.mkv", "/manifest.mkv", "/list.mkv", "/session.mkv"} {
 		if _, err := l.Probe(context.Background(), RegisterRemote(provider.URL+name, nil)); err == nil {
 			t.Errorf("%s: probed", name)
 		}
@@ -180,12 +186,21 @@ func TestRelayRefusesPlaylists(t *testing.T) {
 	for in, want := range map[string]bool{
 		"\x1aE\xdf\xa3": false, "\x00\x00\x00\x20ftypisom": false, "G@\x11": false,
 		"#EXTM3U\n": true, "\xef\xbb\xbf #EXTM3U": true, "<MPD": true, "  <?xml": true,
+		"ffconcat version 1.0": true, "FFCONCAT": true, "v=0\r\n": true,
 	} {
 		if got := isManifest("application/octet-stream", []byte(in)); got != want {
 			t.Errorf("isManifest(%q) = %v", in, got)
 		}
 	}
-	if !isManifest("application/dash+xml", nil) || !isManifest("audio/x-mpegurl", nil) || isManifest("video/mp4", nil) {
+	if !isManifest("application/dash+xml", nil) || !isManifest("audio/x-mpegurl", nil) || !isManifest("application/sdp", nil) || isManifest("video/mp4", nil) {
 		t.Error("isManifest by type")
+	}
+	// What reads the relay may speak plain HTTP to it, nothing else.
+	if a := strings.Join(relayInputArgs(), " "); a != "-protocol_whitelist http,tcp" {
+		t.Errorf("relay input options %q", a)
+	}
+	var pl plan
+	if a := strings.Join(pl.args(config.Settings{}, &Probe{}, "http://127.0.0.1:1/r/x", 0), " "); !strings.Contains(a, "-protocol_whitelist http,tcp -rw_timeout") {
+		t.Errorf("ffmpeg's options for a relay input: %s", a)
 	}
 }
