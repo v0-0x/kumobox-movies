@@ -370,8 +370,9 @@ function AppSection({ draft, set }: SectionProps) {
 
             <Group title="Extensions">
                 <Stack label="Marketplace URL" help="Any compatible extension index works.">
-                    <Input value={draft.extensions.marketplaceUrl} onChange={e => set("extensions", { marketplaceUrl: e.target.value })} />
+                    <Input value={draft.extensions.marketplaceUrl} disabled={lan} onChange={e => set("extensions", { marketplaceUrl: e.target.value })} />
                 </Stack>
+                {lan && <LanOnly />}
             </Group>
 
             <Group title="Data">

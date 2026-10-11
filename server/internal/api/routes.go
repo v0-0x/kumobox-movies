@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -329,6 +330,9 @@ func (s *Server) saveSettings(r *http.Request) (any, error) {
 		// mirror their own server, sent the indexers' API keys) or where
 		// provider code and addon collections are fetched from.
 		next.TorrentSources, next.Providers = cur.TorrentSources, cur.Providers
+		// Extensions too: the marketplace is where they're installed and
+		// updated from on this computer.
+		next.Extensions.MarketplaceURL = cur.Extensions.MarketplaceURL
 		next.Library.Dir, next.Library.ExtraDirs = cur.Library.Dir, cur.Library.ExtraDirs
 		// Who this computer's library is shared with is its own business.
 		next.Sharing = cur.Sharing
@@ -351,12 +355,32 @@ func settingsFor(r *http.Request, cfg config.Settings) config.Settings {
 		// A copy: the indexers are shared with the settings in memory.
 		indexers := make([]config.TorznabIndexer, len(cfg.TorrentSources.Torznab))
 		for i, ix := range cfg.TorrentSources.Torznab {
-			ix.APIKey = ""
+			ix.APIKey, ix.URL = "", hideURLKeys(ix.URL)
 			indexers[i] = ix
 		}
 		cfg.TorrentSources.Torznab = indexers
 	}
 	return cfg
+}
+
+// hideURLKeys blanks the API keys, passkeys and tokens an address carries
+// in its query (a Torznab feed's URL may hold its apikey).
+func hideURLKeys(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.RawQuery == "" {
+		return raw
+	}
+	q := u.Query()
+	for k := range q {
+		name := strings.ToLower(k)
+		for _, secret := range []string{"key", "token", "pass", "secret", "auth"} {
+			if strings.Contains(name, secret) {
+				q[k] = []string{""}
+			}
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func (s *Server) serverLogin(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -329,6 +330,46 @@ func TestLANCantChangeSourcesOrProviders(t *testing.T) {
 	}
 	if got := s.app.Settings.Get().Providers.NuvioRepos; fmt.Sprint(got) != "[https://repo.example/manifest.json]" {
 		t.Errorf("repositories %v", got)
+	}
+}
+
+// The key a Torznab feed's URL carries is hidden from devices on the LAN
+// like the indexer's API key field, and they can't change the extension
+// marketplace (where this computer installs and updates extensions from).
+func TestLANKeysInURLsAndMarketplace(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, ""
+	feed := "http://127.0.0.1:9117/api/v2.0/indexers/all/results/torznab/api?apikey=indexer-key&cat=2000&Passkey=tracker-pass"
+	cfg.TorrentSources.Torznab = []config.TorznabIndexer{{Name: "Jackett", URL: feed, Enabled: true}}
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lan := "192.168.1.20:5000"
+	for _, path := range []string{"/api/settings", "/api/status"} {
+		body := do(s, "GET", path, lan, "", nil).Body.String()
+		if strings.Contains(body, "indexer-key") || strings.Contains(body, "tracker-pass") || !strings.Contains(body, "cat=2000") {
+			t.Errorf("%s shows the LAN device %s", path, body[strings.Index(body, `"torznab"`):][:200])
+		}
+	}
+	if !strings.Contains(do(s, "GET", "/api/settings", "127.0.0.1:5000", "", nil).Body.String(), "indexer-key") {
+		t.Error("this computer doesn't see the feed's key")
+	}
+
+	evil := s.app.Settings.Get()
+	evil.Extensions.MarketplaceURL = "https://evil.example/market.json"
+	evil.UI.AccentColor = "#22c3a6"
+	raw, _ := json.Marshal(settingsFor(httptest.NewRequest("GET", "/", nil).WithContext(context.WithValue(context.Background(), ctxKey{}, clientLAN)), evil))
+	if w := do(s, "PUT", "/api/settings", lan, string(raw), nil); w.Code != http.StatusOK {
+		t.Fatalf("LAN save: %d %s", w.Code, w.Body.String())
+	}
+	got := s.app.Settings.Get()
+	if got.Extensions.MarketplaceURL != config.DefaultMarketplaceURL || got.UI.AccentColor != "#22c3a6" {
+		t.Errorf("LAN save: marketplace %q, accent %q", got.Extensions.MarketplaceURL, got.UI.AccentColor)
+	}
+	// Saving the settings it was shown keeps the feed's key.
+	if got.TorrentSources.Torznab[0].URL != feed {
+		t.Errorf("feed URL after a LAN save: %q", got.TorrentSources.Torznab[0].URL)
 	}
 }
 
