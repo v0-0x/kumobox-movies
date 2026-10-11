@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -181,6 +183,98 @@ func TestCrossSiteRequests(t *testing.T) {
 	}
 }
 
+// Connections from this computer only take names that always mean this
+// computer: a local network name (.local, .lan, a single label, a
+// tailnet's .ts.net...) could be pointed at 127.0.0.1 by another device and
+// make its page one of ours. Devices of the network may still use them.
+func TestLoopbackHostNames(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, ""
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	withHost := func(host string) func(r *http.Request) {
+		return func(r *http.Request) {
+			r.Host = host
+			r.Header.Set("Origin", "http://"+host)
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+		}
+	}
+	for _, host := range []string{"evil.local:43311", "attacker:43311", "box.lan:43311", "pc.tail1234.ts.net", "a.home.arpa:43311", "LOCALHOST.:43311"} {
+		next := s.app.Settings.Get()
+		next.Mpv.Path = "/tmp/not-mpv"
+		raw, _ := json.Marshal(next)
+		if w := do(s, "PUT", "/api/settings", "127.0.0.1:5000", string(raw), withHost(host)); w.Code != http.StatusForbidden {
+			t.Errorf("local connection with Host %s: got %d", host, w.Code)
+		}
+		if got := s.app.Settings.Get().Mpv.Path; got == "/tmp/not-mpv" {
+			t.Fatalf("Host %s changed the settings", host)
+		}
+	}
+	for _, host := range []string{"127.0.0.1:43311", "localhost:43311", "[::1]:43311", "127.0.1.1:43311"} {
+		if w := do(s, "GET", "/api/status", "127.0.0.1:5000", "", withHost(host)); w.Code != http.StatusOK {
+			t.Errorf("local connection with Host %s: got %d", host, w.Code)
+		}
+	}
+	if name, _ := os.Hostname(); name != "" {
+		name, _, _ = strings.Cut(name, ".")
+		if w := do(s, "GET", "/api/status", "127.0.0.1:5000", "", withHost(name+":43311")); w.Code != http.StatusOK {
+			t.Errorf("local connection with this computer's name %s: got %d", name, w.Code)
+		}
+	}
+	// Devices of the network open KumoBox by the computer's local name.
+	for _, host := range []string{"mypc.local:43311", "mypc:43311", "mypc.tail1234.ts.net:43311"} {
+		if w := do(s, "GET", "/api/status", "192.168.1.20:5000", "", withHost(host)); w.Code != http.StatusOK {
+			t.Errorf("LAN device with Host %s: got %d", host, w.Code)
+		}
+	}
+}
+
+// Password attempts are answered one at a time: attempts sent side by side
+// don't each get their own second, they wait or are told to come back.
+func TestServerLoginOneAttemptAtATime(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, "hunter2"
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lan := "192.168.1.20:5000"
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := do(s, "POST", "/api/auth/server-login", lan, `{"password":"wrong"}`, nil)
+			mu.Lock()
+			codes[w.Code]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if codes[http.StatusUnauthorized] > 2 || codes[http.StatusTooManyRequests] < 18 {
+		t.Fatalf("20 attempts at once were all checked: %v", codes)
+	}
+	// Once they're answered, the right password gets in.
+	if w := do(s, "POST", "/api/auth/server-login", lan, `{"password":"hunter2"}`, nil); w.Code != http.StatusOK {
+		t.Fatalf("login after the attempts: %d %s", w.Code, w.Body.String())
+	}
+	if passwordEq("hunter2", "hunter") || !passwordEq("hunter2", "hunter2") {
+		t.Fatal("passwordEq")
+	}
+}
+
+// A request the browsers' middleware didn't see (another KumoBox's) isn't
+// this computer's.
+func TestUnclassifiedRequestNotTrusted(t *testing.T) {
+	if isTrusted(httptest.NewRequest("GET", "/api/peer/files", nil)) {
+		t.Fatal("a request with no client kind is trusted")
+	}
+}
+
 // A plugin's permissions (files it may read and write, commands it may
 // run) are granted on this computer, as plugins are installed there.
 func TestPluginGrantOnlyFromThisComputer(t *testing.T) {
@@ -244,6 +338,47 @@ func TestLANCantChangeSourcesOrProviders(t *testing.T) {
 	}
 	if got := s.app.Settings.Get().Providers.NuvioRepos; fmt.Sprint(got) != "[https://repo.example/manifest.json]" {
 		t.Errorf("repositories %v", got)
+	}
+}
+
+// The key a Torznab feed's URL carries is hidden from devices on the LAN
+// like the indexer's API key field, and they can't change the extension
+// marketplace (where this computer installs and updates extensions from).
+func TestLANKeysInURLsAndMarketplace(t *testing.T) {
+	s := newTestServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Server.AllowLAN, cfg.Server.Password = true, ""
+	feed := "http://127.0.0.1:9117/api/v2.0/indexers/all/results/torznab/api?apikey=indexer-key&cat=2000&Passkey=tracker-pass"
+	cfg.TorrentSources.Torznab = []config.TorznabIndexer{{Name: "Jackett", URL: feed, Enabled: true}}
+	if _, err := s.app.Settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lan := "192.168.1.20:5000"
+	for _, path := range []string{"/api/settings", "/api/status"} {
+		body := do(s, "GET", path, lan, "", nil).Body.String()
+		if strings.Contains(body, "indexer-key") || strings.Contains(body, "tracker-pass") || !strings.Contains(body, "cat=2000") {
+			t.Errorf("%s shows the LAN device %s", path, body[strings.Index(body, `"torznab"`):][:200])
+		}
+	}
+	if !strings.Contains(do(s, "GET", "/api/settings", "127.0.0.1:5000", "", nil).Body.String(), "indexer-key") {
+		t.Error("this computer doesn't see the feed's key")
+	}
+
+	evil := s.app.Settings.Get()
+	evil.Extensions.MarketplaceURL = "https://evil.example/market.json"
+	evil.Extensions.AutoUpdate = true
+	evil.UI.AccentColor = "#22c3a6"
+	raw, _ := json.Marshal(settingsFor(httptest.NewRequest("GET", "/", nil).WithContext(context.WithValue(context.Background(), ctxKey{}, clientLAN)), evil))
+	if w := do(s, "PUT", "/api/settings", lan, string(raw), nil); w.Code != http.StatusOK {
+		t.Fatalf("LAN save: %d %s", w.Code, w.Body.String())
+	}
+	got := s.app.Settings.Get()
+	if got.Extensions.MarketplaceURL != config.DefaultMarketplaceURL || got.Extensions.AutoUpdate || got.UI.AccentColor != "#22c3a6" {
+		t.Errorf("LAN save: extensions %+v, accent %q", got.Extensions, got.UI.AccentColor)
+	}
+	// Saving the settings it was shown keeps the feed's key.
+	if got.TorrentSources.Torznab[0].URL != feed {
+		t.Errorf("feed URL after a LAN save: %q", got.TorrentSources.Torznab[0].URL)
 	}
 }
 

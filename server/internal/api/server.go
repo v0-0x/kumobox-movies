@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,8 @@ type Server struct {
 	mu   sync.Mutex
 	srv  *http.Server
 	addr string
+	// loginMu lets one password attempt in at a time (serverLogin).
+	loginMu sync.Mutex
 	// ForceWebUI is set when no desktop shell can exist (headless mode).
 	ForceWebUI bool
 }
@@ -204,6 +207,26 @@ func hostAllowed(host string) bool {
 	return false
 }
 
+// loopbackHostAllowed is the Host check for connections from this computer:
+// only names that can't be made to point elsewhere. A local network name
+// (.local, .lan, a single label...) can be answered by any device of the
+// network, and resolved to 127.0.0.1 later on, which would turn a page that
+// device served into one of ours. The computer's own name stays allowed
+// (some systems resolve it to 127.0.1.1).
+func loopbackHostAllowed(host string) bool {
+	h := host
+	if hh, _, err := net.SplitHostPort(host); err == nil {
+		h = hh
+	}
+	h = strings.Trim(strings.ToLower(h), "[]")
+	if h == "localhost" || net.ParseIP(h) != nil {
+		return true
+	}
+	name, _ := os.Hostname()
+	name, _, _ = strings.Cut(strings.ToLower(name), ".")
+	return name != "" && h == name
+}
+
 func (s *Server) sessionToken() string {
 	cfg := s.app.Settings.Get()
 	mac := hmac.New(sha256.New, []byte(s.app.ShellToken+"|"+cfg.Server.Password))
@@ -234,7 +257,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			http.Error(w, "KumoBox only accepts connections from this computer and your local network.", http.StatusForbidden)
 			return
 		}
-		if !hostAllowed(r.Host) {
+		if !hostAllowed(r.Host) || (kind == clientLocal && !loopbackHostAllowed(r.Host)) {
 			http.Error(w, "invalid host", http.StatusForbidden)
 			return
 		}
@@ -294,8 +317,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 	})
 }
 
+// kindOf is who sent r. Requests the middleware didn't classify (other
+// KumoBox apps' /api/peer/ requests) are trusted no more than the LAN.
 func kindOf(r *http.Request) clientKind {
-	k, _ := r.Context().Value(ctxKey{}).(clientKind)
+	k, ok := r.Context().Value(ctxKey{}).(clientKind)
+	if !ok {
+		return clientLAN
+	}
 	return k
 }
 
