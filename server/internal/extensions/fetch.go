@@ -139,6 +139,9 @@ type fetchRequest struct {
 	redirect string
 	timeout  time.Duration
 	noBypass bool
+	// limit is the most of the answer read (bytes); by default
+	// fetchLimit's for its type (memory.go). A larger answer is an error.
+	limit int64
 }
 
 type fetchResponse struct {
@@ -203,9 +206,21 @@ func (f *Fetcher) Do(ctx context.Context, fr fetchRequest) (*fetchResponse, erro
 	if fr.redirect == "error" && resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return nil, errors.New("redirect not allowed")
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	limit := fr.limit
+	if limit <= 0 {
+		limit = fetchLimit(resp.Header.Get("Content-Type"))
+	}
+	// Refused before reading when the server says how big it is; else read
+	// one byte past the limit to tell.
+	if resp.ContentLength > limit {
+		return nil, tooLarge(fr.url, limit)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, tooLarge(fr.url, limit)
 	}
 	out := &fetchResponse{
 		status:     resp.StatusCode,

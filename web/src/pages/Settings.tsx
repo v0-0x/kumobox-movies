@@ -42,6 +42,7 @@ import type { Settings, SharingPeer, Status } from "@/lib/types"
 import { cn, copyText, formatBytes, HOME_SECTIONS, relativeTime } from "@/lib/utils"
 import { LetterboxdSection } from "./settings/Letterboxd"
 import { MetadataSection } from "./settings/Metadata"
+import { NETWORK_PASSWORD_ID, networkIsOpen, OpenNetworkNotice } from "./settings/OpenNetworkNotice"
 import { Collapsible, Detect, Group, LanOnly, LinesInput, Password, PathInput, Row, type SectionProps, Stack, useLan } from "./settings/parts"
 import { ProvidersSection, TorrentSourcesSection } from "./settings/Sources"
 
@@ -167,6 +168,17 @@ export default function SettingsPage() {
     }, [accent])
     useEffect(() => () => accentPreviewStore.set(null), [])
 
+    // The open-network notice's button: to Settings › App, its network
+    // password field focused once the section is there.
+    const [focusPassword, setFocusPassword] = useState(false)
+    useEffect(() => {
+        if (!focusPassword || section !== "app") return
+        setFocusPassword(false)
+        const field = document.getElementById(NETWORK_PASSWORD_ID)
+        field?.scrollIntoView({ block: "center", behavior: "smooth" })
+        field?.focus({ preventScroll: true })
+    }, [focusPassword, section])
+
     if (!draft || !status) return null
     const set = <K extends keyof Settings>(k: K, v: Partial<Settings[K]>) => setDraft(d => (d ? { ...d, [k]: { ...d[k], ...v } } : d))
     const current = NAV.flatMap(g => g.items).find(i => i.id === section) ?? NAV[0].items[0]
@@ -215,7 +227,15 @@ export default function SettingsPage() {
             </aside>
 
             <section className="min-w-0 flex-1 lg:max-w-4xl">
-                <div className="mb-7 border-b border-line pb-5 lg:mt-[3.25rem]">
+                {networkIsOpen(status) && (
+                    <OpenNetworkNotice
+                        onSetPassword={() => {
+                            setParams({ tab: "app" }, { replace: true })
+                            setFocusPassword(true)
+                        }}
+                    />
+                )}
+                <div className={cn("mb-7 border-b border-line pb-5", !networkIsOpen(status) && "lg:mt-[3.25rem]")}>
                     <h2 className="text-xl font-semibold tracking-tight">{current.label}</h2>
                     <p className="mt-0.5 text-sm text-muted">{SUBTITLES[current.id]}</p>
                 </div>
@@ -347,7 +367,13 @@ function AppSection({ draft, set }: SectionProps) {
                 {draft.server.allowLan && <LanAddresses status={status} />}
                 {draft.server.allowLan && (
                     <Stack label="Network password" help={lan ? "Set on the computer KumoBox runs on." : "Asked once per device on your network. This computer never needs it."}>
-                        <Password value={draft.server.password} disabled={lan} onChange={v => set("server", { password: v })} placeholder={lan ? "" : "Leave empty for no password"} />
+                        <Password
+                            id={NETWORK_PASSWORD_ID}
+                            value={draft.server.password}
+                            disabled={lan}
+                            onChange={v => set("server", { password: v })}
+                            placeholder={lan ? "" : "Leave empty for no password (anyone on your network can use KumoBox)"}
+                        />
                     </Stack>
                 )}
                 <Row label="Port" help="Restart-free: KumoBox moves to the new port when you save.">

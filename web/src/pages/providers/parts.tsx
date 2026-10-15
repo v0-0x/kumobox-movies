@@ -56,9 +56,14 @@ export function TypeBadges({ types }: { types: string[] }) {
     )
 }
 
-// Shown instead of install buttons on devices on the LAN.
+// Shown instead of install buttons on devices on the LAN (the server
+// refuses them: api/lan.go).
 export function LanNote() {
-    return <p className="rounded-lg bg-white/[0.03] px-4 py-3 text-sm text-muted">Providers can only be installed or removed on the computer KumoBox runs on.</p>
+    return (
+        <p className="rounded-lg bg-white/[0.03] px-4 py-3 text-sm text-muted">
+            Providers and extensions are installed, updated, set up, turned on or off and removed on the computer KumoBox runs on.
+        </p>
+    )
 }
 
 // A section of a tab: title, description and actions.

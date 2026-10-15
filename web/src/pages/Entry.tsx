@@ -134,7 +134,7 @@ function EntryHero({ entry, onTab }: { entry: EntryView; onTab: (t: Tab) => void
 
     const refresh = async () => {
         try {
-            await api.get(`/api/media/${media.id}?refresh=1`)
+            await api.post(`/api/media/${media.id}/refresh`)
             qc.invalidateQueries({ queryKey: ["entry", media.id] })
             qc.invalidateQueries({ queryKey: ["season", media.id] })
             toast.success("Metadata refreshed")

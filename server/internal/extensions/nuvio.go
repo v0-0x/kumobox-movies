@@ -266,15 +266,12 @@ func nuvioFlexStrings(raw json.RawMessage) []string {
 // nuvioFetch GETs a URL through f and returns the body, refusing bodies
 // over limit bytes.
 func nuvioFetch(ctx context.Context, f *Fetcher, u string, limit int) ([]byte, error) {
-	resp, err := f.Do(ctx, fetchRequest{url: u, method: "GET", timeout: nuvioFetchTimeout, noBypass: true})
+	resp, err := f.Do(ctx, fetchRequest{url: u, method: "GET", timeout: nuvioFetchTimeout, noBypass: true, limit: int64(limit)})
 	if err != nil {
 		return nil, err
 	}
 	if resp.status >= 400 {
 		return nil, fmt.Errorf("%s answered %d %s", u, resp.status, resp.statusText)
-	}
-	if len(resp.body) > limit {
-		return nil, fmt.Errorf("%s is too large (over %d MB)", u, limit>>20)
 	}
 	return resp.body, nil
 }

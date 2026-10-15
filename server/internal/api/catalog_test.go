@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
@@ -20,7 +21,20 @@ const testTMDBKey = "0123456789abcdef0123456789abcdef"
 // catalog package's fixtures (/movie/155 is movie_155.json), with a key set.
 func newCatalogServer(t *testing.T) *Server {
 	t.Helper()
+	s, _ := newCountingCatalogServer(t)
+	return s
+}
+
+// newCountingCatalogServer is newCatalogServer, and how many times its TMDB
+// was asked for a path (e.g. "/movie/155").
+func newCountingCatalogServer(t *testing.T) (*Server, func(path string) int) {
+	t.Helper()
+	var mu sync.Mutex
+	hits := map[string]int{}
 	tmdb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits[r.URL.Path]++
+		mu.Unlock()
 		name := strings.ReplaceAll(strings.Trim(r.URL.Path, "/"), "/", "_") + ".json"
 		raw, err := os.ReadFile(filepath.Join("..", "catalog", "testdata", name))
 		if err != nil || r.URL.Query().Get("api_key") != testTMDBKey {
@@ -38,7 +52,11 @@ func newCatalogServer(t *testing.T) *Server {
 	if _, err := s.app.Settings.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
-	return s
+	return s, func(path string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits[path]
+	}
 }
 
 func decodeBody(t *testing.T, w *httptest.ResponseRecorder, out any) {

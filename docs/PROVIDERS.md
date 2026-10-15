@@ -111,7 +111,9 @@ excepted), by what the link answers with
 ## Adding providers
 
 Providers are managed on the **Providers & extensions** page (devices on
-the LAN can use them, not install or remove them).
+the LAN can use them, not install, update, set up, turn on or off, reorder
+or remove them, nor read other collections and repositories than those of
+the settings).
 
 ### Stremio addons
 
@@ -164,7 +166,8 @@ repository).
 | Route | What |
 |---|---|
 | `GET /api/providers` | every provider, in order: `[{id, name, kind, icon, types, enabled, extension}]` |
-| `GET /api/providers/streams?mediaId=&episode=&provider=&refresh=1` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
+| `GET /api/providers/streams?mediaId=&episode=&provider=` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
+| `POST /api/providers/streams/refresh` | `{mediaId, episode, provider}`: the same, the providers asked again |
 | `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, each named for the conversion endpoints as `remote`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
 | `GET /api/providers/subtitles?mediaId=&episode=&remote=&filename=` | the subtitles of subtitle addons for the very file the stream `remote` (a source's `remote:` path) plays, matched by its size and OpenSubtitles hash: `[{url, language, label, original, addon}]`, WebVTT through the proxy, the preferred languages first |
 | `POST /api/providers/download` | `{mediaId, episodes: [keys], provider, quality}` → the queued downloads |
@@ -172,6 +175,7 @@ repository).
 | `GET/POST/DELETE /api/providers/stremio/addons` | installed addons; install `{url, allowLocal, allowAdult}` (409 `{error, code: "local" \| "adult" \| "configure" \| "unsupported", configureUrl}`); remove `?key=` (transport URL or `stremio:<id>`) |
 | `PUT /api/providers/stremio/addons/enabled`, `…/order` | `{key, enabled}`, `{keys}` |
 | `POST /api/providers/stremio/refresh`, `GET /api/providers/stremio/catalog?url=` | manifests downloaded again; an addon collection (the first of `providers.stremioCatalogs` by default) |
+| `POST /api/providers/stremio/catalog/refresh` | `{url}`: the collection downloaded again |
 | `GET /api/providers/nuvio/repo?url=`, `POST/DELETE /api/providers/nuvio/repos` | a repository with the installed and updatable providers marked; keeping or forgetting one |
 | `POST /api/providers/nuvio/install`, `…/install-all` | `{repo, id}`, `{repo}` (the repository is kept too) |
 
@@ -316,6 +320,16 @@ Differences with the Nuvio app:
   30 seconds. So a development server on the LAN (`npm start` in the
   nuvio-providers repository) can't be used: publish the repository
   somewhere public (a GitHub repository, a gist...) to test it.
+* Memory is bounded, for every extension (`server/internal/extensions/memory.go`):
+  `fetch` reads answers up to 8 MB (HTML, JSON, JavaScript, XML, text;
+  16 MB for other types) and rejects larger ones; at most 8 providers run
+  at once (the others wait their turn, within their timeout); a call during
+  which KumoBox's memory grows by more than half its soft limit (128 MB by
+  default, see `KUMOBOX_MEMORY_LIMIT_MB`) is stopped with "the provider
+  used too much memory and was stopped", and the provider starts afresh on
+  its next call. `String.prototype.repeat`/`padStart`/`padEnd` refuse
+  results over 32 M characters (a `RangeError`, as V8 does past its own
+  limit).
 * `console.log`/`error` go to the provider's logs (Extensions › the
   provider › Logs).
 * Do no network work at the top level of the file: only in `getStreams`.

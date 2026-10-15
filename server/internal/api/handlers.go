@@ -10,6 +10,7 @@ import (
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
+	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
@@ -610,7 +611,7 @@ func (s *Server) clearHistory(r *http.Request) (any, error) {
 
 func (s *Server) installExtension(r *http.Request) (any, error) {
 	if !isTrusted(r) {
-		return nil, errLANInstall
+		return nil, errLANManage
 	}
 	var body struct {
 		ManifestURI string `json:"manifestURI"`
@@ -624,6 +625,31 @@ func (s *Server) installExtension(r *http.Request) (any, error) {
 	}
 	s.app.Hub.Success("Installed " + info.Manifest.Name)
 	return info, nil
+}
+
+// marketplace is GET /api/extensions/marketplace?url=: an extension index
+// (Settings › App › Extensions' by default), from the cache when it has it.
+// Devices on the LAN read the one of the settings only.
+func (s *Server) marketplace(r *http.Request) (any, error) {
+	u := r.URL.Query().Get("url")
+	set := s.app.Settings.Get().Extensions.MarketplaceURL
+	if u != "" && !lanMayFetch(r, u, set, config.DefaultMarketplaceURL) {
+		return nil, forbidden("other marketplaces can only be opened on this computer")
+	}
+	return s.app.Extensions.Marketplace(r.Context(), u, false)
+}
+
+// refreshMarketplace is POST /api/extensions/marketplace/refresh {url}: the
+// index downloaded again. A POST, as everything that makes KumoBox fetch
+// again rather than read: other sites can't send one (middleware).
+func (s *Server) refreshMarketplace(r *http.Request) (any, error) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := decode(r, &body); err != nil {
+		return nil, err
+	}
+	return s.app.Extensions.Marketplace(r.Context(), strings.TrimSpace(body.URL), true)
 }
 
 func (s *Server) enableExtension(r *http.Request) (any, error) {

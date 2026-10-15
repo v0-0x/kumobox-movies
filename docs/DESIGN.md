@@ -121,7 +121,7 @@ hosts (tests, offline demos).
 | Kumo | KumoBox |
 |---|---|
 | `GET /api/anime/collection` | `GET /api/media/collection?type=` |
-| `GET /api/anime/{id}` | `GET /api/media/{id}` (`?refresh=1`) |
+| `GET /api/anime/{id}` | `GET /api/media/{id}`; fetched from TMDB again: `POST /api/media/{id}/refresh` |
 | `POST /api/anime/{id}/entry`, `DELETE …/entry` | `POST/DELETE /api/media/{id}/entry` |
 | `POST /api/anime/{id}/episode` | `POST /api/media/{id}/episode` (body `{episode: key, watched}`) |
 | `GET/PUT /api/anime/{id}/language` | `GET/PUT /api/media/{id}/language` |
@@ -155,6 +155,26 @@ or sent) that the user deletes is remembered (`diary_deleted`): syncing
 doesn't import it again, by its id or as the same film the same day.
 Events: `letterboxd-status` (with the
 status), `diary-updated`, `collection-updated`.
+
+## Who may do what (`api/server.go`, `api/lan.go`)
+
+* **GET requests only read** (filling a cache when it misses). Whatever
+  fetches again, syncs, installs, tests or changes something is a POST,
+  PUT, PATCH or DELETE, which the middleware only takes from KumoBox's own
+  pages (Origin, Fetch Metadata and Host checks): a link or an image on
+  another website can't trigger it. Fetching again: `POST
+  /api/media/{id}/refresh`, `POST /api/providers/streams/refresh`, `POST
+  /api/providers/stremio/catalog/refresh`, `POST
+  /api/extensions/marketplace/refresh`; asking the KumoBoxes sharing their
+  libraries again: `POST /api/sharing/refresh`.
+* **Devices on the LAN** (`isTrusted` false) browse, play, download and
+  change the list, but never get secrets (`settingsFor`, `eventFor`,
+  `updateFor`, `extensionsFor`) and don't manage providers, extensions and
+  plugins: installing, updating, removing, turning them on or off, setting
+  them up, ordering Stremio addons, checking for updates and reading their
+  logs are this computer's (`thisComputer`). They read the marketplace,
+  addon collections and Nuvio repositories of the settings only
+  (`lanMayFetch`).
 
 ## Conventions
 

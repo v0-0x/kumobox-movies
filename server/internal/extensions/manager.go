@@ -61,9 +61,14 @@ type runtimeStart struct {
 func (l *Loaded) Runtime() (*Runtime, error) {
 	l.mu.Lock()
 	if rt := l.rt; rt != nil {
-		rt.touch() // about to be used: not idle
-		l.mu.Unlock()
-		return rt, nil
+		if !rt.closed.Load() {
+			rt.touch() // about to be used: not idle
+			l.mu.Unlock()
+			return rt, nil
+		}
+		// Closed under it (the memory watchdog): started again.
+		l.rt = nil
+		l.lastLogs = joinLogs(l.lastLogs, rt.Logs())
 	}
 	if s := l.starting; s != nil {
 		l.mu.Unlock()
@@ -91,7 +96,7 @@ func (l *Loaded) Runtime() (*Runtime, error) {
 		var payload string
 		var prefs map[string]string
 		payload, prefs, cfgErr = ApplyUserConfig(l.Manifest, code, &cfg)
-		rt, err = l.mgr.start(ctx, l.Manifest, payload, prefs)
+		rt, err = l.mgr.start(ctx, l.Manifest, payload, prefs, l.memoryStopped)
 	}
 	cancel()
 
@@ -121,6 +126,20 @@ func (l *Loaded) Runtime() (*Runtime, error) {
 	s.rt, s.err = rt, err
 	close(s.done)
 	return rt, err
+}
+
+// memoryStopped forgets a runtime the memory watchdog stopped (memory.go):
+// the provider's next call starts it again, and until then its card says
+// why.
+func (l *Loaded) memoryStopped(rt *Runtime) {
+	l.mu.Lock()
+	if l.rt == rt {
+		l.rt = nil
+		l.lastLogs = joinLogs(l.lastLogs, rt.Logs())
+	}
+	l.err = ErrTooMuchMemory.Error()
+	l.mu.Unlock()
+	l.mgr.hub.Publish(events.ExtensionsUpdate, nil)
 }
 
 // code is the extension's code.
@@ -337,26 +356,27 @@ func (m *Manager) Get(id string) (Info, error) {
 
 // start compiles and launches a provider runtime. Cancelling ctx aborts
 // loading. It never panics: Runtime's waiters rely on it returning.
-func (m *Manager) start(ctx context.Context, man *Manifest, payload string, prefs map[string]string) (rt *Runtime, err error) {
+func (m *Manager) start(ctx context.Context, man *Manifest, payload string, prefs map[string]string, onTooMuchMemory func(*Runtime)) (rt *Runtime, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			rt, err = nil, fmt.Errorf("could not start the extension: %v", p)
 		}
 	}()
 	if man.Type == TypeNuvioProvider { // nuvio_runtime.go
-		return m.startNuvio(ctx, man, payload)
+		return m.startNuvio(ctx, man, payload, onTooMuchMemory)
 	}
 	prog, err := Compile(man, payload)
 	if err != nil {
 		return nil, err
 	}
 	return NewRuntime(man, prog, RuntimeOptions{
-		Context:     ctx,
-		LoadTimeout: m.loadTimeout,
-		Prefs:       prefs,
-		Store:       m.store(man.ID),
-		Storage:     NewStorage(m.db, man.ID),
-		Fetcher:     m.fetcher.Isolated(), // own cookie jar, not shared across extensions
+		Context:         ctx,
+		LoadTimeout:     m.loadTimeout,
+		Prefs:           prefs,
+		Store:           m.store(man.ID),
+		Storage:         NewStorage(m.db, man.ID),
+		Fetcher:         m.fetcher.Isolated(), // own cookie jar, not shared across extensions
+		OnTooMuchMemory: onTooMuchMemory,
 	})
 }
 

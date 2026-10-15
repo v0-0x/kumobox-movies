@@ -3,8 +3,9 @@ import { useMemo, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { toast } from "@/lib/toast"
 import { EpisodeCard } from "@/components/EpisodeCard"
-import { Carousel, MediaCard, MediaCardSkeleton, MediaGrid } from "@/components/MediaCard"
+import { Carousel, cardMinWidth, cardTextHeight, MediaCard, MediaCardSkeleton, MediaGrid } from "@/components/MediaCard"
 import { useLibraryCardMenu } from "@/components/library/LibraryCardMenu"
+import { VirtualGrid, VirtualList } from "@/components/VirtualList"
 import { Badge, Button, EmptyState, IconButton, Input, Progress, Select, Tabs, Tooltip } from "@/components/ui"
 import { api } from "@/lib/api"
 import { fileKeys, fileLabel } from "@/lib/files"
@@ -84,6 +85,15 @@ export default function LocalLibraryPage() {
     const [sort, setSort] = usePersisted<SortKey>("kumobox-local-sort", "added")
     const [view, setView] = usePersisted<View>("kumobox-local-view", "grid")
     const [q, setQ] = useState("")
+    // The list's rows showing their files (kept here: a row scrolled far
+    // away isn't rendered).
+    const [openRows, setOpenRows] = useState<Set<number>>(() => new Set())
+    const toggleRow = (id: number) =>
+        setOpenRows(s => {
+            const n = new Set(s)
+            if (!n.delete(id)) n.add(id)
+            return n
+        })
 
     const titles = useMemo(() => titlesData ?? [], [titlesData])
 
@@ -340,17 +350,32 @@ export default function LocalLibraryPage() {
                                 Try another filter or search.
                             </EmptyState>
                         ) : view === "grid" ? (
-                            <MediaGrid size={status?.settings.ui.cardSize}>
-                                {shown.map(t => (
-                                    <MediaCard key={t.media.id} media={t.media} listEntry={t.listEntry} localCount={t.files.length} downloaded={t.episodes} menu={libraryMenu.menu(t.media)} />
-                                ))}
-                            </MediaGrid>
+                            // Only the rows of cards near the screen are rendered:
+                            // libraries can have thousands of titles.
+                            <VirtualGrid
+                                items={shown}
+                                getKey={t => t.media.id}
+                                minItemWidth={cardMinWidth(status?.settings.ui.cardSize)}
+                                extraHeight={cardTextHeight}
+                                renderItem={t => <MediaCard media={t.media} listEntry={t.listEntry} localCount={t.files.length} downloaded={t.episodes} menu={libraryMenu.menu(t.media)} />}
+                            />
                         ) : (
-                            <div className="flex flex-col gap-3">
-                                {shown.map(t => (
-                                    <LibraryRow key={t.media.id} item={t} trusted={trusted && !host} onOpen={openFolder} onPlay={f => playLocal(f.path, f.mediaId, f.episode)} />
-                                ))}
-                            </div>
+                            <VirtualList
+                                items={shown}
+                                getKey={t => t.media.id}
+                                estimateSize={122}
+                                gap={12}
+                                renderItem={t => (
+                                    <LibraryRow
+                                        item={t}
+                                        trusted={trusted && !host}
+                                        open={openRows.has(t.media.id)}
+                                        onToggle={() => toggleRow(t.media.id)}
+                                        onOpen={openFolder}
+                                        onPlay={f => playLocal(f.path, f.mediaId, f.episode)}
+                                    />
+                                )}
+                            />
                         )}
                     </section>
                 )}
@@ -369,8 +394,21 @@ function Stat({ label, value }: { label: string; value: string }) {
     )
 }
 
-function LibraryRow({ item: t, trusted, onOpen, onPlay }: { item: LibraryTitle; trusted: boolean; onOpen: (path: string) => void; onPlay: (f: LocalFile) => void }) {
-    const [open, setOpen] = useState(false)
+function LibraryRow({
+    item: t,
+    trusted,
+    open,
+    onToggle,
+    onOpen,
+    onPlay,
+}: {
+    item: LibraryTitle
+    trusted: boolean
+    open: boolean
+    onToggle: () => void
+    onOpen: (path: string) => void
+    onPlay: (f: LocalFile) => void
+}) {
     const m = t.media
     const le = t.listEntry
     const total = totalEpisodes(m)
@@ -444,7 +482,7 @@ function LibraryRow({ item: t, trusted, onOpen, onPlay }: { item: LibraryTitle; 
                             <FolderOpen className="size-4" />
                         </IconButton>
                     )}
-                    <IconButton label={open ? "Hide files" : "Show files"} variant="subtle" size="sm" onClick={() => setOpen(!open)}>
+                    <IconButton label={open ? "Hide files" : "Show files"} variant="subtle" size="sm" onClick={onToggle}>
                         <ChevronDown className={cn("size-4 transition-transform", open && "rotate-180")} />
                     </IconButton>
                 </div>

@@ -17,6 +17,7 @@
 - **Local library** page with only the titles you have on disk: recently added, filters by list status, sorting, grid or list view with the episodes you have per season, size, resolution and release group, and one-click "play next".
 - **Library sharing** between the KumoBox apps on your computers at home: they find each other by themselves (or by address). Turn on **Share my library** in **Settings › Local Library › Library sharing** on the computer with the files: its movies and shows show up on the others and play like local files.
 - Library tools to fix matches by hand, change season/episode numbers, lock files and ignore junk. Safe with removable drives; symlinked folders are followed.
+- Stays smooth with libraries of thousands of titles and files: the Local library and library tools only draw what's on screen.
 
 **Movies & shows (TMDB)**
 - Posters, backdrops, descriptions, genres, certifications, cast & crew, trailers, collections (franchises), recommendations, and for shows every **season and episode** with titles, summaries, stills and air dates. All artwork is cached locally, so it loads instantly and still shows offline.
@@ -55,7 +56,7 @@ See [docs/PROVIDERS.md](docs/PROVIDERS.md) for the formats and how to write a pr
 - **Auto downloader** for shows: rules per show (resolution, release groups, keywords, minimum seeders, season packs) grab new episodes as they air.
 
 **Extensions & plugins**
-- Runs online-streaming, torrent and Nuvio providers in a sandboxed JavaScript runtime with the APIs extensions use (`fetch`, `LoadDoc`/cheerio, `CryptoJS`, `$store`, `$storage`, user config…), and **UI plugins** (trays, title-page buttons, webviews, toasts, storage). Plugins never get file, command or local-network access.
+- Runs online-streaming, torrent and Nuvio providers in a sandboxed JavaScript runtime with the APIs extensions use (`fetch`, `LoadDoc`/cheerio, `CryptoJS`, `$store`, `$storage`, user config…), and **UI plugins** (trays, title-page buttons, webviews, toasts, storage). Plugins never get file, command or local-network access, and an extension that uses too much memory is stopped (see [docs/PROVIDERS.md](docs/PROVIDERS.md)).
 
 **Extras**: can keep running in the tray (or the Dock) when its window is closed, so streaming to other devices and downloads go on, and start in the background when you log in (Settings › App › Desktop app); updates itself from the Home page, Discord rich presence (local IPC), accent colours, spoiler blur, Ctrl+K quick search, server logs and cache viewer.
 
@@ -65,11 +66,11 @@ See [docs/PROVIDERS.md](docs/PROVIDERS.md) for the formats and how to write a pr
 |---|---|
 | The desktop window | Always (authenticated with a per-run token) |
 | A browser on this PC | Only when **Settings › App › Web UI** is on (`http://127.0.0.1:43311`) |
-| Devices on your home network | Only when **Allow devices on my network** is on. They can be password protected, and can't change paths/programs/providers, see keys or browse folders. |
+| Devices on your home network | Only when **Allow devices on my network** is on. They can be password protected (Settings warns while they aren't), and can't change paths/programs, install, set up, turn on or off or remove providers, extensions and plugins, see keys or browse folders. |
 | KumoBox on your other computers | With **Library sharing** on: they see it, and only those you turn on get the library, and nothing else (each KumoBox has its own key pair; requests are signed, and play only files of the library). |
 | Anything on the internet | **Never** (connections from public IP addresses are refused) |
 
-The server also rejects other websites' requests (Origin check) and DNS rebinding tricks (Host check). Extensions, providers and the stream/image proxies can't connect to localhost or your LAN (Jackett/Prowlarr indexers and addons you explicitly allow excepted). Nothing is sent anywhere except the services you use (TMDB, Letterboxd, the providers and torrent sources you turn on).
+The server also rejects other websites' requests (Origin check) and DNS rebinding tricks (Host check); GET requests only read (whatever changes, syncs, installs or fetches again is a POST), so a link or an image on another site can't trigger any of that. Extensions, providers and the stream/image proxies can't connect to localhost or your LAN (Jackett/Prowlarr indexers and addons you explicitly allow excepted). Nothing is sent anywhere except the services you use (TMDB, Letterboxd, the providers and torrent sources you turn on).
 
 KumoBox and Kumo can run side by side: KumoBox has its own port (43311), data folder and app id.
 
@@ -125,7 +126,7 @@ cd web && npm run dev                # UI dev server on :43100 (proxies /api)
 cd desktop && npm i && npx electron .   # desktop window (uses ../dist/kumobox)
 ```
 
-`KUMOBOX_DATA_DIR` moves the data folder; `KUMOBOX_TMDB_URL` / `KUMOBOX_TMDB_IMAGE_URL` point the catalog at another TMDB-compatible host, and `KUMOBOX_LETTERBOXD_URL` / `KUMOBOX_LETTERBOXD_API_URL` the Letterboxd sync at another host serving the diary feeds (`<url>/<username>/rss/`) and the API (tests, offline demos). `KUMOBOX_MEMORY_LIMIT_MB` changes the server's soft memory limit (256 MB; `0` turns it off, `GOMEMLIMIT` wins when set).
+`KUMOBOX_DATA_DIR` moves the data folder; `KUMOBOX_TMDB_URL` / `KUMOBOX_TMDB_IMAGE_URL` point the catalog at another TMDB-compatible host, and `KUMOBOX_LETTERBOXD_URL` / `KUMOBOX_LETTERBOXD_API_URL` the Letterboxd sync at another host serving the diary feeds (`<url>/<username>/rss/`) and the API (tests, offline demos). `KUMOBOX_MEMORY_LIMIT_MB` changes the server's soft memory limit (256 MB; `0` turns it off, `GOMEMLIMIT` wins when set); an extension call that grows the heap by more than half of it is stopped.
 
 | Path | What |
 |---|---|

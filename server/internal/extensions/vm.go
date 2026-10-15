@@ -127,6 +127,13 @@ type Runtime struct {
 	calls    atomic.Int32
 	lastUsed atomic.Int64
 
+	// loaded is set once the payload's top-level code ran. memoryStopped is
+	// set when the memory watchdog stopped the runtime (memory.go), which
+	// then calls onTooMuchMemory if it had loaded.
+	loaded          atomic.Bool
+	memoryStopped   atomic.Bool
+	onTooMuchMemory func(*Runtime)
+
 	prefs   map[string]string
 	store   *MemStore
 	storage *Storage
@@ -149,6 +156,9 @@ type RuntimeOptions struct {
 	// Context aborts loading when cancelled. It has no effect once
 	// NewRuntime has returned.
 	Context context.Context
+	// OnTooMuchMemory runs after the memory watchdog stopped the loaded
+	// runtime (memory.go), from another goroutine.
+	OnTooMuchMemory func(*Runtime)
 }
 
 const (
@@ -170,11 +180,37 @@ func noFileModules(string) ([]byte, error) { return nil, require.ModuleFileDoesN
 // NewRuntime starts an event loop, installs the bindings and runs the
 // program.
 func NewRuntime(m *Manifest, prog *goja.Program, opts RuntimeOptions) (*Runtime, error) {
+	timeout := opts.LoadTimeout
+	if timeout <= 0 {
+		timeout = defaultLoadTimeout
+	}
+	var abort <-chan struct{}
+	if opts.Context != nil {
+		abort = opts.Context.Done()
+	}
+	// Loading runs the payload: it waits for its turn (memory.go), as long
+	// as it may take to load at most.
+	waitCtx := opts.Context
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+	waitCtx, cancelWait := context.WithTimeout(waitCtx, timeout)
+	release, err := acquireVM(waitCtx)
+	cancelWait()
+	if err != nil {
+		if opts.Context != nil && opts.Context.Err() != nil {
+			return nil, errStopped
+		}
+		return nil, errBusy
+	}
+	defer release()
+
 	reg := require.NewRegistry(require.WithLoader(noFileModules))
 	loop := eventloop.NewEventLoop(eventloop.WithRegistry(reg), eventloop.EnableConsole(false))
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Runtime{ID: m.ID, manifest: m, loop: loop, ctx: ctx, cancel: cancel,
-		prefs: opts.Prefs, store: opts.Store, storage: opts.Storage, fetcher: opts.Fetcher}
+		prefs: opts.Prefs, store: opts.Store, storage: opts.Storage, fetcher: opts.Fetcher,
+		onTooMuchMemory: opts.OnTooMuchMemory}
 	if r.store == nil {
 		r.store = NewMemStore()
 	}
@@ -183,6 +219,8 @@ func NewRuntime(m *Manifest, prog *goja.Program, opts RuntimeOptions) (*Runtime,
 	}
 	r.touch()
 	loop.Start()
+	watch := r.watchMemory()
+	defer watch.stop()
 
 	errCh := make(chan error, 1)
 	// The loop's first job publishes the VM before running anything, then
@@ -219,22 +257,20 @@ func NewRuntime(m *Manifest, prog *goja.Program, opts RuntimeOptions) (*Runtime,
 		r.Close()
 		return nil, errors.New("event loop not running")
 	}
-	timeout := opts.LoadTimeout
-	if timeout <= 0 {
-		timeout = defaultLoadTimeout
-	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	var abort <-chan struct{}
-	if opts.Context != nil {
-		abort = opts.Context.Done()
-	}
 	select {
 	case err := <-errCh:
+		watch.stop()
+		if r.memoryStopped.Load() {
+			err = ErrTooMuchMemory
+		}
 		if err != nil {
 			r.Close()
 			return nil, err
 		}
+	case <-watch.tripped:
+		return nil, ErrTooMuchMemory
 	case <-timer.C:
 		r.Close()
 		return nil, errors.New("extension took too long to load")
@@ -242,6 +278,7 @@ func NewRuntime(m *Manifest, prog *goja.Program, opts RuntimeOptions) (*Runtime,
 		r.Close()
 		return nil, errStopped
 	}
+	r.loaded.Store(true)
 	return r, nil
 }
 
@@ -479,6 +516,13 @@ func intProp(o *goja.Object, name string) int64 {
 // awaiting Promises. The result is returned as JSON.
 func (r *Runtime) CallProvider(ctx context.Context, method string, args ...any) (json.RawMessage, error) {
 	defer r.use()()
+	release, err := acquireVM(ctx) // its turn (memory.go)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	watch := r.watchMemory()
+	defer watch.stop()
 	type result struct {
 		raw json.RawMessage
 		err error
@@ -529,15 +573,18 @@ func (r *Runtime) CallProvider(ctx context.Context, method string, args ...any) 
 	defer timeout.Stop()
 	select {
 	case res := <-ch:
-		if res.err != nil {
-			r.log("error", method+": "+res.err.Error())
+		if err := r.callError(res.err); err != nil {
+			r.log("error", method+": "+err.Error())
+			return nil, err
 		}
-		return res.raw, res.err
+		return res.raw, nil
 	case <-ctx.Done():
 		r.unstick()
 		return nil, ctx.Err()
 	case <-r.ctx.Done():
-		return nil, errStopped
+		return nil, r.callError(errStopped)
+	case <-watch.tripped:
+		return nil, ErrTooMuchMemory
 	case <-timeout.C:
 		r.unstick()
 		return nil, fmt.Errorf("%s() timed out", method)
@@ -655,6 +702,9 @@ func (r *Runtime) installBindings(vm *goja.Runtime) error {
 	installDoc(vm)
 	installCrypto(vm)
 
+	if _, err := vm.RunString(fmt.Sprintf(allocationGuards, maxStringLength)); err != nil {
+		return err
+	}
 	// JS helpers that are simpler to write in JS.
 	_, err := vm.RunString(jsPrelude)
 	return err

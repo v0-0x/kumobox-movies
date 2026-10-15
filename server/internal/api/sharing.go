@@ -126,14 +126,14 @@ func (s *Server) peerRoutes() {
 	})))
 
 	// This KumoBox's settings and the libraries shared with it.
-	// Opened: what the others share is asked for again.
-	m.HandleFunc("GET /api/sharing", h(func(r *http.Request) (any, error) {
+	m.HandleFunc("GET /api/sharing", h(func(r *http.Request) (any, error) { return s.app.Share.Status(), nil }))
+	m.HandleFunc("GET /api/sharing/libraries", h(func(r *http.Request) (any, error) { return s.app.Share.Libraries(), nil }))
+	// The pages showing them (Settings, Local library, Home's Continue
+	// watching) have the others asked again what they share and where they
+	// are in what they watch. A POST: a GET only reads (routes.go).
+	m.HandleFunc("POST /api/sharing/refresh", h(func(r *http.Request) (any, error) {
 		s.app.Share.Refresh()
-		return s.app.Share.Status(), nil
-	}))
-	m.HandleFunc("GET /api/sharing/libraries", h(func(r *http.Request) (any, error) {
-		s.app.Share.Refresh()
-		return s.app.Share.Libraries(), nil
+		return nil, nil
 	}))
 	m.HandleFunc("POST /api/sharing/peers/{id}", h(func(r *http.Request) (any, error) {
 		if !isTrusted(r) {
