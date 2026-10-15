@@ -35,7 +35,9 @@ order) and `server/internal/api/providers_routes.go` (the HTTP API).
 ## Adding providers
 
 Providers are managed on the **Providers & extensions** page (devices on
-the LAN can use them, not install or remove them).
+the LAN can use them, not install, update, set up, turn on or off, reorder
+or remove them, nor read other collections and repositories than those of
+the settings).
 
 ### Stremio addons
 
@@ -88,13 +90,15 @@ repository).
 | Route | What |
 |---|---|
 | `GET /api/providers` | every provider, in order: `[{id, name, kind, icon, types, enabled, extension}]` |
-| `GET /api/providers/streams?mediaId=&episode=&provider=&refresh=1` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
+| `GET /api/providers/streams?mediaId=&episode=&provider=` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
+| `POST /api/providers/streams/refresh` | `{mediaId, episode, provider}`: the same, the providers asked again |
 | `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
 | `POST /api/providers/download` | `{mediaId, episodes: [keys], provider, quality}` → the queued downloads |
 | `GET /api/providers/search?provider=&q=`, `POST /api/providers/mapping` | an extension's titles, and picking one by hand `{provider, mediaId, id, title}` |
 | `GET/POST/DELETE /api/providers/stremio/addons` | installed addons; install `{url, allowLocal, allowAdult}` (409 `{error, code: "local" \| "adult" \| "configure" \| "unsupported", configureUrl}`); remove `?key=` (transport URL or `stremio:<id>`) |
 | `PUT /api/providers/stremio/addons/enabled`, `…/order` | `{key, enabled}`, `{keys}` |
 | `POST /api/providers/stremio/refresh`, `GET /api/providers/stremio/catalog?url=` | manifests downloaded again; an addon collection (the first of `providers.stremioCatalogs` by default) |
+| `POST /api/providers/stremio/catalog/refresh` | `{url}`: the collection downloaded again |
 | `GET /api/providers/nuvio/repo?url=`, `POST/DELETE /api/providers/nuvio/repos` | a repository with the installed and updatable providers marked; keeping or forgetting one |
 | `POST /api/providers/nuvio/install`, `…/install-all` | `{repo, id}`, `{repo}` (the repository is kept too) |
 

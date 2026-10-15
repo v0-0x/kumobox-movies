@@ -174,12 +174,15 @@ function Installed({ lan }: { lan: boolean }) {
             setRefreshing(false)
         }
     }
+    // Devices on the LAN see the addons; this computer orders, refreshes,
+    // turns on or off and removes them.
     return (
         <TabSection
             title="Installed addons"
             description="Asked in this order, their streams listed in it when they're as good. Addons serving subtitles add theirs to the direct links."
             actions={
-                addons.length > 0 && (
+                addons.length > 0 &&
+                !lan && (
                     <Button size="sm" icon={<RefreshCw className={cn("size-4", refreshing && "animate-spin")} />} disabled={refreshing} onClick={refresh}>
                         Refresh
                     </Button>
@@ -217,13 +220,17 @@ function Installed({ lan }: { lan: boolean }) {
                                     </div>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
-                                    <IconButton size="sm" label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
-                                        <ArrowUp className="size-4" />
-                                    </IconButton>
-                                    <IconButton size="sm" label="Move down" disabled={i === addons.length - 1} onClick={() => move(i, 1)}>
-                                        <ArrowDown className="size-4" />
-                                    </IconButton>
-                                    {m.behaviorHints?.configurable && (
+                                    {!lan && (
+                                        <>
+                                            <IconButton size="sm" label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
+                                                <ArrowUp className="size-4" />
+                                            </IconButton>
+                                            <IconButton size="sm" label="Move down" disabled={i === addons.length - 1} onClick={() => move(i, 1)}>
+                                                <ArrowDown className="size-4" />
+                                            </IconButton>
+                                        </>
+                                    )}
+                                    {m.behaviorHints?.configurable && !lan && (
                                         <IconButton size="sm" label="Configure (then install the URL it gives you)" onClick={() => openExternal(baseUrl(a) + "/configure")}>
                                             <Settings2 className="size-4" />
                                         </IconButton>
@@ -239,7 +246,7 @@ function Installed({ lan }: { lan: boolean }) {
                                         </IconButton>
                                     )}
                                     <span className="ml-2">
-                                        <Switch checked={a.enabled} onChange={v => call(api.put("/api/providers/stremio/addons/enabled", { key: a.transportUrl, enabled: v }))} />
+                                        <Switch checked={a.enabled} disabled={lan} onChange={v => call(api.put("/api/providers/stremio/addons/enabled", { key: a.transportUrl, enabled: v }))} />
                                     </span>
                                 </div>
                             </div>
@@ -259,6 +266,21 @@ function Browse({ lan, install, busy }: { lan: boolean; install: (url: string, o
     const [url, setUrl] = useState("")
     const effective = url || catalogs[0] || ""
     const { data, isLoading, error, refetch, isFetching } = useStremioCatalog(effective)
+    const qc = useQueryClient()
+    const [reloading, setReloading] = useState(false)
+    // Downloaded again on this computer; devices on the LAN read it as it
+    // was last downloaded.
+    const reload = async () => {
+        if (lan) return void refetch()
+        setReloading(true)
+        try {
+            qc.setQueryData(["stremio-catalog", effective], await api.post("/api/providers/stremio/catalog/refresh", { url: effective }))
+        } catch (e: any) {
+            toast.error(e.message)
+        } finally {
+            setReloading(false)
+        }
+    }
     const [q, setQ] = useState("")
     const [all, setAll] = useState(false)
     const addons = useMemo(() => {
@@ -275,7 +297,7 @@ function Browse({ lan, install, busy }: { lan: boolean; install: (url: string, o
             title="Browse"
             description="Addon collections (Settings › Providers lists them). Addons that only offer catalogs or metadata are of no use to KumoBox."
             actions={
-                <Button size="sm" icon={<RefreshCw className={cn("size-4", isFetching && "animate-spin")} />} onClick={() => refetch()}>
+                <Button size="sm" icon={<RefreshCw className={cn("size-4", (isFetching || reloading) && "animate-spin")} />} disabled={reloading} onClick={reload}>
                     Reload
                 </Button>
             }
@@ -336,7 +358,7 @@ function Browse({ lan, install, busy }: { lan: boolean; install: (url: string, o
                                         </Button>
                                     )
                                 )}
-                                {m.behaviorHints?.configurable && (
+                                {m.behaviorHints?.configurable && !lan && (
                                     <Button size="sm" variant="ghost" icon={<Settings2 className="size-4" />} onClick={() => openExternal(baseUrl(a) + "/configure")}>
                                         Configure
                                     </Button>

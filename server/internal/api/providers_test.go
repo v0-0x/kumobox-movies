@@ -169,8 +169,8 @@ func TestStremioAddonInstall(t *testing.T) {
 	if len(list) != 2 || list[0].Manifest.ID != "test.addon" || list[1].Manifest.ID != "test.adult" {
 		t.Fatalf("addons: %+v", list)
 	}
-	// Reordered (also from the LAN), refreshed.
-	decodeBody(t, do(s, "PUT", "/api/providers/stremio/addons/order", lan, jsonBody(t, map[string]any{"keys": []string{"stremio:test.adult"}}), nil), &list)
+	// Reordered and refreshed on this computer (not from the LAN: lan_test.go).
+	decodeBody(t, do(s, "PUT", "/api/providers/stremio/addons/order", local, jsonBody(t, map[string]any{"keys": []string{"stremio:test.adult"}}), nil), &list)
 	if list[0].Manifest.ID != "test.adult" {
 		t.Fatalf("reordered: %+v", list)
 	}

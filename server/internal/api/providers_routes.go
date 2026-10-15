@@ -26,12 +26,15 @@ import (
 // providers are extensions: enabling, logs, updates and removal go through
 // /api/extensions with their extension id, nuvio.<id>).
 //
-// Devices on the LAN may use providers but not install or remove them.
+// Devices on the LAN may use providers but not manage them (lan.go): they
+// don't install, remove, turn on or off, order or refresh them, nor read
+// collections and repositories other than those of the settings.
 
 func (s *Server) providerRoutes() {
 	m := s.mux
 	m.HandleFunc("GET /api/providers", h(func(r *http.Request) (any, error) { return s.app.ProviderInfos(), nil }))
 	m.HandleFunc("GET /api/providers/streams", h(s.providerStreams))
+	m.HandleFunc("POST /api/providers/streams/refresh", h(s.refreshProviderStreams))
 	m.HandleFunc("POST /api/providers/play", h(s.providerPlay))
 	m.HandleFunc("POST /api/providers/download", h(s.providerDownload))
 	// Extensions find titles by searching: the match can be picked by hand.
@@ -41,10 +44,11 @@ func (s *Server) providerRoutes() {
 	m.HandleFunc("GET /api/providers/stremio/addons", h(func(r *http.Request) (any, error) { return s.app.Stremio.List(), nil }))
 	m.HandleFunc("POST /api/providers/stremio/addons", s.installStremioAddon)
 	m.HandleFunc("DELETE /api/providers/stremio/addons", h(s.uninstallStremioAddon))
-	m.HandleFunc("PUT /api/providers/stremio/addons/enabled", h(s.enableStremioAddon))
-	m.HandleFunc("PUT /api/providers/stremio/addons/order", h(s.orderStremioAddons))
-	m.HandleFunc("POST /api/providers/stremio/refresh", h(s.refreshStremioAddons))
+	m.HandleFunc("PUT /api/providers/stremio/addons/enabled", h(thisComputer(s.enableStremioAddon)))
+	m.HandleFunc("PUT /api/providers/stremio/addons/order", h(thisComputer(s.orderStremioAddons)))
+	m.HandleFunc("POST /api/providers/stremio/refresh", h(thisComputer(s.refreshStremioAddons)))
 	m.HandleFunc("GET /api/providers/stremio/catalog", h(s.stremioCatalog))
+	m.HandleFunc("POST /api/providers/stremio/catalog/refresh", h(thisComputer(s.refreshStremioCatalog)))
 
 	m.HandleFunc("GET /api/providers/nuvio/repo", h(s.nuvioRepo))
 	m.HandleFunc("POST /api/providers/nuvio/repos", h(s.addNuvioRepo))
@@ -52,8 +56,6 @@ func (s *Server) providerRoutes() {
 	m.HandleFunc("POST /api/providers/nuvio/install", h(s.installNuvio))
 	m.HandleFunc("POST /api/providers/nuvio/install-all", h(s.installNuvioRepo))
 }
-
-var errLANInstall = forbidden("providers and extensions can only be installed or removed on this computer")
 
 // providerMedia is the movie or show of a request, and the episode asked
 // for (a key; a movie's is 1).
@@ -84,20 +86,36 @@ func providerError(err error) error {
 	return badRequest(err.Error())
 }
 
-// providerStreams is GET /api/providers/streams?mediaId=&episode=&provider=
-// (&refresh=1): the streams of a movie or episode, best first, with the
-// providers' errors and the subtitles of subtitle addons.
+// providerStreams is GET /api/providers/streams?mediaId=&episode=&provider=:
+// the streams of a movie or episode, best first, with the providers' errors
+// and the subtitles of subtitle addons (those found a moment ago, if any).
 func (s *Server) providerStreams(r *http.Request) (any, error) {
-	q := r.URL.Query()
-	media, episode, err := s.providerMedia(r.Context(), queryInt(r, "mediaId"), queryInt(r, "episode"))
+	return s.streams(r.Context(), queryInt(r, "mediaId"), queryInt(r, "episode"), r.URL.Query().Get("provider"), false)
+}
+
+// refreshProviderStreams is POST /api/providers/streams/refresh {mediaId,
+// episode, provider}: the same, the providers asked again.
+func (s *Server) refreshProviderStreams(r *http.Request) (any, error) {
+	var body struct {
+		MediaID  int    `json:"mediaId"`
+		Episode  int    `json:"episode"`
+		Provider string `json:"provider"`
+	}
+	if err := decode(r, &body); err != nil {
+		return nil, err
+	}
+	return s.streams(r.Context(), body.MediaID, body.Episode, body.Provider, true)
+}
+
+func (s *Server) streams(ctx context.Context, mediaID, episode int, provider string, refresh bool) (any, error) {
+	media, episode, err := s.providerMedia(ctx, mediaID, episode)
 	if err != nil {
 		return nil, err
 	}
-	provider := q.Get("provider")
 	if provider == "all" {
 		provider = ""
 	}
-	res, err := s.app.Stream.Streams(r.Context(), media, episode, provider, q.Get("refresh") == "1")
+	res, err := s.app.Stream.Streams(ctx, media, episode, provider, refresh)
 	if err != nil {
 		return nil, providerError(err)
 	}
@@ -450,7 +468,7 @@ func (s *Server) installStremioAddon(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) doInstallStremioAddon(r *http.Request) (any, error) {
 	if !isTrusted(r) {
-		return nil, errLANInstall
+		return nil, errLANManage
 	}
 	var body struct {
 		URL string `json:"url"`
@@ -490,7 +508,7 @@ func conflict(err error, code, configureURL string) error {
 
 func (s *Server) uninstallStremioAddon(r *http.Request) (any, error) {
 	if !isTrusted(r) {
-		return nil, errLANInstall
+		return nil, errLANManage
 	}
 	key := r.URL.Query().Get("key")
 	if err := s.app.Stremio.Uninstall(key); err != nil {
@@ -542,19 +560,39 @@ func (s *Server) refreshStremioAddons(r *http.Request) (any, error) {
 	return map[string]any{"addons": s.app.Stremio.List(), "errors": errs}, nil
 }
 
-// stremioCatalog is GET /api/providers/stremio/catalog?url=(&refresh=1): an
-// addon collection (the first of Settings › Providers by default), the
-// installed addons marked: {url, catalogs, addons}.
+// stremioCatalog is GET /api/providers/stremio/catalog?url=: an addon
+// collection (the first of Settings › Providers by default), the installed
+// addons marked: {url, catalogs, addons}. Devices on the LAN read the
+// collections of the settings only.
 func (s *Server) stremioCatalog(r *http.Request) (any, error) {
+	return s.collection(r, r.URL.Query().Get("url"), false)
+}
+
+// refreshStremioCatalog is POST /api/providers/stremio/catalog/refresh
+// {url}: the same, the collection downloaded again.
+func (s *Server) refreshStremioCatalog(r *http.Request) (any, error) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := decode(r, &body); err != nil {
+		return nil, err
+	}
+	return s.collection(r, body.URL, true)
+}
+
+func (s *Server) collection(r *http.Request, u string, refresh bool) (any, error) {
 	catalogs := s.app.Settings.Get().Providers.StremioCatalogs
-	u := strings.TrimSpace(r.URL.Query().Get("url"))
+	u = strings.TrimSpace(u)
 	if u == "" && len(catalogs) > 0 {
 		u = catalogs[0]
 	}
 	if u == "" {
 		u = config.DefaultStremioCatalog
 	}
-	list, err := s.app.StremioCollection(r.Context(), u, r.URL.Query().Get("refresh") == "1")
+	if !lanMayFetch(r, u, append([]string{config.DefaultStremioCatalog}, catalogs...)...) {
+		return nil, forbidden("other addon collections can only be opened on this computer")
+	}
+	list, err := s.app.StremioCollection(r.Context(), u, refresh)
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
@@ -567,8 +605,14 @@ func (s *Server) stremioCatalog(r *http.Request) (any, error) {
 // ---------------------------------------------------------------------------
 // Nuvio repositories
 
+// nuvioRepo is GET /api/providers/nuvio/repo?url=: a repository and its
+// providers. Devices on the LAN read the repositories of the settings only.
 func (s *Server) nuvioRepo(r *http.Request) (any, error) {
-	repo, err := s.app.Extensions.NuvioRepo(r.Context(), r.URL.Query().Get("url"))
+	u := r.URL.Query().Get("url")
+	if !lanMayFetch(r, u, s.app.Settings.Get().Providers.NuvioRepos...) {
+		return nil, forbidden("other repositories can only be opened on this computer")
+	}
+	repo, err := s.app.Extensions.NuvioRepo(r.Context(), u)
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
@@ -579,7 +623,7 @@ func (s *Server) nuvioRepo(r *http.Request) (any, error) {
 // repository and keeps it in Settings › Providers.
 func (s *Server) addNuvioRepo(r *http.Request) (any, error) {
 	if !isTrusted(r) {
-		return nil, errLANInstall
+		return nil, errLANManage
 	}
 	var body struct {
 		URL string `json:"url"`
@@ -599,7 +643,7 @@ func (s *Server) addNuvioRepo(r *http.Request) (any, error) {
 
 func (s *Server) removeNuvioRepo(r *http.Request) (any, error) {
 	if !isTrusted(r) {
-		return nil, errLANInstall
+		return nil, errLANManage
 	}
 	u := strings.TrimSpace(r.URL.Query().Get("url"))
 	cfg := s.app.Settings.Get()
@@ -630,7 +674,7 @@ func (s *Server) keepNuvioRepo(u string) error {
 
 func (s *Server) installNuvio(r *http.Request) (any, error) {
 	if !isTrusted(r) {
-		return nil, errLANInstall
+		return nil, errLANManage
 	}
 	var body struct {
 		Repo string `json:"repo"`
@@ -655,7 +699,7 @@ func (s *Server) installNuvio(r *http.Request) (any, error) {
 // (and updates the installed ones): {installed, errors}.
 func (s *Server) installNuvioRepo(r *http.Request) (any, error) {
 	if !isTrusted(r) {
-		return nil, errLANInstall
+		return nil, errLANManage
 	}
 	var body struct {
 		Repo string `json:"repo"`
@@ -685,7 +729,7 @@ func (s *Server) installNuvioRepo(r *http.Request) (any, error) {
 // uninstallExtension is DELETE /api/extensions/{id} (Nuvio providers too).
 func (s *Server) uninstallExtension(r *http.Request) (any, error) {
 	if !isTrusted(r) {
-		return nil, errLANInstall
+		return nil, errLANManage
 	}
 	if err := s.app.Extensions.Uninstall(r.PathValue("id")); err != nil {
 		return nil, err

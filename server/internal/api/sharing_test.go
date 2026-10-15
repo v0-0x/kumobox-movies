@@ -91,7 +91,8 @@ func TestLibrarySharing(t *testing.T) {
 	}
 	var libs []share.SharedLibrary
 	eventually(t, "the guest to get the host's library", func() bool {
-		w := do(guest, "GET", "/api/sharing/libraries", local, "", nil) // asks again
+		do(guest, "POST", "/api/sharing/refresh", local, "{}", nil) // asks again
+		w := do(guest, "GET", "/api/sharing/libraries", local, "", nil)
 		_ = json.Unmarshal(w.Body.Bytes(), &libs)
 		return len(libs) == 1 && len(libs[0].Files) == 1
 	})
@@ -140,6 +141,7 @@ func TestLibrarySharing(t *testing.T) {
 		t.Fatalf("disallow: %d", w.Code)
 	}
 	eventually(t, "the guest to lose the host's library", func() bool {
+		do(guest, "POST", "/api/sharing/refresh", local, "{}", nil)
 		w := do(guest, "GET", "/api/sharing/libraries", local, "", nil)
 		_ = json.Unmarshal(w.Body.Bytes(), &libs)
 		return len(libs) == 0
@@ -279,7 +281,7 @@ func TestHistoryFollowsTheAccount(t *testing.T) {
 	}
 	eventually(t, "the host to list the guest", func() bool { return len(host.app.Share.Status().Peers) == 1 })
 	synced := func() bool {
-		do(guest, "GET", "/api/sharing", local, "", nil) // asks again
+		do(guest, "POST", "/api/sharing/refresh", local, "{}", nil) // asks again
 		e := guest.app.History.Get(21, 3)
 		return e != nil && e.Position == 600
 	}
@@ -313,7 +315,7 @@ func TestHistoryFollowsTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 15; i++ {
-		do(guest, "GET", "/api/sharing", local, "", nil)
+		do(guest, "POST", "/api/sharing/refresh", local, "{}", nil)
 		time.Sleep(300 * time.Millisecond)
 	}
 	if e := guest.app.History.Get(21, 4); e != nil {

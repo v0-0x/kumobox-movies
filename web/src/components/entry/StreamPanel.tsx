@@ -64,7 +64,7 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
     const refresh = async () => {
         setRefreshing(true)
         try {
-            const res = await api.get<StreamsResult>(`/api/providers/streams${qs({ mediaId: media.id, episode: key, refresh: 1 })}`)
+            const res = await api.post<StreamsResult>("/api/providers/streams/refresh", { mediaId: media.id, episode: key })
             qc.setQueryData(["provider-streams", media.id, key, ""], res)
         } catch (e: any) {
             toast.error(e.message)

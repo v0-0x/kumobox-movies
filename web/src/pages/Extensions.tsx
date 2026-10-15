@@ -32,7 +32,7 @@ import type { ExtensionInfo, MarketEntry } from "./extensionTypes"
 import { cn, safeUrl } from "@/lib/utils"
 import { BuiltInTab } from "./providers/BuiltIn"
 import { NuvioTab } from "./providers/Nuvio"
-import { ExtIcon, LogsDialog } from "./providers/parts"
+import { ExtIcon, LanNote, LogsDialog } from "./providers/parts"
 import { StremioTab } from "./providers/Stremio"
 
 const TYPES: Record<string, { label: string; icon: React.ReactNode }> = {
@@ -116,6 +116,8 @@ export default function ExtensionsPage() {
 
 function Installed() {
     const { data, isLoading } = useExtensions()
+    // Updates are checked for and installed on this computer only.
+    const lan = useStatus().data?.client === "lan"
     const qc = useQueryClient()
     const [checking, setChecking] = useState(false)
     const [updates, setUpdates] = useState<Record<string, string>>({})
@@ -144,11 +146,15 @@ function Installed() {
         .filter(g => g.items.length)
     return (
         <div className="flex flex-col gap-10">
-            <div>
-                <Button size="sm" icon={<RefreshCw className="size-4" />} loading={checking} onClick={check}>
-                    Check for updates
-                </Button>
-            </div>
+            {lan ? (
+                <LanNote />
+            ) : (
+                <div>
+                    <Button size="sm" icon={<RefreshCw className="size-4" />} loading={checking} onClick={check}>
+                        Check for updates
+                    </Button>
+                </div>
+            )}
             {groups.map(g => (
                 <section key={g.type}>
                     <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold tracking-tight">
@@ -167,7 +173,8 @@ function Installed() {
 
 function InstalledCard({ ext, update, onChange }: { ext: ExtensionInfo; update?: string; onChange: () => void }) {
     const m = ext.manifest
-    // Extensions are installed and removed on this computer only.
+    // Extensions are installed, set up, turned on or off and removed on this
+    // computer only (their logs are read there too).
     const lan = useStatus().data?.client === "lan"
     const [cfgOpen, setCfgOpen] = useState(false)
     const [logsOpen, setLogsOpen] = useState(false)
@@ -200,7 +207,7 @@ function InstalledCard({ ext, update, onChange }: { ext: ExtensionInfo; update?:
                 </div>
                 <Switch
                     checked={ext.enabled && !needsGrant}
-                    disabled={busy}
+                    disabled={busy || lan}
                     onChange={v => (v && needsGrant ? setGrantOpen(true) : call(api.post(`/api/extensions/${m.id}/enable`, { enabled: v })))}
                 />
             </div>
@@ -216,24 +223,26 @@ function InstalledCard({ ext, update, onChange }: { ext: ExtensionInfo; update?:
             </div>
             {ext.error && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{ext.error}</p>}
             <div className="mt-auto flex flex-wrap items-center gap-1.5">
-                {update && (
+                {update && !lan && (
                     <Button size="sm" variant="primary" icon={<ArrowUpCircle className="size-4" />} loading={busy} onClick={() => call(api.post(`/api/extensions/${m.id}/update`), `Updated to ${update}`)}>
                         Update to {update}
                     </Button>
                 )}
-                {needsGrant && (
+                {needsGrant && !lan && (
                     <Button size="sm" variant="primary" icon={<ShieldCheck className="size-4" />} onClick={() => setGrantOpen(true)}>
                         Review permissions
                     </Button>
                 )}
-                {(m.userConfig?.fields?.length ?? 0) > 0 && (
+                {(m.userConfig?.fields?.length ?? 0) > 0 && !lan && (
                     <Button size="sm" icon={<Settings2 className="size-4" />} onClick={() => setCfgOpen(true)}>
                         Configure
                     </Button>
                 )}
-                <Button size="sm" variant="ghost" icon={<FileText className="size-4" />} onClick={() => setLogsOpen(true)}>
-                    Logs
-                </Button>
+                {!lan && (
+                    <Button size="sm" variant="ghost" icon={<FileText className="size-4" />} onClick={() => setLogsOpen(true)}>
+                        Logs
+                    </Button>
+                )}
                 {m.website && (
                     <a href={safeUrl(m.website) || undefined} target="_blank" rel="noopener noreferrer">
                         <IconButton size="sm" label="Website">
@@ -356,6 +365,9 @@ function GrantDialog({ open, onOpenChange, ext, onDone }: { open: boolean; onOpe
 
 function Marketplace() {
     const { data: status } = useStatus()
+    // Devices on the LAN see the marketplace of the settings, as it was
+    // last downloaded.
+    const lan = status?.client === "lan"
     const [url, setUrl] = useState("")
     const effectiveUrl = url || status?.settings.extensions.marketplaceUrl || ""
     const { data, isLoading, error, refetch, isFetching } = useMarketplace(effectiveUrl)
@@ -368,8 +380,7 @@ function Marketplace() {
     const reload = async () => {
         setReloading(true)
         try {
-            await api.get(`/api/extensions/marketplace?refresh=1&url=${encodeURIComponent(effectiveUrl)}`)
-            qc.invalidateQueries({ queryKey: ["marketplace"] })
+            qc.setQueryData(["marketplace", effectiveUrl], await api.post<MarketEntry[]>("/api/extensions/marketplace/refresh", { url: effectiveUrl }))
         } catch (e: any) {
             toast.error(e.message)
         } finally {
@@ -396,10 +407,18 @@ function Marketplace() {
         <div className="flex flex-col gap-6">
             <div className="card flex flex-col gap-3 p-4">
                 <div className="flex gap-2">
-                    <Input defaultValue={effectiveUrl} onKeyDown={e => e.key === "Enter" && setUrl((e.target as HTMLInputElement).value)} onBlur={e => setUrl(e.target.value)} icon={<Globe className="size-4" />} />
-                    <Button icon={<RefreshCw className={cn("size-4", (reloading || isFetching) && "animate-spin")} />} disabled={reloading} onClick={reload}>
-                        Reload
-                    </Button>
+                    <Input
+                        defaultValue={effectiveUrl}
+                        disabled={lan}
+                        onKeyDown={e => e.key === "Enter" && setUrl((e.target as HTMLInputElement).value)}
+                        onBlur={e => setUrl(e.target.value)}
+                        icon={<Globe className="size-4" />}
+                    />
+                    {!lan && (
+                        <Button icon={<RefreshCw className={cn("size-4", (reloading || isFetching) && "animate-spin")} />} disabled={reloading} onClick={reload}>
+                            Reload
+                        </Button>
+                    )}
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                     <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search extensions…" icon={<Search className="size-4" />} className="w-72" />

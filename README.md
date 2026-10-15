@@ -65,11 +65,11 @@ See [docs/PROVIDERS.md](docs/PROVIDERS.md) for the formats and how to write a pr
 |---|---|
 | The desktop window | Always (authenticated with a per-run token) |
 | A browser on this PC | Only when **Settings › App › Web UI** is on (`http://127.0.0.1:43311`) |
-| Devices on your home network | Only when **Allow devices on my network** is on. They can be password protected, and can't change paths/programs/providers, see keys or browse folders. |
+| Devices on your home network | Only when **Allow devices on my network** is on. They can be password protected (Settings warns while they aren't), and can't change paths/programs, install, set up, turn on or off or remove providers, extensions and plugins, see keys or browse folders. |
 | KumoBox on your other computers | With **Library sharing** on: they see it, and only those you turn on get the library, and nothing else (each KumoBox has its own key pair; requests are signed, and play only files of the library). |
 | Anything on the internet | **Never** (connections from public IP addresses are refused) |
 
-The server also rejects other websites' requests (Origin check) and DNS rebinding tricks (Host check). Extensions, providers and the stream/image proxies can't connect to localhost or your LAN (Jackett/Prowlarr indexers and addons you explicitly allow excepted). Nothing is sent anywhere except the services you use (TMDB, Letterboxd, the providers and torrent sources you turn on).
+The server also rejects other websites' requests (Origin check) and DNS rebinding tricks (Host check); GET requests only read (whatever changes, syncs, installs or fetches again is a POST), so a link or an image on another site can't trigger any of that. Extensions, providers and the stream/image proxies can't connect to localhost or your LAN (Jackett/Prowlarr indexers and addons you explicitly allow excepted). Nothing is sent anywhere except the services you use (TMDB, Letterboxd, the providers and torrent sources you turn on).
 
 KumoBox and Kumo can run side by side: KumoBox has its own port (43311), data folder and app id.
 

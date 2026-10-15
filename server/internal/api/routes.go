@@ -23,6 +23,11 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
+// routes registers the API. GET requests only read (filling a cache when it
+// misses): fetching again what's cached, syncing, installing, testing or
+// changing anything is a POST, PUT, PATCH or DELETE, which other websites
+// can't send (the middleware's Origin check), whereas an image or a link on
+// any page can make a browser send a GET.
 func (s *Server) routes() {
 	m := s.mux
 	s.peerRoutes()
@@ -54,6 +59,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/continue/hide", h(s.hideContinue))
 	m.HandleFunc("POST /api/continue/unhide", h(s.unhideContinue))
 	m.HandleFunc("GET /api/media/{id}", h(s.mediaEntry))
+	m.HandleFunc("POST /api/media/{id}/refresh", h(s.refreshMedia))
 	m.HandleFunc("POST /api/media/{id}/entry", h(s.updateEntry))
 	m.HandleFunc("DELETE /api/media/{id}/entry", h(s.deleteEntry))
 	m.HandleFunc("POST /api/media/{id}/episode", h(s.markEpisode))
@@ -176,15 +182,15 @@ func (s *Server) routes() {
 	// --- torrents (search, client, auto downloader)
 	s.torrentRoutes()
 
-	// --- extensions & plugins
-	m.HandleFunc("GET /api/extensions", h(func(r *http.Request) (any, error) { return s.app.Extensions.List(), nil }))
-	m.HandleFunc("GET /api/extensions/marketplace", h(func(r *http.Request) (any, error) {
-		return s.app.Extensions.Marketplace(r.Context(), r.URL.Query().Get("url"), r.URL.Query().Get("refresh") == "1")
-	}))
-	m.HandleFunc("GET /api/extensions/updates", h(func(r *http.Request) (any, error) { return s.app.Extensions.CheckUpdates(r.Context()), nil }))
+	// --- extensions & plugins (devices on the LAN use them and see what's
+	// installed; this computer manages them: lan.go)
+	m.HandleFunc("GET /api/extensions", h(func(r *http.Request) (any, error) { return extensionsFor(r, s.app.Extensions.List()), nil }))
+	m.HandleFunc("GET /api/extensions/marketplace", h(s.marketplace))
+	m.HandleFunc("POST /api/extensions/marketplace/refresh", h(thisComputer(s.refreshMarketplace)))
+	m.HandleFunc("GET /api/extensions/updates", h(thisComputer(func(r *http.Request) (any, error) { return s.app.Extensions.CheckUpdates(r.Context()), nil })))
 	m.HandleFunc("POST /api/extensions/install", h(s.installExtension))
-	m.HandleFunc("POST /api/extensions/{id}/enable", h(s.enableExtension))
-	m.HandleFunc("POST /api/extensions/{id}/config", h(s.configExtension))
+	m.HandleFunc("POST /api/extensions/{id}/enable", h(thisComputer(s.enableExtension)))
+	m.HandleFunc("POST /api/extensions/{id}/config", h(thisComputer(s.configExtension)))
 	m.HandleFunc("POST /api/extensions/{id}/grant", h(func(r *http.Request) (any, error) {
 		// A plugin's permissions (files it reads and writes, commands it
 		// runs) are accepted where plugins are installed: on this computer.
@@ -193,9 +199,11 @@ func (s *Server) routes() {
 		}
 		return nil, s.app.Extensions.Grant(r.PathValue("id"))
 	}))
-	m.HandleFunc("POST /api/extensions/{id}/update", h(func(r *http.Request) (any, error) { return s.app.Extensions.Update(r.Context(), r.PathValue("id")) }))
+	m.HandleFunc("POST /api/extensions/{id}/update", h(thisComputer(func(r *http.Request) (any, error) { return s.app.Extensions.Update(r.Context(), r.PathValue("id")) })))
 	m.HandleFunc("DELETE /api/extensions/{id}", h(s.uninstallExtension))
-	m.HandleFunc("GET /api/extensions/{id}/logs", h(func(r *http.Request) (any, error) { return s.app.Extensions.Logs(r.PathValue("id")), nil }))
+	// An extension's console can hold the links and keys it works with, like
+	// the server's log: this computer's.
+	m.HandleFunc("GET /api/extensions/{id}/logs", h(thisComputer(func(r *http.Request) (any, error) { return s.app.Extensions.Logs(r.PathValue("id")), nil })))
 	m.HandleFunc("GET /api/plugins/ui", h(func(r *http.Request) (any, error) { return s.app.Extensions.PluginStates(), nil }))
 	m.HandleFunc("POST /api/plugins/{id}/event", h(s.pluginEvent))
 	m.HandleFunc("POST /api/plugins/navigate", h(func(r *http.Request) (any, error) {
@@ -524,14 +532,11 @@ func (s *Server) openPath(r *http.Request) (any, error) {
 
 // mediaCollection is the Home and library page: the list, the library's
 // files, "Continue watching". type (MOVIE or TV) keeps only movies or shows.
+// The list's titles still on the air are fetched again in the background
+// when due; the page asks the other KumoBoxes for their watch history
+// (another computer's progress) with POST /api/sharing/refresh.
 func (s *Server) mediaCollection(r *http.Request) (any, error) {
-	// fresh: the other KumoBoxes are asked for their watch history (another
-	// computer's progress); the list's titles still on the air are fetched
-	// again in the background when due.
-	if r.URL.Query().Get("fresh") == "1" {
-		s.app.Share.Refresh()
-	}
-	view, err := s.app.Library.Collection(r.Context(), r.URL.Query().Get("refresh") == "1")
+	view, err := s.app.Library.Collection(r.Context(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -609,12 +614,18 @@ func (s *Server) unhideContinue(r *http.Request) (any, error) {
 	return nil, nil
 }
 
-func (s *Server) mediaEntry(r *http.Request) (any, error) {
+func (s *Server) mediaEntry(r *http.Request) (any, error) { return s.entry(r, false) }
+
+// refreshMedia is POST /api/media/{id}/refresh: the title page with the
+// title's data fetched from TMDB again.
+func (s *Server) refreshMedia(r *http.Request) (any, error) { return s.entry(r, true) }
+
+func (s *Server) entry(r *http.Request, refresh bool) (any, error) {
 	id, err := pathID(r, "id")
 	if err != nil {
 		return nil, err
 	}
-	e, err := s.app.Library.Entry(r.Context(), id, r.URL.Query().Get("refresh") == "1")
+	e, err := s.app.Library.Entry(r.Context(), id, refresh)
 	if err == nil {
 		go s.app.PrefetchEntryArt(e)
 	}
@@ -724,5 +735,5 @@ func (s *Server) schedule(r *http.Request) (any, error) {
 
 // rawList is the list itself: its movies (type=MOVIE), shows (TV) or both.
 func (s *Server) rawList(r *http.Request) (any, error) {
-	return s.app.Platform.Collection(r.Context(), r.URL.Query().Get("type"), r.URL.Query().Get("refresh") == "1")
+	return s.app.Platform.Collection(r.Context(), r.URL.Query().Get("type"), false)
 }

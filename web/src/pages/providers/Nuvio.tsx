@@ -32,23 +32,26 @@ export function NuvioTab() {
     }
     return (
         <div className="flex flex-col gap-10">
-            <div className="card flex flex-col gap-3 p-4">
-                <p className="text-sm font-medium">Add a repository</p>
-                <div className="flex gap-2">
-                    <Input
-                        value={url}
-                        onChange={e => setUrl(e.target.value)}
-                        onKeyDown={e => e.key === "Enter" && url.trim() && add()}
-                        placeholder="https://raw.githubusercontent.com/<user>/<repo>/refs/heads/main/manifest.json"
-                        icon={<Link2 className="size-4" />}
-                    />
-                    <Button variant="primary" icon={<Plus className="size-4" />} loading={adding} disabled={!url.trim()} onClick={add}>
-                        Add
-                    </Button>
+            {lan ? (
+                <LanNote />
+            ) : (
+                <div className="card flex flex-col gap-3 p-4">
+                    <p className="text-sm font-medium">Add a repository</p>
+                    <div className="flex gap-2">
+                        <Input
+                            value={url}
+                            onChange={e => setUrl(e.target.value)}
+                            onKeyDown={e => e.key === "Enter" && url.trim() && add()}
+                            placeholder="https://raw.githubusercontent.com/<user>/<repo>/refs/heads/main/manifest.json"
+                            icon={<Link2 className="size-4" />}
+                        />
+                        <Button variant="primary" icon={<Plus className="size-4" />} loading={adding} disabled={!url.trim()} onClick={add}>
+                            Add
+                        </Button>
+                    </div>
+                    <p className="text-xs text-subtle">Nuvio providers are JavaScript scrapers; KumoBox runs them in its extension sandbox, which can't reach this computer or your network.</p>
                 </div>
-                <p className="text-xs text-subtle">Nuvio providers are JavaScript scrapers; KumoBox runs them in its extension sandbox, which can't reach this computer or your network.</p>
-            </div>
-            {lan && <LanNote />}
+            )}
             {repos.length === 0 ? (
                 <EmptyState icon={<FolderGit className="size-6" />} title="No Nuvio repositories">
                     Add a repository's manifest URL to list its providers.
@@ -102,9 +105,11 @@ function Repo({ url, lan }: { url: string; lan: boolean }) {
                             Install all
                         </Button>
                     )}
-                    <Button size="sm" variant="ghost" icon={<X className="size-4" />} loading={busy === "remove"} onClick={remove}>
-                        Remove repository
-                    </Button>
+                    {!lan && (
+                        <Button size="sm" variant="ghost" icon={<X className="size-4" />} loading={busy === "remove"} onClick={remove}>
+                            Remove repository
+                        </Button>
+                    )}
                 </>
             }
         >
@@ -177,9 +182,11 @@ function EntryRow({
                                 Update to {e.version}
                             </Button>
                         )}
-                        <IconButton size="sm" label="Logs" onClick={() => setLogs(true)}>
-                            <FileText className="size-4" />
-                        </IconButton>
+                        {!lan && (
+                            <IconButton size="sm" label="Logs" onClick={() => setLogs(true)}>
+                                <FileText className="size-4" />
+                            </IconButton>
+                        )}
                         {!lan && (
                             <IconButton
                                 size="sm"
@@ -192,7 +199,7 @@ function EntryRow({
                         )}
                         {ext && (
                             <span className="ml-2">
-                                <Switch checked={ext.enabled} onChange={v => run(e.extensionId, () => api.post(`/api/extensions/${e.extensionId}/enable`, { enabled: v }))} />
+                                <Switch checked={ext.enabled} disabled={lan} onChange={v => run(e.extensionId, () => api.post(`/api/extensions/${e.extensionId}/enable`, { enabled: v }))} />
                             </span>
                         )}
                     </>

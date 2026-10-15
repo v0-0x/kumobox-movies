@@ -48,11 +48,11 @@ export function Stack({ label, help, children }: { label: React.ReactNode; help?
     )
 }
 
-export function Password({ value, onChange, placeholder, disabled }: { value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean }) {
+export function Password({ id, value, onChange, placeholder, disabled }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean }) {
     const [show, setShow] = useState(false)
     return (
         <div className="relative">
-            <Input type={show ? "text" : "password"} value={value} placeholder={placeholder} disabled={disabled} onChange={e => onChange(e.target.value)} className="pr-10" />
+            <Input id={id} type={show ? "text" : "password"} value={value} placeholder={placeholder} disabled={disabled} onChange={e => onChange(e.target.value)} className="pr-10" />
             <button
                 type="button"
                 onClick={() => setShow(s => !s)}

@@ -79,13 +79,23 @@ export function invalidateList(qc: QueryClient, mediaId?: number) {
     qc.invalidateQueries({ queryKey: ["letterboxd"] })
 }
 
+// Has the KumoBox apps sharing their libraries asked again what they share
+// and where they are in what they watch (their answers come as events). A
+// POST, as GET requests only read; sent alongside the query that wants it.
+function refreshSharing() {
+    api.post("/api/sharing/refresh").catch(() => {})
+}
+
 // The list with what the library has, asked again when KumoBox's window
 // comes back to the front: what was watched on another KumoBox sharing its
 // library shows up in Continue watching.
 export function useCollection() {
     return useQuery({
         queryKey: ["collection"],
-        queryFn: () => api.get<CollectionView>("/api/media/collection?fresh=1"),
+        queryFn: () => {
+            refreshSharing()
+            return api.get<CollectionView>("/api/media/collection")
+        },
         staleTime: 60_000,
         refetchOnWindowFocus: true,
     })
@@ -274,12 +284,27 @@ export function useDiscover(enabled = true) {
 
 // Library sharing: the KumoBox apps on the network (asked again while shown).
 export function useSharing(enabled = true) {
-    return useQuery({ queryKey: ["sharing", "status"], queryFn: () => api.get<SharingStatus>("/api/sharing"), enabled, refetchInterval: 4000 })
+    return useQuery({
+        queryKey: ["sharing", "status"],
+        queryFn: () => {
+            refreshSharing()
+            return api.get<SharingStatus>("/api/sharing")
+        },
+        enabled,
+        refetchInterval: 4000,
+    })
 }
 
 // The libraries other KumoBox apps share with this one.
 export function useSharedLibraries() {
-    return useQuery({ queryKey: ["sharing", "libraries"], queryFn: () => api.get<SharedLibrary[]>("/api/sharing/libraries"), refetchInterval: 30_000 })
+    return useQuery({
+        queryKey: ["sharing", "libraries"],
+        queryFn: () => {
+            refreshSharing()
+            return api.get<SharedLibrary[]>("/api/sharing/libraries")
+        },
+        refetchInterval: 30_000,
+    })
 }
 
 // The episodes of the shows on the list airing between start and end (unix
