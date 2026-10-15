@@ -43,7 +43,7 @@
 **Streaming providers**
 - **Your own Jellyfin, Emby and Plex servers**: add them in Settings › Providers (with a Test button) and their movies and episodes show in Watch online, matched by TMDB/IMDb id, playing the files as they are. Their tokens stay on this computer.
 - **Internet Archive** built in: thousands of public-domain and Creative Commons films, streamed straight from archive.org.
-- **Stremio addons**: browse the official addon collection (or any other collection) and install addons in one click, or paste any addon's manifest URL. Their streams play in KumoBox; torrent streams go to your torrent client; subtitle addons add subtitles.
+- **Stremio addons**: browse the official addon collection (or any other collection) and install or uninstall addons in one click, open their configuration page, paste any addon's manifest URL, or import the addons of your Stremio account (your password isn't kept). Their streams play in KumoBox; torrent streams go to your torrent client; subtitle addons add subtitles.
 - **Nuvio provider repositories**: add a repository URL and install its JavaScript providers, which run in KumoBox's sandbox.
 - **KumoBox/Seanime-style extensions** from an extension marketplace.
 - **Watch online** shows each provider's sources as soon as it answers, with a spinner for those still looking. **Provider health** (Settings › Providers) shows which providers work and how fast, with a Test button; one that keeps failing is listed last and skipped by automatic picks until it answers again. A show's next episodes play from the provider and version (quality, release) you watched it in last.

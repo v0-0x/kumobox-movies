@@ -704,6 +704,11 @@ export type PlayResult =
     | { action: "torrent"; savePath: string }
     | { action: "external"; url: string }
 
+// POST /api/providers/stremio/import: a Stremio account's addons, those
+// installed and those left out (with why).
+export type StremioImported = { id: string; name: string; transportUrl: string; reason?: string }
+export type StremioImportResult = { added: StremioImported[]; skipped: StremioImported[] }
+
 export type StremioManifest = {
     id: string
     version: string

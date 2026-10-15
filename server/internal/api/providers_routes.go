@@ -52,6 +52,7 @@ func (s *Server) providerRoutes() {
 	m.HandleFunc("PUT /api/providers/stremio/addons/order", h(s.orderStremioAddons))
 	m.HandleFunc("POST /api/providers/stremio/refresh", h(s.refreshStremioAddons))
 	m.HandleFunc("GET /api/providers/stremio/catalog", h(s.stremioCatalog))
+	m.HandleFunc("POST /api/providers/stremio/import", h(s.importStremioAccount))
 
 	m.HandleFunc("GET /api/providers/nuvio/repo", h(s.nuvioRepo))
 	m.HandleFunc("POST /api/providers/nuvio/repos", h(s.addNuvioRepo))
@@ -728,6 +729,34 @@ func (s *Server) stremioCatalog(r *http.Request) (any, error) {
 		list = []stremio.Addon{}
 	}
 	return map[string]any{"url": u, "catalogs": catalogs, "addons": list}, nil
+}
+
+// importStremioAccount is POST /api/providers/stremio/import {email,
+// password}: signs in to a Stremio account and installs the addons on it
+// KumoBox can use → {added, skipped: [{id, name, transportUrl, reason}]}.
+// Only on this computer. The password and the session's key are used for
+// the sign-in and the addon list, then forgotten: neither is saved nor
+// logged.
+func (s *Server) importStremioAccount(r *http.Request) (any, error) {
+	if !isTrusted(r) {
+		return nil, errLANInstall
+	}
+	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := decode(r, &body); err != nil {
+		return nil, err
+	}
+	addons, err := stremio.AccountAddons(r.Context(), stremio.APIURL(), body.Email, body.Password)
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	res := s.app.Stremio.Import(r.Context(), addons)
+	if n := len(res.Added); n > 0 {
+		s.app.Hub.Success(fmt.Sprintf("Imported %d addon(s) from Stremio", n))
+	}
+	return res, nil
 }
 
 // ---------------------------------------------------------------------------

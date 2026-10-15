@@ -125,6 +125,23 @@ Providers & extensions › Stremio addons:
   flags: {official, protected}}` (an addon catalog answer,
   `{"addons": [...]}`, works too).
 
+The browser lists each addon's name, description, version, types and
+resources (those KumoBox uses — streams, subtitles — as badges), whether
+it's installed (with Uninstall), and a **Configure** button opening the
+addon's `/configure` page in the browser when it's `configurable`; it
+searches names, descriptions and ids.
+
+* **Import from a Stremio account** (this computer only): KumoBox signs in
+  to Stremio's API (`POST /api/login` `{type: "Login", email, password}`,
+  then `POST /api/addonCollectionGet` `{type: "AddonCollectionGet",
+  authKey, update: true}`), installs the account's addons it can use and
+  lists the others with why they were left out: already installed (in
+  that configuration or another, which is kept), on this computer or the
+  LAN, adult, to configure, or of no use (catalogs, metadata). Those that
+  need a confirmation are installed by their URL. The password and the
+  session's key are used for those two requests only: never saved nor
+  logged. `KUMOBOX_STREMIO_API_URL` overrides the API's address (tests).
+
 KumoBox refuses addons it can't use (catalog- or metadata-only addons such
 as Cinemeta), asks for confirmation for addons flagged `adult` and for
 addons running on this computer or the local network (a private address,
@@ -170,6 +187,8 @@ repository).
 | `GET/POST/DELETE /api/providers/stremio/addons` | installed addons; install `{url, allowLocal, allowAdult}` (409 `{error, code: "local" \| "adult" \| "configure" \| "unsupported", configureUrl}`); remove `?key=` (transport URL or `stremio:<id>`) |
 | `PUT /api/providers/stremio/addons/enabled`, `…/order` | `{key, enabled}`, `{keys}` |
 | `POST /api/providers/stremio/refresh`, `GET /api/providers/stremio/catalog?url=` | manifests downloaded again; an addon collection (the first of `providers.stremioCatalogs` by default) |
+| `POST /api/providers/stremio/import` | `{email, password}` → `{added, skipped: [{id, name, transportUrl, reason}]}`: a Stremio account's addons (this computer only) |
+| `POST /api/providers/mediaservers/test` | `{kind, url, token, userId}` → `{name, version, userId, userName, libraries}` (this computer only; without a token, the saved server's) |
 | `GET /api/providers/nuvio/repo?url=`, `POST/DELETE /api/providers/nuvio/repos` | a repository with the installed and updatable providers marked; keeping or forgetting one |
 | `POST /api/providers/nuvio/install`, `…/install-all` | `{repo, id}`, `{repo}` (the repository is kept too) |
 
