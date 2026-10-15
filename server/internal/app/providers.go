@@ -129,6 +129,13 @@ func (a *App) wireProviders() error {
 	}
 	a.Stream.Providers = a.StreamProviders
 	a.Stream.SubtitleProviders = a.Stremio.SubtitleProviders
+	// How each provider's searches go (providerhealth.go), and the version
+	// of each show that played last (streamversion.go).
+	a.healthStore = newHealthStore(a.DB)
+	a.Health = a.healthStore.health
+	a.Stream.Health = a.Health
+	a.versions = newStreamVersions(a.DB)
+	a.Stream.Versions = a.versions.Get
 	a.Downloads.Resolvers["stream"] = a.resolveStreamDownload
 	return nil
 }

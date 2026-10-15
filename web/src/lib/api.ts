@@ -51,6 +51,42 @@ export const api = {
     upload: <T>(path: string, form: FormData) => request<T>("POST", path, form),
 }
 
+// Reads an answer of one JSON object a line (NDJSON), calling onLine with
+// each as it comes in: a search showing its results as they're found. A
+// failed request throws an ApiError, as the calls above do.
+export async function readLines(path: string, onLine: (line: any) => void, signal?: AbortSignal) {
+    const res = await fetch(path, { credentials: "same-origin", signal })
+    if (!res.ok) {
+        let data: any = null
+        try {
+            data = await res.json()
+        } catch {
+            /* not JSON */
+        }
+        if (res.status === 401 && data?.passwordRequired) authListeners.forEach(fn => fn())
+        throw new ApiError(data?.error || res.statusText, res.status, data)
+    }
+    if (!res.body) {
+        for (const l of (await res.text()).split("\n")) if (l.trim()) onLine(JSON.parse(l))
+        return
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ""
+    for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        let nl: number
+        while ((nl = buf.indexOf("\n")) >= 0) {
+            const l = buf.slice(0, nl).trim()
+            buf = buf.slice(nl + 1)
+            if (l) onLine(JSON.parse(l))
+        }
+    }
+    if (buf.trim()) onLine(JSON.parse(buf))
+}
+
 // Saves a file the API makes (a CSV) the way the browser saves downloads,
 // and returns the response's headers (which entries a CSV has…).
 export async function download(path: string): Promise<Headers> {

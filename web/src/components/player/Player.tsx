@@ -555,6 +555,9 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     }, [cues, base])
 
     // -------------------------------------------------------------- progress
+    // The stream source playing (a ref: reports don't change with it).
+    const playingSource = useRef<StreamSource | undefined>(undefined)
+    playingSource.current = req.kind === "stream" ? sources[sourceIdx] : undefined
     const report = useCallback(
         (force = false, didEnd = false) => {
             const v = videoRef.current
@@ -565,7 +568,23 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             const position = absTime(v)
             const dur = duration || v.duration || 0
             if (position < 3 && !didEnd) return
-            api.post("/api/playback/progress", { mediaId, episode, position, duration: dur, source, ended: didEnd, title, paused: v.paused }).catch(() => {})
+            // A stream says which one plays: once it's well under way, the
+            // server remembers its provider and version for the show's next
+            // episodes.
+            const src = playingSource.current
+            api.post("/api/playback/progress", {
+                mediaId,
+                episode,
+                position,
+                duration: dur,
+                source,
+                ended: didEnd,
+                title,
+                paused: v.paused,
+                provider: src?.provider,
+                quality: src?.quality,
+                release: src?.release ?? src?.label,
+            }).catch(() => {})
         },
         // eslint-disable-next-line react-hooks/exhaustive-deps
         [mediaId, episode, source, duration, base, title],
@@ -679,8 +698,11 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     title,
                     source,
                     start: at,
-                    // mpv plays the next episode from the same provider.
+                    // mpv plays the next episode from the same provider, in
+                    // the same version.
                     provider: src.provider ?? req.provider,
+                    quality: src.quality,
+                    release: src.release ?? src.label,
                 })
             }
             v?.pause()

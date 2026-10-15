@@ -43,6 +43,11 @@ type PlayRequest struct {
 	// it's the dubbed version: the next episode comes from the same.
 	Provider string `json:"provider,omitempty"`
 	Dub      bool   `json:"dub,omitempty"`
+	// Quality and Release (its release or file name) tell a provider's
+	// stream apart from its others: the next episode is looked for in the
+	// same version.
+	Quality string `json:"quality,omitempty"`
+	Release string `json:"release,omitempty"`
 	// Explicit start position; nil means "resume from history".
 	Start *float64 `json:"start,omitempty"`
 }
@@ -62,6 +67,8 @@ type Session struct {
 	Source          string  `json:"source"`
 	Provider        string  `json:"provider,omitempty"`
 	Dub             bool    `json:"dub,omitempty"`
+	Quality         string  `json:"quality,omitempty"`
+	Release         string  `json:"release,omitempty"`
 	Player          string  `json:"player"`
 	Target          string  `json:"target"`
 	Position        float64 `json:"position"`
@@ -297,7 +304,7 @@ func (m *Manager) playLocked(req PlayRequest) (*Session, error) {
 	s := &Session{
 		ID: uuid.NewString(), MediaID: req.MediaID, Episode: req.Episode, EpisodeEnd: req.EpisodeEnd, Title: req.Title,
 		MediaTitle: req.MediaTitle, EpisodeTitle: req.EpisodeTitle, Source: req.Source, Provider: req.Provider, Dub: req.Dub,
-		Player: "mpv", Target: req.Target, Position: start, Active: true, chapter: -1,
+		Quality: req.Quality, Release: req.Release, Player: "mpv", Target: req.Target, Position: start, Active: true, chapter: -1,
 		StartedAt: time.Now().Unix(), skipped: map[float64]bool{}, loopDone: make(chan struct{}),
 	}
 	m.mu.Lock()
@@ -819,6 +826,11 @@ type ProgressReport struct {
 	Ended    bool    `json:"ended"`
 	Title    string  `json:"title"`
 	Paused   bool    `json:"paused"`
+	// The stream playing: its provider, quality and release name (see
+	// PlayRequest).
+	Provider string `json:"provider,omitempty"`
+	Quality  string `json:"quality,omitempty"`
+	Release  string `json:"release,omitempty"`
 }
 
 func (m *Manager) ReportProgress(r ProgressReport) {
@@ -842,6 +854,7 @@ func (m *Manager) ReportProgress(r ProgressReport) {
 		m.fireProgress(r.MediaID, lastKey(r.Episode, end))
 	}
 	m.notifyStatus(&Session{MediaID: r.MediaID, Episode: r.Episode, Title: r.Title, Source: r.Source, Player: "builtin",
+		Provider: r.Provider, Quality: r.Quality, Release: r.Release,
 		Position: r.Position, Duration: r.Duration, Paused: r.Paused, Active: !r.Ended})
 }
 

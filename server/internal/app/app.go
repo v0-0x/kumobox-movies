@@ -28,6 +28,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/lifecycle"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
+	"github.com/v0-0x/kumobox-movies/server/internal/providers"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/stremio"
 	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
@@ -74,6 +75,12 @@ type App struct {
 	// collections downloaded lately (see providers.go).
 	Stremio     *stremio.Store
 	collections *collectionCache
+	// Health is how each provider's searches went (providerhealth.go),
+	// versions the version of each show that played last
+	// (streamversion.go).
+	Health      *providers.Health
+	healthStore *healthStore
+	versions    *streamVersions
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -214,6 +221,9 @@ func (a *App) wire() {
 
 	// Discord rich presence (playback.go).
 	a.Player.OnStatus = append(a.Player.OnStatus, a.showPresence)
+	// The version of a show that played, for its next episodes
+	// (streamversion.go).
+	a.Player.OnStatus = append(a.Player.OnStatus, a.rememberVersion)
 
 	a.Extensions.Host = a.pluginServices()
 
@@ -280,6 +290,7 @@ func (a *App) Shutdown() {
 	a.Player.Stop()
 	a.Discord.Clear()
 	a.Extensions.Shutdown()
+	a.healthStore.flush()
 	_ = a.DB.Close()
 }
 

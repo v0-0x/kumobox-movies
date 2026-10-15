@@ -583,6 +583,9 @@ export type StreamSource = {
     type: string
     quality: string
     label?: string
+    // The release (or file) name: with the provider and quality, the
+    // version the next episodes are looked for in.
+    release?: string
     // server: the provider's name.
     server: string
     provider?: string
@@ -637,9 +640,38 @@ export type ProviderStream = {
     notWebReady?: boolean
     filename?: string
     seeders?: number
+    // The streams most like the version of the show that played last.
+    preferred?: boolean
 }
 
 export type ProviderError = { provider: string; name: string; error: string }
+
+// The provider and version of a show that played last (its next episodes
+// are looked for in it first).
+export type StreamVersion = { provider: string; quality?: string; source?: string; group?: string; dub?: boolean }
+
+// GET /api/providers/streams/live, one JSON object a line: the providers
+// asked, each one's answer as it comes, then the whole result.
+export type LiveAsked = { provider: string; name: string; demoted?: boolean }
+export type LiveAnswer = { provider: string; name: string; streams: ProviderStream[]; error?: string; ms: number; cached?: boolean }
+export type LiveLine = { asking: LiveAsked[] } | LiveAnswer | { done: true; result?: StreamsResult; error?: string }
+
+// GET /api/providers/health: how each provider's searches went.
+export type ProviderHealth = ProviderInfo & {
+    successes: number
+    failures: number
+    consecutiveFailures: number
+    lastError?: string
+    lastErrorAt?: number
+    lastSuccessAt?: number
+    latencies?: number[]
+    avgMs: number
+    // After 3 failures in a row: listed last, left out of automatic picks.
+    demoted: boolean
+}
+
+// POST /api/providers/{id}/test
+export type ProviderTestResult = { provider: string; name: string; title: string; streams: number; direct: number; error?: string; ms: number }
 
 // The title an extension provider matched (it searches by title).
 export type ProviderMatch = { provider: string; name: string; id: string; title: string; score: number; manual: boolean }
@@ -653,6 +685,7 @@ export type StreamsResult = {
     subtitles: ProviderSubtitle[]
     providers: string[]
     matches?: ProviderMatch[]
+    preferred?: StreamVersion
     fetchedAt: number
 }
 

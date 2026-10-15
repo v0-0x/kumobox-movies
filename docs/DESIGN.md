@@ -104,7 +104,11 @@ hosts (tests, offline demos).
   holding several episodes moves the progress on to its last one); auto
   play next (`app/playback.go`) is `Media.NextEpisode` across seasons,
   from the next file (this computer's or a shared one) or, for a stream,
-  the same provider and version. Players title episodes
+  the same provider and version (`stream.Version`: quality, source and
+  release group). The provider and version of the last stream of a show
+  that played past 10 s are remembered too (`app/streamversion.go`, by
+  show), and the next episodes played by hand look for them first (see
+  docs/PROVIDERS.md). Players title episodes
   "Show — S01E02 · Episode title" and movies "Title (Year)".
 * **Discord** (`discord.Presence`): "Watching <title>", the episode
   ("S01E02 · Episode title") or the year, the TMDB poster as the large

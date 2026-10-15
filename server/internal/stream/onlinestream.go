@@ -49,6 +49,13 @@ type Service struct {
 	// SubtitleProviders returns the enabled subtitle providers (Stremio
 	// subtitle addons).
 	SubtitleProviders func() []providers.SubtitleProvider
+	// Health records how each provider's searches go (nil: not recorded).
+	// Providers failing again and again are listed last, and left out of
+	// the automatic picks (Best).
+	Health *providers.Health
+	// Versions returns the version of a show that played last (nil when
+	// none): its next episodes are looked for in it first.
+	Versions func(mediaID int) *Version
 	// TTL is how long results are kept (DefaultTTL when 0).
 	TTL time.Duration
 
@@ -65,17 +72,23 @@ type Service struct {
 // cached is what the providers answered for an episode, unranked.
 type cached struct {
 	mediaID, episode int
-	streams          []Stream
-	errors           []providers.ProviderError
-	subtitles        []providers.Subtitle
-	at               time.Time
+	// providers are the ids of the providers asked.
+	providers []string
+	streams   []Stream
+	errors    []providers.ProviderError
+	subtitles []providers.Subtitle
+	// answers are how each provider answered, in the order they did (see
+	// StreamsLive).
+	answers []answered
+	at      time.Time
 }
 
-// flight is a search in progress that other requests for the same thing
-// wait for, instead of asking every provider again.
-type flight struct {
-	done chan struct{}
-	res  *cached
+// answered is how a provider answered a search: its streams by id (the
+// ones kept), its error, how long it took.
+type answered struct {
+	provider, name, err string
+	ms                  int64
+	ids                 []string
 }
 
 // NewService returns a service reading its options with opts (nil: none).
@@ -104,6 +117,9 @@ type Stream struct {
 	providers.Stream
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
+	// Preferred is set on the streams most like the version of the show
+	// that played last (see Result.Preferred).
+	Preferred bool `json:"preferred,omitempty"`
 }
 
 // Match is the title an extension provider matched the movie or show with
@@ -129,6 +145,9 @@ type Result struct {
 	// Providers are the ids of the providers asked.
 	Providers []string `json:"providers"`
 	Matches   []Match  `json:"matches,omitempty"`
+	// Preferred is the version of the show that played last: its direct
+	// links come first.
+	Preferred *Version `json:"preferred,omitempty"`
 	// FetchedAt is when the providers answered (unix seconds).
 	FetchedAt int64 `json:"fetchedAt"`
 }
@@ -276,12 +295,56 @@ func (s *Service) providersFor(mediaType, only string) ([]providers.Provider, er
 	return out, nil
 }
 
+// demotedLast moves what belongs to demoted providers (see
+// providers.Health) after the rest, keeping both groups' order.
+func demotedLast[T any](xs []T, provider func(T) string, h *providers.Health) []T {
+	if h == nil {
+		return xs
+	}
+	var ok, demoted []T
+	for _, x := range xs {
+		if h.Demoted(provider(x)) {
+			demoted = append(demoted, x)
+		} else {
+			ok = append(ok, x)
+		}
+	}
+	if len(demoted) == 0 {
+		return xs
+	}
+	return append(ok, demoted...)
+}
+
+// healthy leaves out the demoted providers, unless that leaves none.
+func (s *Service) healthy(ps []providers.Provider) []providers.Provider {
+	var out []providers.Provider
+	for _, p := range ps {
+		if !s.Health.Demoted(p.ID()) {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return ps
+	}
+	return out
+}
+
 // Streams asks the enabled providers (only the one whose id is provider,
 // when it's set) for the streams of a movie or of a show's episode (key),
 // or returns what they answered a moment ago unless refresh is set.
 // Streams are ranked best first (see providers.Rank), the default
-// provider's first when all are asked.
+// provider's first when all are asked, and those of a show's version that
+// played last before them (see Result.Preferred).
 func (s *Service) Streams(ctx context.Context, media *catalog.Media, episode int, provider string, refresh bool) (*Result, error) {
+	return s.streams(ctx, media, episode, provider, refresh, false, nil)
+}
+
+// streams is Streams. auto is set for the automatic picks, which leave the
+// demoted providers out (when no provider is named) and take what the
+// others answered a moment ago when it's still there, whichever other
+// providers were asked with them. p receives the search's progress (nil:
+// none).
+func (s *Service) streams(ctx context.Context, media *catalog.Media, episode int, provider string, refresh, auto bool, p *Progress) (*Result, error) {
 	episode, err := checkEpisode(media, episode)
 	if err != nil {
 		return nil, err
@@ -291,18 +354,115 @@ func (s *Service) Streams(ctx context.Context, media *catalog.Media, episode int
 	if err != nil {
 		return nil, err
 	}
+	if auto && provider == "" {
+		ps = s.healthy(ps)
+	}
 	ids := make([]string, len(ps))
 	for i, p := range ps {
 		ids[i] = p.ID()
 	}
+	// The links all providers found a moment ago do for an automatic pick
+	// among the healthy ones.
+	if auto && !refresh && provider == "" {
+		if c := s.covering(media.ID, episode, ids); c != nil {
+			return s.result(media, req, c, ps, provider), nil
+		}
+	}
+	var each func(Answer)
+	if p != nil {
+		if p.Asking != nil {
+			p.Asking(s.asked(ps))
+		}
+		each = p.Answer
+	}
 	key := fmt.Sprintf("%d:%d:%s", media.ID, episode, strings.Join(ids, ","))
-	c, err := s.lookup(ctx, key, refresh, func(ctx context.Context) *cached {
-		return s.search(ctx, ps, req, episode)
-	})
+	c, err := s.lookup(ctx, key, refresh, func(ctx context.Context, report func(Answer)) *cached {
+		return s.search(ctx, ps, req, episode, report)
+	}, each)
 	if err != nil {
 		return nil, err
 	}
 	return s.result(media, req, c, ps, provider), nil
+}
+
+// covering returns what the providers ids answered a moment ago for an
+// episode (asked with others or not), only theirs; nil when there's
+// nothing fresh.
+func (s *Service) covering(mediaID, episode int, ids []string) *cached {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	var hit *cached
+	for _, c := range s.cache {
+		if c.mediaID != mediaID || c.episode != episode || now.Sub(c.at) >= s.ttl() || !hasAll(c.providers, ids) {
+			continue
+		}
+		if hit == nil || c.at.After(hit.at) {
+			hit = c
+		}
+	}
+	if hit == nil {
+		return nil
+	}
+	return hit.only(ids)
+}
+
+func hasAll(set, ids []string) bool {
+	in := make(map[string]bool, len(set))
+	for _, x := range set {
+		in[x] = true
+	}
+	for _, id := range ids {
+		if !in[id] {
+			return false
+		}
+	}
+	return true
+}
+
+// only is what the providers ids answered, out of c.
+func (c *cached) only(ids []string) *cached {
+	keep := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		keep[id] = true
+	}
+	out := *c
+	out.providers = ids
+	out.streams, out.errors, out.answers = nil, nil, nil
+	for _, a := range c.answers {
+		if keep[a.provider] {
+			out.answers = append(out.answers, a)
+		}
+	}
+	// A stream's provider may be named by the stream itself: what was
+	// kept of each answer decides.
+	mine := map[string]bool{}
+	for _, a := range out.answers {
+		for _, id := range a.ids {
+			mine[id] = true
+		}
+	}
+	for _, st := range c.streams {
+		if mine[st.ID] {
+			out.streams = append(out.streams, st)
+		}
+	}
+	for _, e := range c.errors {
+		if keep[e.Provider] {
+			out.errors = append(out.errors, e)
+		}
+	}
+	return &out
+}
+
+// asked describes the providers a search asks, the demoted ones last (as
+// their streams come).
+func (s *Service) asked(ps []providers.Provider) []Asked {
+	out := make([]Asked, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, Asked{Provider: p.ID(), Name: p.Name(), Demoted: s.Health.Demoted(p.ID())})
+	}
+	return demotedLast(out, func(a Asked) string { return a.Provider }, s.Health)
 }
 
 // result ranks what the providers ps answered (c) for req.
@@ -317,6 +477,12 @@ func (s *Service) result(media *catalog.Media, req providers.Request, c *cached,
 	if provider == "" && opts.DefaultProvider != "" {
 		res.Streams = providerFirst(res.Streams, opts.DefaultProvider)
 	}
+	if provider == "" && media.IsShow() && s.Versions != nil {
+		if v := s.Versions(media.ID); v != nil {
+			res.Streams, res.Preferred = preferVersion(res.Streams, v), v
+		}
+	}
+	res.Streams = demotedLast(res.Streams, func(st Stream) string { return st.Provider }, s.Health)
 	for _, p := range ps {
 		res.Providers = append(res.Providers, p.ID())
 		if mp, ok := p.(Matcher); ok {
@@ -329,21 +495,29 @@ func (s *Service) result(media *catalog.Media, req providers.Request, c *cached,
 }
 
 // lookup returns the cached result for key, or runs fn (once, however many
-// requests ask at the same time) and caches what it found.
-func (s *Service) lookup(ctx context.Context, key string, refresh bool, fn func(context.Context) *cached) (*cached, error) {
+// requests ask at the same time) and caches what it found. each (when not
+// nil) gets every provider's answer: as it comes during a search (the ones
+// that came before too, for a request joining a search under way), all at
+// once for a cached result.
+func (s *Service) lookup(ctx context.Context, key string, refresh bool, fn func(context.Context, func(Answer)) *cached, each func(Answer)) (*cached, error) {
 	s.mu.Lock()
 	if c := s.cache[key]; c != nil && !refresh && s.now().Sub(c.at) < s.ttl() {
 		s.mu.Unlock()
+		if each != nil {
+			for _, a := range c.replay() {
+				each(a)
+			}
+		}
 		return c, nil
 	}
 	f := s.flights[key]
 	if f == nil {
-		f = &flight{done: make(chan struct{})}
+		f = newFlight()
 		s.flights[key] = f
 		// The search goes on when the request that started it goes away:
 		// another one may be waiting for it, and the result is kept.
 		go func() {
-			res := fn(context.WithoutCancel(ctx))
+			res := fn(context.WithoutCancel(ctx), f.add)
 			s.mu.Lock()
 			f.res = res
 			delete(s.flights, key)
@@ -366,12 +540,7 @@ func (s *Service) lookup(ctx context.Context, key string, refresh bool, fn func(
 		}()
 	}
 	s.mu.Unlock()
-	select {
-	case <-f.done:
-		return f.res, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return f.wait(ctx, each)
 }
 
 // pruneLocked drops expired results.
@@ -384,8 +553,9 @@ func (s *Service) pruneLocked() {
 	}
 }
 
-// search asks the providers (and the subtitle providers) at once.
-func (s *Service) search(ctx context.Context, ps []providers.Provider, req providers.Request, episode int) *cached {
+// search asks the providers (and the subtitle providers) at once, handing
+// report (when not nil) each provider's answer as it comes.
+func (s *Service) search(ctx context.Context, ps []providers.Provider, req providers.Request, episode int, report func(Answer)) *cached {
 	timeout := s.options().Timeout
 	if timeout <= 0 {
 		// Nobody may be waiting for this search any more (see lookup):
@@ -407,9 +577,24 @@ func (s *Service) search(ctx context.Context, ps []providers.Provider, req provi
 			}()
 		}
 	}
-	streams, errs := providers.Aggregate(ctx, ps, req, timeout)
+	c := &cached{mediaID: req.MediaID, episode: episode}
+	for _, p := range ps {
+		c.providers = append(c.providers, p.ID())
+	}
+	// Called one answer at a time.
+	streams, errs := providers.AggregateEach(ctx, ps, req, timeout, func(a providers.Answer) {
+		ans := s.answerOf(a)
+		ids := make([]string, len(ans.Streams))
+		for i, st := range ans.Streams {
+			ids[i] = st.ID
+		}
+		c.answers = append(c.answers, answered{provider: ans.Provider, name: ans.Name, err: ans.Error, ms: ans.Ms, ids: ids})
+		if report != nil {
+			report(ans)
+		}
+	})
 	wg.Wait()
-	c := &cached{mediaID: req.MediaID, episode: episode, errors: errs, subtitles: subs, at: s.now()}
+	c.errors, c.subtitles, c.at = errs, subs, s.now()
 	for _, st := range streams {
 		c.streams = append(c.streams, Wrap(st))
 	}
@@ -496,13 +681,40 @@ func (s *Service) Find(ctx context.Context, media *catalog.Media, episode int, i
 
 // Best returns the best direct link for a movie or episode from provider
 // (all providers when ""), with the result it belongs to: what plays when
-// no stream was picked (the next episode, the Play button).
+// no stream was picked (the next episode, the Play button). See BestFor.
 func (s *Service) Best(ctx context.Context, media *catalog.Media, episode int, provider string) (Stream, *Result, error) {
-	res, err := s.Streams(ctx, media, episode, provider, false)
+	return s.BestFor(ctx, media, episode, Pick{Provider: provider})
+}
+
+// Pick is what an automatic pick looks for.
+type Pick struct {
+	// Provider's links only ("" for any provider's).
+	Provider string
+	// Version's links first (nil: for a show, the version that played
+	// last, when it's Provider's or Provider is "").
+	Version *Version
+	// Refresh asks the providers again rather than taking the links found
+	// a moment ago (the player does when none of them could be read).
+	Refresh bool
+}
+
+// BestFor returns the best direct link for a movie or episode, with the
+// result it belongs to. Without a provider named, the providers failing
+// again and again are left out (unless they're all that's left), so they
+// don't hold the pick up until their timeout; the links found a moment ago
+// are used when they're still there.
+func (s *Service) BestFor(ctx context.Context, media *catalog.Media, episode int, pick Pick) (Stream, *Result, error) {
+	res, err := s.streams(ctx, media, episode, pick.Provider, pick.Refresh, true, nil)
 	if err != nil {
 		return Stream{}, nil, err
 	}
-	if direct := res.Direct(); len(direct) > 0 {
+	v := pick.Version
+	if v == nil && media.IsShow() && s.Versions != nil {
+		if last := s.Versions(media.ID); last != nil && (pick.Provider == "" || pick.Provider == last.Provider) {
+			v = last
+		}
+	}
+	if direct := preferVersion(res.Direct(), v); len(direct) > 0 {
 		return direct[0], res, nil
 	}
 	return Stream{}, res, noDirect(res)

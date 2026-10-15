@@ -1,13 +1,15 @@
-import { useQueryClient } from "@tanstack/react-query"
 import {
     AlertTriangle,
     Captions,
+    Check,
     ChevronDown,
     ChevronLeft,
     ChevronRight,
     Copy,
     Download,
     ExternalLink,
+    History,
+    Loader2,
     Magnet,
     MonitorPlay,
     Play,
@@ -24,22 +26,23 @@ import { Link, useSearchParams } from "react-router-dom"
 import { toast } from "@/lib/toast"
 import { api, qs } from "@/lib/api"
 import { episodeKey, firstEpisode, formatKey, mediaIsShow, MOVIE_EPISODE, nextEpisode, prevEpisode, splitKey } from "@/lib/ids"
+import { type LiveProgress, mergeAnswers, useLiveStreams } from "@/lib/liveStreams"
 import { usePlay } from "@/lib/play"
-import { useProviders, useProviderStreams, useSeason, useStatus } from "@/lib/queries"
-import type { EntryView, ProviderInfo, ProviderStream, Season, StreamsResult } from "@/lib/types"
+import { useProviders, useSeason, useStatus } from "@/lib/queries"
+import type { EntryView, ProviderError, ProviderInfo, ProviderStream, Season, StreamsResult } from "@/lib/types"
 import { cn, copyText, formatBytes, plural } from "@/lib/utils"
 import { Badge, Button, Dialog, EmptyState, Field, IconButton, Input, Select, Skeleton, Tabs, Tooltip } from "../ui"
 
 // "Watch online": the streams of the movie, or of the episode picked, from
 // every provider (Internet Archive, Stremio addons, Nuvio providers,
-// extensions), best first as the server ranks them.
+// extensions). They show as each provider answers; once all have, best first
+// as the server ranks them.
 export function StreamPanel({ entry }: { entry: EntryView }) {
     const media = entry.media
     const show = mediaIsShow(media)
     const { data: status } = useStatus()
     const { data: providers } = useProviders()
     const [params, setParams] = useSearchParams()
-    const qc = useQueryClient()
 
     // A show's episode: the one asked for in the URL, else the next one to
     // watch (never a special).
@@ -59,19 +62,7 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
         )
 
     const usable = (providers ?? []).filter(p => p.enabled && p.types.includes(show ? "tv" : "movie"))
-    const { data, isLoading, isFetching, error, refetch } = useProviderStreams(media.id, key, "", !providers || usable.length > 0)
-    const [refreshing, setRefreshing] = useState(false)
-    const refresh = async () => {
-        setRefreshing(true)
-        try {
-            const res = await api.get<StreamsResult>(`/api/providers/streams${qs({ mediaId: media.id, episode: key, refresh: 1 })}`)
-            qc.setQueryData(["provider-streams", media.id, key, ""], res)
-        } catch (e: any) {
-            toast.error(e.message)
-        } finally {
-            setRefreshing(false)
-        }
-    }
+    const { data, error, refetch, progress: search, refresh } = useLiveStreams(media.id, key, !providers || usable.length > 0)
 
     const [filter, setFilter] = useState("all")
     useEffect(() => setFilter("all"), [key])
@@ -80,7 +71,14 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
 
     if (providers && usable.length === 0) return <NoProviders show={show} />
 
-    const streams = data?.streams ?? []
+    // While the providers look, what they found so far (once one answered:
+    // until then the last list stays); then the server's ranked list.
+    const searching = !!search
+    const live = search && (search.answers.length > 0 || !data) ? mergeAnswers(search.answers, status?.settings.providers?.preferredQuality ?? "") : null
+    const streams = live ?? data?.streams ?? []
+    const liveErrors: ProviderError[] = (search?.answers ?? []).filter(a => a.error).map(a => ({ provider: a.provider, name: a.name, error: a.error! }))
+    const errors = live ? liveErrors : (data?.errors ?? [])
+    const addonSubs = live ? 0 : (data?.subtitles.length ?? 0)
     const byProvider = new Map<string, number>()
     for (const s of streams) byProvider.set(s.provider, (byProvider.get(s.provider) ?? 0) + 1)
     const shown = filter === "all" ? streams : streams.filter(s => s.provider === filter)
@@ -95,12 +93,15 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
         />
     )
     const answered = data ? data.providers.length - data.errors.length : 0
-    const summary = data && streams.length > 0 && (
-        <p className="text-[13px] text-subtle">
-            {plural(streams.length, "source")} from {answered} of {plural(data.providers.length, "provider")}
-            {data.subtitles.length > 0 && ` · ${plural(data.subtitles.length, "subtitle")} from subtitle addons`}
-        </p>
-    )
+    const summary = searching
+        ? streams.length > 0 && <p className="text-[13px] text-subtle">{plural(streams.length, "source")} so far</p>
+        : data &&
+          streams.length > 0 && (
+              <p className="text-[13px] text-subtle">
+                  {plural(streams.length, "source")} from {answered} of {plural(data.providers.length, "provider")}
+                  {data.subtitles.length > 0 && ` · ${plural(data.subtitles.length, "subtitle")} from subtitle addons`}
+              </p>
+          )
 
     return (
         <div className="flex flex-col gap-5">
@@ -119,8 +120,8 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
                             Download episodes
                         </Button>
                     )}
-                    <IconButton label="Look again" variant="subtle" onClick={refresh} disabled={refreshing || isFetching}>
-                        <RefreshCw className={cn("size-4", (refreshing || isFetching) && "animate-spin")} />
+                    <IconButton label="Look again" variant="subtle" onClick={() => refresh()} disabled={searching}>
+                        <RefreshCw className={cn("size-4", searching && "animate-spin")} />
                     </IconButton>
                 </div>
             </div>
@@ -132,11 +133,10 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
                 </div>
             )}
 
-            {(isLoading || (refreshing && !data)) && (
+            {search && <SearchProgress progress={search} timeout={timeout} fallback={usable.length} />}
+
+            {searching && streams.length === 0 && (
                 <div className="flex flex-col gap-3">
-                    <p className="flex items-center gap-2 text-sm text-muted">
-                        <RefreshCw className="size-3.5 animate-spin" /> Asking {plural(usable.length || 1, "provider")}… (up to {timeout} s)
-                    </p>
                     <div className="card divide-y divide-line overflow-hidden">
                         {Array.from({ length: 4 }).map((_, i) => (
                             <div key={i} className="flex items-center gap-4 px-4 py-3.5">
@@ -152,15 +152,15 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
                 </div>
             )}
 
-            {error && !data && (
+            {error && !data && !searching && (
                 <EmptyState icon={<AlertTriangle className="size-6" />} title="Couldn't look for streams" action={<Button onClick={() => refetch()}>Try again</Button>}>
                     {(error as Error).message}
                 </EmptyState>
             )}
 
-            {data && <Matches result={data} onFix={setMatchFor} />}
+            {data && !searching && <Matches result={data} onFix={setMatchFor} />}
 
-            {data && streams.length === 0 && (
+            {data && !searching && streams.length === 0 && (
                 <EmptyState icon={<Search className="size-6" />} title="No streams found" action={<ProvidersLink />}>
                     {data.errors.length > 0
                         ? `${plural(data.providers.length, "provider")} asked, none had ${show ? formatKey(key) : "this movie"}.`
@@ -172,12 +172,12 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
             {shown.length > 0 && (
                 <div className="card divide-y divide-line overflow-hidden">
                     {shown.map(s => (
-                        <StreamRow key={s.id} s={s} provider={info(s.provider)} result={data!} mediaId={media.id} episode={key} />
+                        <StreamRow key={s.id} s={s} provider={info(s.provider)} addonSubs={addonSubs} mediaId={media.id} episode={key} />
                     ))}
                 </div>
             )}
 
-            {data && data.errors.length > 0 && <ProviderErrors result={data} onFix={setMatchFor} />}
+            {errors.length > 0 && <ProviderErrors key={searching ? "live" : "done"} errors={errors} startOpen={!searching && streams.length === 0} onFix={setMatchFor} />}
 
             {matchFor && (
                 <ManualMatchDialog
@@ -281,7 +281,9 @@ function ProviderIcon({ src, className }: { src?: string; className?: string }) 
     return <img src={src} alt="" onError={() => setErr(true)} className={cn("shrink-0 rounded-lg bg-white/5 object-cover", className)} />
 }
 
-function StreamRow({ s, provider, result, mediaId, episode }: { s: ProviderStream; provider?: ProviderInfo; result: StreamsResult; mediaId: number; episode: number }) {
+// addonSubs: how many subtitles subtitle addons found (they go with the
+// direct links).
+function StreamRow({ s, provider, addonSubs, mediaId, episode }: { s: ProviderStream; provider?: ProviderInfo; addonSubs: number; mediaId: number; episode: number }) {
     const { playStream, sendTorrent, remote } = usePlay()
     const [busy, setBusy] = useState(false)
     const lines = s.title
@@ -296,7 +298,7 @@ function StreamRow({ s, provider, result, mediaId, episode }: { s: ProviderStrea
         .replace(/💾\s*[\d.,]+\s*[KMGT]i?B/giu, "")
         .replace(/\s+/g, " ")
         .replace(/^[\s·|]+|[\s·|]+$/g, "")
-    const subs = (s.subtitles?.length ?? 0) + (s.kind === "direct" ? result.subtitles.length : 0)
+    const subs = (s.subtitles?.length ?? 0) + (s.kind === "direct" ? addonSubs : 0)
     const download = async () => {
         setBusy(true)
         try {
@@ -324,6 +326,15 @@ function StreamRow({ s, provider, result, mediaId, episode }: { s: ProviderStrea
                     </p>
                 )}
                 <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    {s.preferred && (
+                        <Tooltip content="The provider and version you watched this show in last time">
+                            <span>
+                                <Badge tone="green">
+                                    <History className="size-3" /> Last used
+                                </Badge>
+                            </span>
+                        </Tooltip>
+                    )}
                     <Badge>{s.providerName}</Badge>
                     {s.quality && <Badge tone="brand">{s.quality === "2160p" ? "4K" : s.quality}</Badge>}
                     {s.kind !== "direct" && <Badge tone={s.kind === "torrent" ? "blue" : "gray"}>{kindLabel[s.kind]}</Badge>}
@@ -336,7 +347,7 @@ function StreamRow({ s, provider, result, mediaId, episode }: { s: ProviderStrea
                         </Tooltip>
                     )}
                     {subs > 0 && (
-                        <Tooltip content={`${plural(subs, "subtitle")}${s.kind === "direct" && result.subtitles.length ? ", from subtitle addons too" : ""}`}>
+                        <Tooltip content={`${plural(subs, "subtitle")}${s.kind === "direct" && addonSubs ? ", from subtitle addons too" : ""}`}>
                             <span className="flex items-center gap-1 text-xs text-subtle">
                                 <Captions className="size-3.5" /> {subs}
                             </span>
@@ -419,18 +430,59 @@ function Matches({ result, onFix }: { result: StreamsResult; onFix: (p: { provid
     )
 }
 
-function ProviderErrors({ result, onFix }: { result: StreamsResult; onFix: (p: { provider: string; name: string }) => void }) {
-    const [open, setOpen] = useState(result.streams.length === 0)
+// The providers asked and how far they got: a spinner for those still
+// looking, what each one that answered found, its error otherwise.
+function SearchProgress({ progress, timeout, fallback }: { progress: LiveProgress; timeout: number; fallback: number }) {
+    const answers = new Map(progress.answers.map(a => [a.provider, a]))
+    const pending = progress.asking.filter(a => !answers.has(a.provider)).length
+    return (
+        <div className="flex flex-col gap-2.5">
+            <p className="flex items-center gap-2 text-sm text-muted">
+                <RefreshCw className="size-3.5 animate-spin" />
+                {progress.asking.length === 0
+                    ? `Asking ${plural(fallback || 1, "provider")}… (up to ${timeout} s)`
+                    : `Waiting for ${plural(pending, "provider")}… (up to ${timeout} s each)`}
+            </p>
+            {progress.asking.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                    {progress.asking.map(p => {
+                        const a = answers.get(p.provider)
+                        const label = a ? (a.error ? a.error : `${plural(a.streams.length, "source")} in ${(a.ms / 1000).toFixed(1)} s`) : p.demoted ? "Failed lately: asked last" : "Looking…"
+                        return (
+                            <Tooltip key={p.provider} content={label}>
+                                <span
+                                    className={cn(
+                                        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs",
+                                        !a && "bg-white/[0.04] text-muted",
+                                        a && !a.error && "bg-emerald-400/10 text-emerald-200",
+                                        a?.error && "bg-amber-400/10 text-amber-200",
+                                    )}
+                                >
+                                    {!a ? <Loader2 className="size-3 animate-spin" /> : a.error ? <AlertTriangle className="size-3" /> : <Check className="size-3" />}
+                                    {p.name}
+                                    {a && !a.error && <span className="tabular-nums opacity-80">{a.streams.length}</span>}
+                                </span>
+                            </Tooltip>
+                        )
+                    })}
+                </div>
+            )}
+        </div>
+    )
+}
+
+function ProviderErrors({ errors, startOpen, onFix }: { errors: ProviderError[]; startOpen: boolean; onFix: (p: { provider: string; name: string }) => void }) {
+    const [open, setOpen] = useState(startOpen)
     return (
         <div className="rounded-xl bg-white/[0.025]">
             <button onClick={() => setOpen(o => !o)} className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm text-muted transition-colors hover:text-fg">
                 <AlertTriangle className="size-4 text-amber-300" />
-                {plural(result.errors.length, "provider")} found nothing
+                {plural(errors.length, "provider")} found nothing
                 <ChevronDown className={cn("ml-auto size-4 transition-transform", open && "rotate-180")} />
             </button>
             {open && (
                 <div className="flex flex-col gap-2 px-4 pb-4">
-                    {result.errors.map(e => (
+                    {errors.map(e => (
                         <div key={e.provider} className="flex flex-wrap items-start gap-x-3 gap-y-1 text-[13px]">
                             <span className="w-44 shrink-0 truncate font-medium">{e.name}</span>
                             <span className="min-w-0 flex-1 break-words text-subtle">{e.error}</span>

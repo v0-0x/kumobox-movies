@@ -23,14 +23,48 @@ the episode picked (the next one to watch by default): play a direct link
 in the app or in mpv, download it into the library (its link is looked up
 again when the download starts, from the same provider in the closest
 quality: links expire), send a torrent to the torrent client (saved into
-the library), open a YouTube video or a web page in the browser.
+the library), open a YouTube video or a web page in the browser. Streams
+show as each provider answers (`GET /api/providers/streams/live`), with a
+spinner for the providers still looking and each one's error; once all
+have answered, the list is the ranked one above.
 
-Code: `server/internal/providers` (common types, ranking, aggregation),
-`providers/archive`, `providers/stremio`, `server/internal/extensions`
-(`nuvio*.go`) for Nuvio providers, `server/internal/stream`
-(`onlinestream.go`: the service asking them; `extension.go`: extensions as
-providers), `server/internal/app/providers.go` (which providers, in which
-order) and `server/internal/api/providers_routes.go` (the HTTP API).
+### Health
+
+KumoBox keeps how each provider's searches went (in the database, so it
+lasts across restarts): answers and failures, failures in a row, the last
+error (the links it names cut down to their host: addon links can carry
+the addon's settings) and the last ten answers' times. An answer with no
+streams is a success; an addon that can't be asked about the title (no
+IMDb id...) counts neither way. **Settings › Providers › Provider health**
+lists them, with a **Test** button (this computer only) asking the provider
+right away for Night of the Living Dead (1968), a public-domain film.
+
+A provider that failed **3 times in a row** is demoted until it answers
+again: its streams are listed after the others' (it's still asked in Watch
+online, last), and the automatic picks (the Play button, the player's
+"ask for fresh links", auto play next from any provider) leave it out, so
+they don't wait for its timeout. Named (the default provider, the
+provider an episode played from), it's asked all the same.
+
+### The version of a show
+
+A stream of a show that plays past its first 10 seconds (in mpv or the
+in-app player) is remembered for the show: its provider and version (its
+quality, and the source and release group of its release or file name).
+The next episodes look for them first: Watch online lists that provider's
+matching links first (marked "Last used"), and the Play button picks the
+closest one when no other provider is asked for. Auto play next does the
+same with the version of the episode that just played.
+
+Code: `server/internal/providers` (common types, ranking, aggregation,
+`health.go`), `providers/archive`, `providers/stremio`,
+`server/internal/extensions` (`nuvio*.go`) for Nuvio providers,
+`server/internal/stream` (`onlinestream.go`: the service asking them;
+`live.go`: searches as they go; `version.go`: a show's version;
+`extension.go`: extensions as providers), `server/internal/app/providers.go`
+(which providers, in which order; `providerhealth.go`,
+`streamversion.go`) and `server/internal/api/providers_routes.go` (the
+HTTP API).
 
 ## Adding providers
 
@@ -88,7 +122,10 @@ repository).
 | Route | What |
 |---|---|
 | `GET /api/providers` | every provider, in order: `[{id, name, kind, icon, types, enabled, extension}]` |
-| `GET /api/providers/streams?mediaId=&episode=&provider=&refresh=1` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
+| `GET /api/providers/streams?mediaId=&episode=&provider=&refresh=1` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches, preferred}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`), `preferred` on those of the show's last version; `episode` is a key (a movie's is 1), `provider` empty for all |
+| `GET /api/providers/streams/live?…` | the same search as NDJSON, a line as each provider answers: `{asking: [{provider, name, demoted}]}`, then `{provider, name, streams, error, ms, cached}` per provider, then `{done: true, result}` (`result` as above) or `{done: true, error}` |
+| `GET /api/providers/health` | every provider with `{successes, failures, consecutiveFailures, lastError, lastErrorAt, lastSuccessAt, latencies, avgMs, demoted}` |
+| `POST /api/providers/{id}/test` | `{mediaId, episode}` optional (Night of the Living Dead by default) → `{provider, name, title, streams, direct, error, ms, health}`; this computer only |
 | `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
 | `POST /api/providers/download` | `{mediaId, episodes: [keys], provider, quality}` → the queued downloads |
 | `GET /api/providers/search?provider=&q=`, `POST /api/providers/mapping` | an extension's titles, and picking one by hand `{provider, mediaId, id, title}` |

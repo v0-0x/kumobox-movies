@@ -6,6 +6,7 @@ import { api } from "@/lib/api"
 import { useProviders, useStatus } from "@/lib/queries"
 import type { TorrentSource, TorrentSourceSettings, TorznabIndexer } from "@/lib/types"
 import { Ext, Group, LanOnly, ListInput, Password, PathInput, Row, type SectionProps, Stack, useLan } from "./parts"
+import { ProviderHealthGroup } from "./ProviderHealth"
 
 const DEFAULT_STREMIO_CATALOG = "https://api.strem.io/addonscollection.json"
 
@@ -51,6 +52,8 @@ export function ProvidersSection({ draft, set }: SectionProps) {
                     <Input type="number" min={5} max={120} className="w-24" value={p?.timeoutSeconds ?? 20} onChange={e => set("providers", { timeoutSeconds: Number(e.target.value) })} />
                 </Row>
             </Group>
+
+            <ProviderHealthGroup lan={lan} />
 
             <Group title="Internet Archive" description="Built in: public-domain movies and TV from archive.org.">
                 <Row label="Use the Internet Archive">
