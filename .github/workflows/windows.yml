@@ -194,6 +194,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npx electron-builder --win --x64 --publish never
 
+      # Starts the packaged app (fuses and asar integrity check on) with
+      # --smoke: it starts its server with a throwaway data folder, waits
+      # until it answers and exits 0, or 1 when it doesn't (desktop/main.js).
+      - name: Start the app
+        timeout-minutes: 3
+        run: |
+          $exe = "dist/windows/release/win-unpacked/KumoBox.exe"
+          if (-not (Test-Path $exe)) { throw "$exe is missing" }
+          $out = Join-Path $env:RUNNER_TEMP "kumobox-smoke.log"
+          $err = Join-Path $env:RUNNER_TEMP "kumobox-smoke.err.log"
+          $p = Start-Process -FilePath $exe -ArgumentList "--smoke" -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          Get-Content $out, $err -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "KumoBox --smoke exited with $($p.ExitCode)" }
+
       # archive: false uploads the files as they are (no zip around them),
       # named after the file: the run's Summary page lists them for download,
       # on every branch.

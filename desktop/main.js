@@ -49,6 +49,18 @@ if (isMac) {
     app.setPath("userData", path.join(app.getPath("appData"), "KumoBox", "electron"))
 }
 
+// --smoke: the release workflows' check that the packaged app starts at all
+// (with its fuses and asar integrity check on, a damaged package doesn't
+// even get this far). It starts the bundled server with a throwaway data
+// folder, waits until it answers, prints a line and exits: 0 when it
+// answered, 1 otherwise. No window, no tray, no single-instance lock.
+const SMOKE = process.argv.includes("--smoke")
+if (SMOKE) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kumobox-smoke-"))
+    process.env.KUMOBOX_DATA_DIR = path.join(tmp, "data")
+    app.setPath("userData", path.join(tmp, "electron"))
+}
+
 const runtimeDir = serverRuntimeDir()
 let serverProc = null
 let mainWindow = null
@@ -622,7 +634,44 @@ async function boot() {
     app.on("browser-window-focus", unparkPage)
 }
 
-if (!app.requestSingleInstanceLock()) {
+// smoke runs the --smoke check (see SMOKE).
+async function smoke() {
+    const done = code => {
+        app.isQuitting = true
+        const proc = serverProc
+        if (!proc) return app.exit(code)
+        const timer = setTimeout(() => {
+            proc.kill()
+            app.exit(code)
+        }, 5000)
+        proc.once("exit", () => {
+            clearTimeout(timer)
+            app.exit(code)
+        })
+        if (isWindows) proc.stdin?.end()
+        else proc.kill("SIGTERM")
+    }
+    const timer = setTimeout(() => {
+        console.error("KumoBox smoke test failed: the server didn't answer within 60 seconds")
+        done(1)
+    }, 60000)
+    try {
+        const url = await startServer()
+        for (let i = 0; i < 50 && !readToken(); i++) await new Promise(r => setTimeout(r, 100))
+        if (!(await ping(url))) throw new Error(`the server at ${url} didn't answer`)
+        clearTimeout(timer)
+        console.log(`KumoBox smoke test passed: the server answers at ${url} (Electron ${process.versions.electron})`)
+        done(0)
+    } catch (err) {
+        clearTimeout(timer)
+        console.error(`KumoBox smoke test failed: ${err?.message || err}`)
+        done(1)
+    }
+}
+
+if (SMOKE) {
+    app.whenReady().then(smoke)
+} else if (!app.requestSingleInstanceLock()) {
     // KumoBox is running already and shows its window. When it's an older
     // version (updated while it ran in the background), it's asked to
     // restart into this one: versions before this check only know that.

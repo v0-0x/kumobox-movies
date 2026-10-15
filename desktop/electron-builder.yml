@@ -28,13 +28,19 @@ npmRebuild: false # no native modules
 # takes --inspect), so these only close ways to turn its own binary into an
 # arbitrary-code runner — e.g. a shortcut or another process relaunching it
 # with ELECTRON_RUN_AS_NODE. onlyLoadAppFromAsar stops it loading a swapped-in
-# app folder beside the asar. resetAdHocDarwinSignature re-applies the ad hoc
-# macOS signature after the fuses change the binary (see the mac block).
+# app folder beside the asar, and enableEmbeddedAsarIntegrityValidation a
+# modified asar: electron-builder writes the asar's hash into the app (the
+# exe's resources on Windows, Info.plist on macOS), and Electron refuses to
+# start when they don't match. The workflows start the packaged app to check
+# it (main.js --smoke on Windows, the "Start the app" step on macOS).
+# resetAdHocDarwinSignature re-applies the ad hoc macOS signature after the
+# fuses change the binary (see the mac block).
 electronFuses:
   runAsNode: false
   enableNodeOptionsEnvironmentVariable: false
   enableNodeCliInspectArguments: false
   onlyLoadAppFromAsar: true
+  enableEmbeddedAsarIntegrityValidation: true
   resetAdHocDarwinSignature: true
 
 directories:
