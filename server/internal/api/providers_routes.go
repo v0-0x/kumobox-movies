@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
@@ -33,6 +34,7 @@ func (s *Server) providerRoutes() {
 	m.HandleFunc("GET /api/providers", h(func(r *http.Request) (any, error) { return s.app.ProviderInfos(), nil }))
 	m.HandleFunc("GET /api/providers/streams", h(s.providerStreams))
 	m.HandleFunc("POST /api/providers/play", h(s.providerPlay))
+	m.HandleFunc("GET /api/providers/subtitles", h(s.providerSubtitles))
 	m.HandleFunc("POST /api/providers/download", h(s.providerDownload))
 	// Extensions find titles by searching: the match can be picked by hand.
 	m.HandleFunc("GET /api/providers/search", h(s.providerSearch))
@@ -265,14 +267,10 @@ func playerSource(st stream.Stream, addonSubs []providers.Subtitle, cfg config.S
 	subs := []map[string]any{}
 	all := append(append([]providers.Subtitle(nil), st.Subtitles...), stream.SortSubtitles(addonSubs, cfg.Playback.PreferredSubLang, 30)...)
 	for i, sub := range all {
-		label := sub.Label
-		if label == "" {
-			label = sub.Language
-		}
-		subs = append(subs, map[string]any{
-			"url": stream.ProxyURL(sub.URL, headers) + "&fmt=vtt", "language": sub.Language, "label": label,
-			"isDefault": i == 0 && len(st.Subtitles) > 0, "original": sub.URL,
-		})
+		own := i < len(st.Subtitles)
+		sp := subtitleSource(sub, headers)
+		sp["isDefault"], sp["addon"] = i == 0 && own, !own
+		subs = append(subs, sp)
 	}
 	typ := st.Type
 	if typ == providers.StreamUnknown {
@@ -281,15 +279,71 @@ func playerSource(st stream.Stream, addonSubs []providers.Subtitle, cfg config.S
 	src := map[string]any{
 		"id": st.ID, "url": stream.ProxyURL(st.URL, headers), "originalUrl": st.URL, "type": typ, "quality": st.Quality,
 		"label": firstLine(st.Title), "server": st.ProviderName, "provider": st.Provider, "subtitles": subs,
-		"headers": headers, "referrer": referrer, "notWebReady": st.NotWebReady,
+		"headers": headers, "referrer": referrer, "notWebReady": st.NotWebReady, "filename": st.Filename,
 	}
 	// What the player converts with ffmpeg when the browser can't play the
-	// link as it is (Matroska, HEVC, AC-3/DTS audio...): the link named for
-	// the conversion endpoints (stream/remote.go). HLS plays as it is.
-	if typ != providers.StreamM3U8 {
+	// link as it is (Matroska, HEVC, AC-3/E-AC-3/DTS audio...): the link
+	// named for the conversion endpoints (stream/remote.go). ffmpeg reads
+	// an HLS stream through the relay, which rewrites its playlists
+	// (stream/relayhls.go); one the browser plays goes on playing as it is.
+	if isHLS(typ, st.URL) {
+		src["remote"] = stream.RegisterRemoteHLS(st.URL, headers)
+	} else {
 		src["remote"] = stream.RegisterRemote(st.URL, headers)
 	}
 	return src
+}
+
+// subtitleSource is a subtitle file as the in-app player takes it: WebVTT
+// through the proxy (fetched with headers, converted from SRT or ASS).
+func subtitleSource(sub providers.Subtitle, headers map[string]string) map[string]any {
+	label := sub.Label
+	if label == "" {
+		label = sub.Language
+	}
+	return map[string]any{
+		"url": stream.ProxyURL(sub.URL, headers) + "&fmt=vtt", "language": sub.Language, "label": label, "original": sub.URL,
+	}
+}
+
+// providerSubtitles is GET /api/providers/subtitles?mediaId=&episode=
+// &remote=&filename=: the subtitles of the subtitle addons for the online
+// stream the in-app player plays (remote: its "remote:" path), found for
+// that very file when its size and hash can be read from it (two byte
+// ranges, like the stream), the preferred languages first, as the player
+// takes them.
+func (s *Server) providerSubtitles(r *http.Request) (any, error) {
+	q := r.URL.Query()
+	media, episode, err := s.providerMedia(r.Context(), queryInt(r, "mediaId"), queryInt(r, "episode"))
+	if err != nil {
+		return nil, err
+	}
+	remote := q.Get("remote")
+	if !stream.IsRemoteInput(remote) {
+		return nil, badRequest("missing remote (the stream's remote: path)")
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	subs, err := s.app.Stream.VideoSubtitles(ctx, media, episode, remote, q.Get("filename"))
+	if errors.Is(err, stream.ErrRemoteGone) {
+		return nil, notFound(err.Error())
+	}
+	if err != nil {
+		return nil, providerError(err)
+	}
+	out := []map[string]any{}
+	for _, sub := range stream.SortSubtitles(subs, s.app.Settings.Get().Playback.PreferredSubLang, 30) {
+		sp := subtitleSource(sub, nil)
+		sp["addon"] = true
+		out = append(out, sp)
+	}
+	return out, nil
+}
+
+// isHLS reports a link to an HLS playlist, by its type or its address (as
+// the player tells them).
+func isHLS(typ, link string) bool {
+	return typ == providers.StreamM3U8 || strings.Contains(strings.ToLower(link), "m3u8")
 }
 
 func firstLine(s string) string {

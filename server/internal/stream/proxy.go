@@ -3,9 +3,12 @@ package stream
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
@@ -276,21 +281,88 @@ func rewritePlaylist(body []byte, base *url.URL, headers map[string]string) []by
 // Subtitle conversion (SRT/ASS -> WebVTT) for the in-app player.
 
 var (
-	reSrtTime = regexp.MustCompile(`(\d{2}:\d{2}:\d{2}),(\d{3})`)
+	reSrtTime = regexp.MustCompile(`\b(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\b`)
 	reAssTag  = regexp.MustCompile(`\{[^}]*\}`)
 )
 
-// ToVTT converts subtitles to WebVTT based on their content/extension.
+// ToVTT converts subtitles to WebVTT based on their content/extension:
+// WebVTT, SubRip (SRT) and ASS/SSA, in UTF-8, UTF-16 or (old SubRip files
+// mostly) Windows-1252, gzipped or not.
 func ToVTT(body []byte, name string) []byte {
-	text := strings.ReplaceAll(string(bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))), "\r\n", "\n")
+	text := strings.ReplaceAll(subtitleText(body), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 	switch {
 	case strings.HasPrefix(strings.TrimSpace(text), "WEBVTT"):
 		return []byte(text)
 	case strings.Contains(text, "[Script Info]") || strings.HasSuffix(name, ".ass") || strings.HasSuffix(name, ".ssa"):
 		return assToVTT(text)
 	default:
-		return []byte("WEBVTT\n\n" + reSrtTime.ReplaceAllString(text, "$1.$2"))
+		return srtToVTT(text)
 	}
+}
+
+// srtToVTT turns SubRip into WebVTT: the times of its cues get a dot
+// before their milliseconds, two digits of hours and three of
+// milliseconds (SubRip files are written anyhow).
+func srtToVTT(text string) []byte {
+	var out strings.Builder
+	out.WriteString("WEBVTT\n\n")
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "-->") {
+			line = reSrtTime.ReplaceAllStringFunc(line, func(t string) string {
+				m := reSrtTime.FindStringSubmatch(t)
+				return fmt.Sprintf("%s:%s:%s.%s", ("0" + m[1])[len(m[1])-1:], m[2], m[3], (m[4] + "00")[:3])
+			})
+		}
+		out.WriteString(line + "\n")
+	}
+	return []byte(out.String())
+}
+
+// subtitleText is a subtitle file's text in UTF-8: gunzipped, from UTF-16
+// (by its byte order mark), and from Windows-1252 when it isn't UTF-8.
+func subtitleText(body []byte) string {
+	if len(body) > 2 && body[0] == 0x1f && body[1] == 0x8b {
+		if zr, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
+			if b, err := io.ReadAll(io.LimitReader(zr, 16<<20)); err == nil {
+				body = b
+			}
+		}
+	}
+	switch {
+	case bytes.HasPrefix(body, []byte{0xff, 0xfe}):
+		return utf16Text(body[2:], binary.LittleEndian)
+	case bytes.HasPrefix(body, []byte{0xfe, 0xff}):
+		return utf16Text(body[2:], binary.BigEndian)
+	}
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+	if utf8.Valid(body) {
+		return string(body)
+	}
+	var b strings.Builder
+	for _, c := range body {
+		if c >= 0x80 && c < 0xa0 {
+			b.WriteRune(cp1252[c-0x80])
+		} else {
+			b.WriteRune(rune(c)) // Latin-1
+		}
+	}
+	return b.String()
+}
+
+func utf16Text(b []byte, order binary.ByteOrder) string {
+	units := make([]uint16, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		units = append(units, order.Uint16(b[i:]))
+	}
+	return string(utf16.Decode(units))
+}
+
+// cp1252 are the characters of Windows-1252's bytes 0x80 to 0x9f (the
+// others are Latin-1's).
+var cp1252 = [32]rune{
+	'€', 0x81, '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', 0x8d, 'Ž', 0x8f,
+	0x90, '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', 0x9d, 'ž', 'Ÿ',
 }
 
 func assTime(t string) string {

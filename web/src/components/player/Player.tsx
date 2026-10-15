@@ -2,6 +2,7 @@ import Hls from "hls.js"
 import {
     ArrowLeft,
     Captions,
+    Copy,
     FastForward,
     Gauge,
     Languages,
@@ -26,8 +27,8 @@ import { prefersHls, randomId, videoCaps } from "@/lib/playback"
 import { useSettings, useStatus } from "@/lib/queries"
 import { skipAt, skipName, skipOn, skipRun, isSkippable } from "@/lib/skips"
 import { playerStore, type PlayerRequest } from "@/lib/store"
-import type { EntryView, EpisodeView, PlayResult, Probe, Settings, SkipInterval, StreamSource, TrackPrefs } from "@/lib/types"
-import { cn, formatDuration } from "@/lib/utils"
+import type { EntryView, EpisodeView, PlayResult, Probe, Settings, SkipInterval, StreamSource, StreamSubtitle, TrackPrefs } from "@/lib/types"
+import { cn, copyText, formatDuration } from "@/lib/utils"
 import { parseVTT, type Cue } from "@/lib/vtt"
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger } from "../ui"
 
@@ -97,7 +98,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const settings = useSettings()
     // A device on the network: mpv would open on the computer KumoBox runs
     // on (the server refuses it, or plays the file here instead).
-    const remote = useStatus().data?.client === "lan"
+    const status = useStatus().data
+    const remote = status?.client === "lan"
     const videoRef = useRef<HTMLVideoElement>(null)
     const containerRef = useRef<HTMLDivElement>(null)
     const hlsRef = useRef<Hls | null>(null)
@@ -129,6 +131,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
 
     const [subs, setSubs] = useState<SubOption[]>([])
     const [subKey, setSubKey] = useState<string>("off")
+    // The subtitles of this stream were picked by hand.
+    const subPicked = useRef(false)
     const [cues, setCues] = useState<Cue[]>([])
     const [skips, setSkips] = useState<SkipInterval[]>([])
 
@@ -288,19 +292,60 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
-    const applyStreamSubs = (src?: StreamSource) => {
-        const opts: SubOption[] = (src?.subtitles ?? []).map((s, i) => ({ key: `s${i}`, label: s.label || s.language || `Subtitle ${i + 1}`, lang: s.language, title: s.language, index: i, url: s.url }))
+    // A stream's subtitles: its own, then the subtitle addons', those found
+    // for the very file playing (matched) first. They're told apart by
+    // their links, so the one picked stays picked when more come.
+    const setStreamSubs = (src: StreamSource | undefined, matched: StreamSubtitle[]) => {
+        const all = src?.subtitles ?? []
+        const seen = new Set<string>()
+        const named: Record<string, number> = {}
+        const opts: SubOption[] = []
+        for (const s of [...all.filter(x => !x.addon), ...matched, ...all.filter(x => x.addon)]) {
+            const key = `s:${s.original || s.url}`
+            if (seen.has(key)) continue
+            seen.add(key)
+            // By language ("English", "English 2"...), unless it has a
+            // label of its own.
+            let label = (s.label && s.label !== s.language ? s.label : langName(s.language)) || `Subtitle ${opts.length + 1}`
+            named[label] = (named[label] ?? 0) + 1
+            if (named[label] > 1) label += ` ${named[label]}`
+            opts.push({ key, label, lang: s.language, title: s.language, index: opts.length, url: s.url })
+        }
         setSubs(opts)
         // Providers' streams are in the original version (a dub is another
-        // stream).
-        setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, false))
+        // stream). Subtitles picked by hand stay.
+        if (!subPicked.current) setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, false))
     }
+    const applyStreamSubs = (src?: StreamSource) => {
+        subPicked.current = false
+        setStreamSubs(src, [])
+    }
+
+    // Subtitles made for the very file playing: once the way a stream plays
+    // is decided, the subtitle addons are asked again with its size and
+    // hash (which the server reads from the stream) and its name.
+    useEffect(() => {
+        if (req.kind !== "stream" || decided !== sourceIdx) return
+        const src = sources[sourceIdx]
+        if (!src?.remote) return
+        let cancelled = false
+        api.get<StreamSubtitle[]>(`/api/providers/subtitles${qs({ mediaId, episode, remote: src.remote, filename: src.filename })}`)
+            .then(matched => {
+                if (!cancelled && matched?.length) setStreamSubs(src, matched)
+            })
+            .catch(() => {})
+        return () => {
+            cancelled = true
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sources, sourceIdx, decided])
 
     // ---------------------------------------------------------- stream source
     // How to play a stream: as it is when the browser decodes what's in it,
     // else converted like a file (most providers link to Matroska, HEVC,
-    // AC-3/DTS audio...). HLS plays as it is. A link that can't be read
-    // is tried as it is all the same.
+    // AC-3/DTS audio...). HLS too: hls.js plays it as it is, unless its
+    // video or audio is one the browser can't decode (HEVC, AC-3, E-AC-3,
+    // DTS...). A link that can't be read is tried as it is all the same.
     useEffect(() => {
         if (req.kind !== "stream" || !sources.length || decided === sourceIdx) return
         const src = sources[sourceIdx]
@@ -311,7 +356,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             setDecided(sourceIdx)
             setLoading(false)
         }
-        if (!src?.remote || src.type === "m3u8" || /m3u8/i.test(src.originalUrl ?? "")) {
+        if (!src?.remote) {
             asIs()
             return
         }
@@ -324,7 +369,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 if (p.duration > 0) setDuration(p.duration)
                 const ai = Math.max(0, p.audio?.findIndex(a => a.default) ?? 0)
                 setAudioIndex(ai)
-                const m = p.method === "direct" && ai === 0 ? "direct" : p.method === "direct" ? "remux" : p.method
+                // hls.js picks an HLS stream's default audio by itself.
+                const m = p.method === "direct" && (ai === 0 || p.container === "hls") ? "direct" : p.method === "direct" ? "remux" : p.method
                 setMethod(m)
                 setOffset(m === "direct" ? 0 : startAt.current)
                 setDecided(sourceIdx)
@@ -475,6 +521,16 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     else setError("This video could not be played (" + data.details + ")")
                     return
                 }
+                if (method === "direct" && convertPath && probe && data.type !== Hls.ErrorTypes.NETWORK_ERROR) {
+                    // The browser couldn't play the stream as it is (a
+                    // codec it doesn't decode): convert it.
+                    toast.info("Switching to compatibility mode…")
+                    const at = v.currentTime > 0 ? v.currentTime : startAt.current
+                    startAt.current = 0
+                    setOffset(at)
+                    setMethod("remux")
+                    return
+                }
                 if (sourceIdx + 1 < sources.length) nextSource()
                 else setError("The stream could not be played (" + data.details + ")")
             })
@@ -502,8 +558,11 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     }, [videoSrc, stream])
 
     // ------------------------------------------------------------- subtitles
+    // Loaded again only when another file is picked (not when more
+    // subtitles come for a stream).
+    const selectedSub = subs.find(s => s.key === subKey)
     useEffect(() => {
-        const sub = subs.find(s => s.key === subKey)
+        const sub = selectedSub
         if (!sub) {
             setCues([])
             return
@@ -529,7 +588,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         return () => {
             cancelled = true
         }
-    }, [subKey, subs])
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedSub?.url, selectedSub?.bitmap])
 
     useEffect(() => {
         const v = videoRef.current
@@ -640,6 +700,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         saveTrackPrefs({ audio: i })
     }
     const changeSub = (key: string) => {
+        subPicked.current = true
         setSubKey(key)
         saveTrackPrefs({ sub: key })
     }
@@ -688,6 +749,63 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         } catch (e: any) {
             toast.error(e.message)
         }
+    }
+
+    // ------------------------------------------------------ playback failed
+    // What the provider's host answers for the source that failed (through
+    // the proxy), for the details to copy.
+    const [failStatus, setFailStatus] = useState<number | null>(null)
+    useEffect(() => {
+        setFailStatus(null)
+        const src = sources[sourceIdx]
+        if (!error || req.kind !== "stream" || !src?.url) return
+        const ctrl = new AbortController()
+        const timer = setTimeout(() => ctrl.abort(), 10_000)
+        fetch(src.url, { headers: { Range: "bytes=0-0" }, signal: ctrl.signal, credentials: "same-origin" })
+            .then(r => {
+                setFailStatus(r.status)
+                ctrl.abort() // the status is all that's wanted
+            })
+            .catch(() => {})
+            .finally(() => clearTimeout(timer))
+        return () => {
+            clearTimeout(timer)
+            ctrl.abort()
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [error])
+    const canTryNext = req.kind === "stream" && sourceIdx + 1 < sources.length
+    const tryNextSource = () => {
+        const v = videoRef.current
+        if (v && v.currentTime > 0) startAt.current = absTime(v)
+        sourceError.current = ""
+        setError("")
+        setStream(null)
+        applyStreamSubs(sources[sourceIdx + 1])
+        setSourceIdx(i => i + 1)
+    }
+    const copyDetails = async () => {
+        const src = req.kind === "stream" ? sources[sourceIdx] : undefined
+        let host = ""
+        try {
+            host = src ? new URL(src.originalUrl).host : ""
+        } catch {
+            /* not a URL */
+        }
+        const code = failStatus ?? (Number(/\banswered (\d{3})\b/.exec(error)?.[1]) || null)
+        const lines = [`KumoBox ${status?.version ?? ""}: playback failed`.replace(" :", ":"), `Error: ${redactLinks(error)}`, `Title: ${title}`]
+        if (src) {
+            lines.push(
+                `Provider: ${src.server}${src.provider ? ` (${src.provider})` : ""}`,
+                `Source: ${redactLinks([src.label, src.quality, src.type].filter(Boolean).join(" · "))} (${sourceIdx + 1} of ${sources.length})`,
+                `Host: ${host || "unknown"}`,
+                `HTTP status: ${code ?? "unknown"}`,
+            )
+        } else if (req.kind === "local") lines.push(`File: ${req.path.split(/[\\/]/).pop()}`)
+        const tracks = [probe?.container, probe?.video?.[0]?.codec, probe?.audio?.[audioIndex]?.codec].filter(Boolean).join(", ")
+        lines.push(`Playback: ${method}${tracks ? ` (${tracks})` : ""}`)
+        if (await copyText(lines.join("\n"))) toast.success("Details copied")
+        else toast.error("Couldn't copy the details: the browser blocked the clipboard")
     }
 
     // The parts of the file its chapters name as an intro, a recap, the
@@ -901,13 +1019,24 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     <div className="max-w-md rounded-xl border border-line-strong bg-surface-1 p-6 text-center">
                         <p className="text-lg font-semibold">Playback failed</p>
                         <p className="mt-2 text-sm text-muted">{error}</p>
-                        <div className="mt-5 flex justify-center gap-2">
+                        <div className="mt-5 flex flex-wrap justify-center gap-2">
                             <button className="h-10 rounded-xl bg-white/10 px-4 text-sm font-medium hover:bg-white/15" onClick={close}>
                                 Close
                             </button>
-                            {!remote && (req.kind === "local" || sources.length > 0) && (
-                                <button className="h-10 rounded-xl bg-brand px-4 text-sm font-medium text-white" onClick={openInMpv}>
+                            <button className="flex h-10 items-center gap-2 rounded-xl bg-white/10 px-4 text-sm font-medium hover:bg-white/15" onClick={copyDetails}>
+                                <Copy className="size-4" /> Copy details
+                            </button>
+                            {!remote && !!status?.features.mpv && (req.kind === "local" || sources.length > 0) && (
+                                <button
+                                    className={cn("h-10 rounded-xl px-4 text-sm font-medium", canTryNext ? "bg-white/10 hover:bg-white/15" : "bg-brand text-white")}
+                                    onClick={openInMpv}
+                                >
                                     Open in mpv
+                                </button>
+                            )}
+                            {canTryNext && (
+                                <button className="h-10 rounded-xl bg-brand px-4 text-sm font-medium text-white" onClick={tryNextSource}>
+                                    Try next source
                                 </button>
                             )}
                         </div>
@@ -1165,3 +1294,22 @@ function streamSub(opts: SubOption[], prefs: TrackPrefs | null, p: Settings["pla
 }
 
 const forcedSub = (o: SubOption) => /forced|signs?\b.*songs?/i.test(`${o.title} ${o.label}`)
+
+// What a text may say of links, to be copied and shared: their scheme,
+// host and path, which help tell what went wrong, but not what gives
+// access to a stream (query strings, fragments, user names and
+// passwords, path parts that look like tokens). KumoBox's own links
+// (/api/proxy?u=…) carry the provider's link in theirs.
+function redactLinks(text: string) {
+    const tokenLike = (s: string) =>
+        s.length >= 20 && /[a-z]/i.test(s) && /\d/.test(s) && (!s.includes(".") || (s.length >= 40 && /^[\w-]+\.[\w-]+\.[\w-]+$/.test(s)))
+    return text
+        .replace(/\b([a-z][a-z\d+.-]*:\/\/)([^\s/?#"'<>]*)([^\s?#"'<>]*)(?:[?#][^\s"'<>]*)?/gi, (_m, scheme: string, host: string, path: string) => {
+            // Punctuation after a link isn't part of it ("…/x.m3u8: 404").
+            const end = /[.,:;!)\]]*$/.exec(path)?.[0] ?? ""
+            const parts = path.slice(0, path.length - end.length).split("/").map(p => (tokenLike(p) ? "…" : p))
+            return scheme + host.replace(/^[^@]*@/, "") + parts.join("/") + end
+        })
+        .replace(/(\/api\/[^\s?#"'<>]*)[?#][^\s"'<>]*/g, "$1")
+        .replace(/\bremote:[\da-f]{8,}/gi, "remote:…")
+}

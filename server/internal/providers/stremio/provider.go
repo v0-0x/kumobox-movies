@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/providers"
 )
@@ -70,4 +71,22 @@ func (p *AddonProvider) Subtitles(ctx context.Context, r providers.Request) ([]p
 		return nil, err
 	}
 	return p.client.Subtitles(ctx, p.addon, Type(r.Type), id)
+}
+
+// VideoSubtitles is Subtitles for the very video file v: its size, hash
+// and name go along as Stremio sends them (videoSize, videoHash,
+// filename), for addons that match subtitles with the file (OpenSubtitles).
+func (p *AddonProvider) VideoSubtitles(ctx context.Context, r providers.Request, v providers.Video) ([]providers.Subtitle, error) {
+	if !p.SupportsSubtitles(r.Type) {
+		return nil, nil
+	}
+	id, err := p.addon.Manifest.VideoID(ResourceSubtitles, r)
+	if err != nil {
+		return nil, err
+	}
+	extra := map[string]string{"videoHash": v.Hash, "filename": v.Filename}
+	if v.Size > 0 {
+		extra["videoSize"] = strconv.FormatInt(v.Size, 10)
+	}
+	return p.client.SubtitlesFor(ctx, p.addon, Type(r.Type), id, extra)
 }

@@ -1,11 +1,14 @@
 package stream
 
 import (
+	"bytes"
+	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func TestSafeContentType(t *testing.T) {
@@ -85,5 +88,45 @@ func TestProxyLocalHosts(t *testing.T) {
 	}
 	if HostKey(&url.URL{Scheme: "https", Host: "Box.LAN"}) != "box.lan:443" || HostKey(&url.URL{Scheme: "http", Host: "[::1]:7000"}) != "[::1]:7000" {
 		t.Error("HostKey")
+	}
+}
+
+// Subtitles come as WebVTT whatever they were: SubRip written anyhow
+// (one-digit hours, short milliseconds, CRLF, a byte order mark), in
+// Windows-1252 or UTF-16, gzipped; ASS; WebVTT as it is.
+func TestToVTT(t *testing.T) {
+	gz := func(s string) []byte {
+		var b bytes.Buffer
+		w := gzip.NewWriter(&b)
+		_, _ = w.Write([]byte(s))
+		_ = w.Close()
+		return b.Bytes()
+	}
+	utf16le := func(s string) []byte {
+		b := []byte{0xff, 0xfe}
+		for _, u := range utf16.Encode([]rune(s)) {
+			b = append(b, byte(u), byte(u>>8))
+		}
+		return b
+	}
+	srt := "1\r\n00:00:01,500 --> 00:00:03,000\r\nHello there\r\n\r\n2\r\n0:00:04,5 --> 0:00:06,25\r\nBye\r\n"
+	want := "WEBVTT\n\n1\n00:00:01.500 --> 00:00:03.000\nHello there\n\n2\n00:00:04.500 --> 00:00:06.250\nBye\n"
+	for _, tc := range []struct {
+		name string
+		in   []byte
+		want string // the WebVTT, or a part of it
+	}{
+		{"a.srt", []byte(srt), want},
+		{"a.srt", append([]byte("\xef\xbb\xbf"), srt...), want},
+		{"a.srt", gz(srt), want},
+		{"a.srt", utf16le(srt), want},
+		{"a.srt", []byte("1\n00:00:01,000 --> 00:00:02,000\n\x93Caf\xe9\x94 \x96 cr\xe8me br\xfbl\xe9e\n"), "“Café” – crème brûlée"},
+		{"a.ass", []byte("[Script Info]\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.50,0:00:03.00,Default,{\\i1}Hi{\\i0}\\Nthere\n"), "00:00:01.500 --> 00:00:03.000\nHi\nthere"},
+		{"a.vtt", []byte("WEBVTT\n\n00:01.000 --> 00:02.000\nAs it is\n"), "WEBVTT\n\n00:01.000 --> 00:02.000\nAs it is\n"},
+	} {
+		got := string(ToVTT(tc.in, tc.name))
+		if !strings.HasPrefix(got, "WEBVTT") || !strings.Contains(got, tc.want) {
+			t.Errorf("%s %.20q:\n%s\nwant %q", tc.name, tc.in, got, tc.want)
+		}
 	}
 }

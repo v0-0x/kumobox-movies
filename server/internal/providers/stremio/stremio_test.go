@@ -89,6 +89,8 @@ func (f *fakeAddons) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"streams":[{"name":"T 1080p","url":"https://cdn.example.org/603.mp4"}]}`))
 	case prefix == "subs" && strings.HasPrefix(rest, "subtitles/movie/tt0133093"):
 		_, _ = w.Write([]byte(`{"subtitles":[{"id":"a","url":"https://subs.example.org/a.srt","lang":"eng","label":"English [CC]"},{"id":"b","url":"not a url","lang":"fre"}]}`))
+	case prefix == "subs" && strings.HasPrefix(rest, "subtitles/series/"):
+		_, _ = w.Write([]byte(`{"subtitles":[]}`))
 	case strings.HasPrefix(rest, "stream/"):
 		_, _ = w.Write([]byte(`{"streams":[]}`))
 	default:
@@ -362,6 +364,29 @@ func TestSubtitles(t *testing.T) {
 	if got := fa.lastRequest(); got != "/subs/subtitles/movie/tt0133093/filename=The%20Matrix.mkv&videoSize=123.json" {
 		t.Errorf("request = %s", got)
 	}
+
+	// For the very file playing: its size and hash, as Stremio sends them
+	// (an episode as tt…:season:episode).
+	for _, tc := range []struct {
+		r    providers.Request
+		v    providers.Video
+		want string
+	}{
+		{providers.Request{Type: providers.TypeMovie, IMDbID: "tt0133093"}, providers.Video{Size: 1234567890, Hash: "8e245d9679d31e12", Filename: "The Matrix.mkv"},
+			"/subs/subtitles/movie/tt0133093/filename=The%20Matrix.mkv&videoHash=8e245d9679d31e12&videoSize=1234567890.json"},
+		{providers.Request{Type: providers.TypeTV, IMDbID: "tt0944947", Season: 1, Episode: 2}, providers.Video{Size: 42},
+			"/subs/subtitles/series/tt0944947:1:2/videoSize=42.json"},
+		{providers.Request{Type: providers.TypeMovie, IMDbID: "tt0133093"}, providers.Video{},
+			"/subs/subtitles/movie/tt0133093.json"},
+	} {
+		if _, err := p.VideoSubtitles(context.Background(), tc.r, tc.v); err != nil {
+			t.Fatal(err)
+		}
+		if got := fa.lastRequest(); got != tc.want {
+			t.Errorf("request = %s, want %s", got, tc.want)
+		}
+	}
+	var _ providers.VideoSubtitleProvider = p
 }
 
 func TestFetchCollection(t *testing.T) {

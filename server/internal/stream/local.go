@@ -170,7 +170,7 @@ func (l *Local) probeRemote(ctx context.Context, path string) (*Probe, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	args := append(relayInputArgs(), "-v", "error", "-rw_timeout", "20000000",
+	args := append(relayInputArgs(input, cfg.Transcode.FfmpegPath), "-v", "error", "-rw_timeout", "20000000",
 		"-print_format", "json", "-show_format", "-show_streams", "-show_chapters", input)
 	out, err := exec.CommandContext(ctx, cfg.Transcode.FfprobePath, args...).Output()
 	if err != nil {
@@ -349,8 +349,14 @@ func formatName(f string) string {
 
 var browserAudio = map[string]bool{"aac": true, "mp3": true, "opus": true, "vorbis": true, "flac": true}
 
+// hlsAudio is the audio of HLS streams every browser plays (through
+// hls.js): AC-3, E-AC-3 and DTS streams are converted.
+var hlsAudio = map[string]bool{"aac": true, "mp3": true}
+
 // decide picks direct play, remux (copy into fMP4) or transcode for a
-// player that decodes caps (nil: DefaultCaps).
+// player that decodes caps (nil: DefaultCaps). An online HLS stream
+// (container "hls") plays as it is when the player decodes its video and
+// its audio is AAC or MP3.
 func decide(p *Probe, mode string, audioIdx int, caps Caps) (string, string) {
 	if caps == nil {
 		caps = DefaultCaps
@@ -372,6 +378,12 @@ func decide(p *Probe, mode string, audioIdx int, caps Caps) (string, string) {
 	if len(p.Audio) > 0 {
 		a := p.Audio[min(max(audioIdx, 0), len(p.Audio)-1)]
 		audioOK = browserAudio[a.Codec] && a.Channels <= 2 || a.Codec == "aac" || a.Codec == "opus"
+		if p.Container == "hls" && audioIdx == 0 && hlsAudio[a.Codec] {
+			// An online HLS stream the player plays as it is (hls.js).
+			return "direct", "the browser can play this stream as is"
+		}
+	} else if p.Container == "hls" {
+		return "direct", "the browser can play this stream as is"
 	}
 	// ffprobe calls both Matroska and WebM "matroska,webm".
 	mkv := strings.Contains(p.Container, "matroska") && !strings.EqualFold(filepath.Ext(p.Path), ".webm")
@@ -447,7 +459,7 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 	if strings.HasPrefix(path, "http://") {
 		// An online stream, through the relay (remote.go): don't hang on a
 		// stalled link, and pick up again after a dropped connection.
-		args = append(append(args, relayInputArgs()...), "-rw_timeout", "30000000", "-reconnect", "1", "-reconnect_delay_max", "10")
+		args = append(append(args, relayInputArgs(path, cfg.Transcode.FfmpegPath)...), "-rw_timeout", "30000000", "-reconnect", "1", "-reconnect_delay_max", "10")
 	}
 	args = append(args, "-i", path, "-map", "0:v:0?")
 	if len(p.Audio) > 0 {
@@ -527,17 +539,17 @@ func (l *Local) startFor(ctx context.Context, path string, pl plan, t float64) f
 func (l *Local) seekKeyframe(ctx context.Context, path string, t float64) (float64, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	ffprobe := l.settings.Get().Transcode.FfprobePath
+	cfg := l.settings.Get()
 	for _, window := range []float64{20, 120} {
 		from := max(0, t-window)
 		var args []string
 		if strings.HasPrefix(path, "http://") {
-			args = relayInputArgs() // an online stream, through the relay
+			args = relayInputArgs(path, cfg.Transcode.FfmpegPath) // an online stream, through the relay
 		}
 		args = append(args, "-v", "error", "-select_streams", "v:0",
 			"-show_entries", "packet=pts_time,flags", "-of", "csv=p=0",
 			"-read_intervals", fmt.Sprintf("%.3f%%%.3f", from, t+seekAhead+1), path)
-		out, err := exec.CommandContext(ctx, ffprobe, args...).Output()
+		out, err := exec.CommandContext(ctx, cfg.Transcode.FfprobePath, args...).Output()
 		if err != nil {
 			return 0, false
 		}

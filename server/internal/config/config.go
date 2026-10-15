@@ -135,11 +135,14 @@ type TranscodeSettings struct {
 }
 
 // DownloadSettings: where movies and episodes downloaded from streaming
-// providers go, and the program that fetches them.
+// providers go, and whether yt-dlp may fetch them.
 type DownloadSettings struct {
 	// Dir is the download folder. Empty = the library folder.
-	Dir        string `json:"dir"`
-	Downloader string `json:"downloader"` // auto | yt-dlp | ffmpeg
+	Dir string `json:"dir"`
+	// Downloader is auto | yt-dlp | ffmpeg. Video files and HLS streams are
+	// always fetched by KumoBox (HLS with ffmpeg); yt-dlp downloads the
+	// videos of web pages, unless this is "ffmpeg".
+	Downloader string `json:"downloader"`
 }
 
 type OnlineStreamSettings struct {

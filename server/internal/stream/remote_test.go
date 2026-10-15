@@ -196,7 +196,7 @@ func TestRelayRefusesPlaylists(t *testing.T) {
 		t.Error("isManifest by type")
 	}
 	// What reads the relay may speak plain HTTP to it, nothing else.
-	if a := strings.Join(relayInputArgs(), " "); a != "-protocol_whitelist http,tcp" {
+	if a := strings.Join(relayInputArgs("http://127.0.0.1:1/r/x", "ffmpeg"), " "); a != "-protocol_whitelist http,tcp" {
 		t.Errorf("relay input options %q", a)
 	}
 	var pl plan

@@ -32,6 +32,82 @@ Code: `server/internal/providers` (common types, ranking, aggregation),
 providers), `server/internal/app/providers.go` (which providers, in which
 order) and `server/internal/api/providers_routes.go` (the HTTP API).
 
+## The in-app player
+
+The in-app player gets a stream's direct links through `/api/proxy`
+(headers, CORS, HLS playlists rewritten so that everything goes through
+it), and each link named for the conversion endpoints (`remote`, a
+`remote:` path). Before playing a link, it has it probed: what the
+browser decodes plays as it is; anything else (Matroska, HEVC video,
+AC-3, E-AC-3, DTS or TrueHD audio...) is remuxed or transcoded by ffmpeg
+like a library file, ffmpeg reading the link from the stream relay on
+this computer's loopback address (`server/internal/stream/remote.go`),
+which fetches it with the proxy's guarded client.
+
+HLS streams are probed too: one whose video the browser decodes, with AAC
+or MP3 audio, plays as it is (hls.js), others are converted. ffmpeg reads
+them through the relay, which rewrites their playlists so that every link
+in them is the relay's (`relayhls.go`, see Downloads below). Of a master
+playlist, the variant probed and converted is the one with the highest
+bandwidth among those whose `CODECS` browsers play (H.264 with AAC or
+MP3), else the one with the highest bandwidth. A stream that fails in
+hls.js all the same (a codec error) is converted rather than skipped.
+
+When a source can't be played, the player tries the next one (and asks
+the providers again for fresh links once they're all used up). When it
+gives up, the **Playback failed** dialog offers **Try next source** (when
+more remain), **Open in mpv** (when mpv is installed, on this computer)
+and **Copy details**: the error, the title, the provider, the source's
+label, the link's host and the HTTP status its host answers (asked again
+through the proxy), with every link cut down to its host and path (no
+query string, no token-like path parts) so the details can be shared.
+
+Subtitles: a stream's own subtitle files and those the subtitle addons
+found for the title are listed in the player's subtitle menu (by
+language) as WebVTT, fetched through the proxy and converted from SubRip
+or ASS/SSA (UTF-8, UTF-16 or Windows-1252, gzipped or not). Once a
+link's way of playing is decided, the player asks the subtitle addons
+again for the very file (`GET /api/providers/subtitles`): KumoBox reads
+its size and OpenSubtitles hash (the size plus the sum of the
+little-endian 64-bit words of its first and last 64 KiB) with two byte
+ranges, fetched like the stream, and sends them as Stremio does
+(`videoSize`, `videoHash`, `filename`). Those come first, and the
+default subtitles are picked again from them by the usual rules (the
+title's remembered choice, else `playback.preferredSubLang` when the
+audio is foreign), unless subtitles were picked by hand. Subtitles
+inside an online stream's file aren't shown in the app (that would mean
+reading all of it): mpv shows them.
+
+## Downloads
+
+A provider's link can name any address, this computer's and the local
+network's included, and an HLS playlist names more of them. So downloads
+fetch what links lead to the way the in-app player does
+(`server/internal/stream`), never from this computer or the LAN, redirects
+included (the addresses of Stremio addons installed as local ones
+excepted), by what the link answers with
+(`server/internal/downloads/fetch.go`):
+
+* **A video file** is fetched by KumoBox itself, with the stream's
+  headers. When the connection breaks it picks up where it stopped (a byte
+  range from there, `If-Range` so a changed file starts over), and the
+  file is named after what it holds (a Matroska file a provider calls an
+  MP4 is saved as `.mkv`).
+* **An HLS stream** is copied by ffmpeg, which reads it through the stream
+  relay on this computer's loopback address: the relay fetches each
+  playlist and hands ffmpeg a rewritten copy in which every variant,
+  rendition, segment, key and init section is one of the relay's own
+  links, fetched in turn with the guarded client (playlists rewritten the
+  same way, segments refused when they're a playlist or a manifest). ffmpeg
+  may only speak plain HTTP to it (`-protocol_whitelist http,tcp`, plus
+  `crypto` for AES-128 encrypted streams). Of a master playlist, the
+  variant with the highest bandwidth is downloaded, with its renditions.
+* **A web page** (a stream marked as one, or a link answering with HTML)
+  goes to yt-dlp, which fetches what it finds by itself: only when the
+  page's host is on the internet, by its name and by the addresses it
+  resolves to (and not when `downloads.downloader` is `ffmpeg`).
+* DASH and other manifests aren't downloaded.
+
 ## Adding providers
 
 Providers are managed on the **Providers & extensions** page (devices on
@@ -89,7 +165,8 @@ repository).
 |---|---|
 | `GET /api/providers` | every provider, in order: `[{id, name, kind, icon, types, enabled, extension}]` |
 | `GET /api/providers/streams?mediaId=&episode=&provider=&refresh=1` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
-| `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
+| `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, each named for the conversion endpoints as `remote`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
+| `GET /api/providers/subtitles?mediaId=&episode=&remote=&filename=` | the subtitles of subtitle addons for the very file the stream `remote` (a source's `remote:` path) plays, matched by its size and OpenSubtitles hash: `[{url, language, label, original, addon}]`, WebVTT through the proxy, the preferred languages first |
 | `POST /api/providers/download` | `{mediaId, episodes: [keys], provider, quality}` → the queued downloads |
 | `GET /api/providers/search?provider=&q=`, `POST /api/providers/mapping` | an extension's titles, and picking one by hand `{provider, mediaId, id, title}` |
 | `GET/POST/DELETE /api/providers/stremio/addons` | installed addons; install `{url, allowLocal, allowAdult}` (409 `{error, code: "local" \| "adult" \| "configure" \| "unsupported", configureUrl}`); remove `?key=` (transport URL or `stremio:<id>`) |

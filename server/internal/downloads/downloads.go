@@ -3,6 +3,7 @@
 package downloads
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -29,6 +30,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/release"
+	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -74,6 +76,10 @@ type Resolved struct {
 	// Container is the video's ("mp4", "mkv", "webm"), "" when unknown:
 	// the file is saved in it.
 	Container string
+	// Page is set for a web page holding the video (YouTube, a video
+	// site), which only yt-dlp downloads. A link that turns out to answer
+	// with a page goes to yt-dlp too.
+	Page bool
 }
 
 // container is the container a download is saved in: the resolver's, else
@@ -534,6 +540,11 @@ func (m *Manager) process(r *run) error {
 	if err != nil {
 		return errors.New("the download finished without writing a video file")
 	}
+	if c := containerOf(tmp); c != "" && "."+c != ext {
+		// Saved as it came, and it isn't what the link said it was.
+		out = filepath.Join(dir, name+"."+c)
+		m.update(r, func(it *Item) { it.Output = out })
+	}
 	if err := os.Rename(tmp, out); err != nil {
 		return err
 	}
@@ -558,21 +569,52 @@ func (m *Manager) process(r *run) error {
 	return nil
 }
 
-// download fetches res into out with yt-dlp or ffmpeg, as configured.
+// download fetches res into out by what its link answers with (see
+// fetch.go): a video file in Go, an HLS stream with ffmpeg through the
+// stream relay, a web page with yt-dlp.
 func (m *Manager) download(r *run, cfg config.Settings, res *Resolved, out string) error {
-	downloader := cfg.Downloads.Downloader
-	_, hasYtdlp := util.LookPath("yt-dlp")
-	if downloader == "" || downloader == "auto" {
-		if hasYtdlp {
-			downloader = "yt-dlp"
-		} else {
-			downloader = "ffmpeg"
-		}
+	if res.Page {
+		return m.page(r, cfg, res, out)
 	}
-	if downloader == "yt-dlp" && hasYtdlp {
-		return m.ytdlp(r, res, out)
+	headers := requestHeaders(res)
+	a, err := open(r.ctx, res.URL, headers, 0, "")
+	if err != nil {
+		return fmt.Errorf("couldn't reach the provider's link: %w", err)
 	}
-	return m.ffmpeg(r, res, out, cfg.Transcode.FfmpegPath, cfg.Transcode.FfprobePath)
+	if a.resp.StatusCode >= 300 {
+		a.close()
+		return fmt.Errorf("the provider's link answered %s", a.resp.Status)
+	}
+	br := bufio.NewReaderSize(a.body, 64<<10)
+	head, _ := br.Peek(512)
+	a.body = br
+	switch stream.LinkKind(a.resp.Header.Get("Content-Type"), head) {
+	case stream.LinkHLS:
+		a.close()
+		return m.ffmpeg(r, cfg, res, out)
+	case stream.LinkPage:
+		a.close()
+		return m.page(r, cfg, res, out)
+	case stream.LinkManifest:
+		a.close()
+		return errors.New("the provider's link is a DASH (or another kind of) manifest, which can't be downloaded")
+	}
+	return m.file(r, res, headers, a, out)
+}
+
+// page downloads the video of a web page with yt-dlp (unless the settings
+// say ffmpeg only).
+func (m *Manager) page(r *run, cfg config.Settings, res *Resolved, out string) error {
+	if _, ok := util.LookPath("yt-dlp"); !ok {
+		return fmt.Errorf("this link is a web page, not a video: yt-dlp downloads the videos of web pages (%s)", util.InstallHint("yt-dlp"))
+	}
+	if cfg.Downloads.Downloader == "ffmpeg" {
+		return errors.New("this link is a web page, not a video, and downloads are set not to use yt-dlp")
+	}
+	if err := checkPublicPage(r.ctx, res.URL); err != nil {
+		return err
+	}
+	return m.ytdlp(r, res, out)
 }
 
 // label names a download: the movie's title, or the show's with the
@@ -668,6 +710,7 @@ func (m *Manager) folderFor(cfg config.Settings, mediaID int, folderName string)
 
 var reYtdlp = regexp.MustCompile(`KUMOBOX\|\s*([\d.]+)%\|([^|]*)\|(.*)$`)
 
+// ytdlp downloads the video of a web page (checkPublicPage first).
 func (m *Manager) ytdlp(r *run, res *Resolved, out string) error {
 	args := []string{
 		"--newline", "--no-colors", "--no-playlist", "--no-mtime",
@@ -732,35 +775,27 @@ func (m *Manager) ytdlp(r *run, res *Resolved, out string) error {
 	return nil
 }
 
-func (m *Manager) ffmpeg(r *run, res *Resolved, out, ffmpegPath, ffprobePath string) error {
+// ffmpeg downloads an HLS stream: ffmpeg reads it from the stream relay,
+// which fetches its playlists (rewritten so that everything they name
+// comes through the relay too), segments and keys with the stream's
+// headers, never from this computer or the LAN. Of a master playlist, it
+// gets the best variant.
+func (m *Manager) ffmpeg(r *run, cfg config.Settings, res *Resolved, out string) error {
 	ctx := r.ctx
+	ffmpegPath, ffprobePath := cfg.Transcode.FfmpegPath, cfg.Transcode.FfprobePath
 	if _, ok := util.LookPath(ffmpegPath); !ok {
-		return fmt.Errorf("neither yt-dlp nor ffmpeg is installed (%s, or %s)", util.InstallHint("yt-dlp"), util.InstallHint("ffmpeg"))
+		return fmt.Errorf("ffmpeg downloads HLS streams, and it isn't installed (%s)", util.InstallHint("ffmpeg"))
 	}
-	headerArgs := func() []string {
-		var a []string
-		var hdr strings.Builder
-		for k, v := range res.Headers {
-			if strings.EqualFold(k, "referer") || strings.EqualFold(k, "user-agent") {
-				continue
-			}
-			hdr.WriteString(k + ": " + v + "\r\n")
-		}
-		if res.Referrer != "" {
-			a = append(a, "-referer", res.Referrer)
-		}
-		a = append(a, "-user_agent", util.UserAgent)
-		if hdr.Len() > 0 {
-			a = append(a, "-headers", hdr.String())
-		}
-		return a
+	input, inputArgs, err := stream.RelayHLS(ctx, res.URL, requestHeaders(res), ffmpegPath)
+	if err != nil {
+		return err
 	}
 
 	// Probe the duration to compute a percentage.
 	var duration float64
 	if p, ok := util.LookPath(ffprobePath); ok {
 		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		args := append(headerArgs(), "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", res.URL)
+		args := append(append([]string(nil), inputArgs...), "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", input)
 		if b, err := exec.CommandContext(pctx, p, args...).Output(); err == nil {
 			duration, _ = strconv.ParseFloat(strings.TrimSpace(string(b)), 64)
 		}
@@ -768,16 +803,11 @@ func (m *Manager) ffmpeg(r *run, res *Resolved, out, ffmpegPath, ffprobePath str
 	}
 
 	args := []string{"-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1"}
-	// ffmpeg >= 7.1 refuses HLS segments with unusual extensions unless told
-	// otherwise; older versions don't know it.
-	if hlsExtensionPicky(ffmpegPath) {
-		args = append(args, "-extension_picky", "0")
-	}
-	args = append(args, headerArgs()...)
+	args = append(args, inputArgs...)
 	// The streams are copied as they are into the file's container. The MP4
 	// muxer fixes the AAC audio of HLS streams by itself (forcing
 	// aac_adtstoasc would refuse any other audio: Opus, AC-3, MP3...).
-	args = append(args, "-i", res.URL, "-map", "0:v?", "-map", "0:a?", "-c", "copy")
+	args = append(args, "-i", input, "-map", "0:v?", "-map", "0:a?", "-c", "copy")
 	if strings.EqualFold(filepath.Ext(out), ".mp4") {
 		args = append(args, "-movflags", "+faststart")
 	}
@@ -807,7 +837,7 @@ func (m *Manager) ffmpeg(r *run, res *Resolved, out, ffmpegPath, ffprobePath str
 		}
 	}}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	// Run returns once both writers have consumed all the output.
 	stdout.flush()
 	stderr.flush()
@@ -818,19 +848,6 @@ func (m *Manager) ffmpeg(r *run, res *Resolved, out, ffmpegPath, ffprobePath str
 		return fmt.Errorf("ffmpeg: %s", lastErr)
 	}
 	return nil
-}
-
-var (
-	pickyOnce sync.Once
-	pickyOK   bool
-)
-
-func hlsExtensionPicky(ffmpegPath string) bool {
-	pickyOnce.Do(func() {
-		out, _ := exec.Command(ffmpegPath, "-hide_banner", "-h", "demuxer=hls").CombinedOutput()
-		pickyOK = strings.Contains(string(out), "extension_picky")
-	})
-	return pickyOK
 }
 
 // maxLine caps the length of a line kept by lineWriter.

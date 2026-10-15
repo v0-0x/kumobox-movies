@@ -34,7 +34,7 @@
 
 **Watching**
 - **mpv** (desktop media player, controlled over IPC) or the **in-app player**.
-- In-app player plays any file: direct play when the browser can, otherwise ffmpeg **remuxes or transcodes on the fly** (VA-API / NVENC / QSV supported). Embedded and external subtitles (ASS/SRT/VTT) and audio-track switching are supported.
+- In-app player plays any file: direct play when the browser can, otherwise ffmpeg **remuxes or transcodes on the fly** (VA-API / NVENC / QSV supported). Embedded and external subtitles (ASS/SRT/VTT) and audio-track switching are supported. Online streams too, HLS included: one with HEVC video or AC-3/E-AC-3/DTS audio is converted rather than failing.
 - **Resume exactly where you stopped**: the position is saved every few seconds, in both players.
 - **Plays the original language** (or your preferred dub) with its forced subtitles, and turns on subtitles in your language when the audio is foreign.
 - **Remembers your audio and subtitle track per movie or show.** Pick "French + English subtitles" once and every next episode opens with the same tracks, matched by language and title, so it works even when the track order changes.
@@ -42,10 +42,10 @@
 
 **Streaming providers**
 - **Internet Archive** built in: thousands of public-domain and Creative Commons films, streamed straight from archive.org.
-- **Stremio addons**: browse the official addon collection (or any other collection) and install addons in one click, or paste any addon's manifest URL. Their streams play in KumoBox; torrent streams go to your torrent client; subtitle addons add subtitles.
+- **Stremio addons**: browse the official addon collection (or any other collection) and install addons in one click, or paste any addon's manifest URL. Their streams play in KumoBox; torrent streams go to your torrent client; subtitle addons add subtitles to online streams in the in-app player, found for the very file playing (by its size and OpenSubtitles hash).
 - **Nuvio provider repositories**: add a repository URL and install its JavaScript providers, which run in KumoBox's sandbox.
 - **KumoBox/Seanime-style extensions** from an extension marketplace.
-- **Download** movies and episodes (single or ranges) with yt-dlp or ffmpeg straight into your library; they're matched instantly.
+- **Download** movies and episodes (single or ranges) straight into your library; they're matched instantly. Video files are fetched by KumoBox itself (picking up where they stopped after a dropped connection), HLS streams with ffmpeg and web pages with yt-dlp, never from your own computer or local network.
 
 See [docs/PROVIDERS.md](docs/PROVIDERS.md) for the formats and how to write a provider.
 
