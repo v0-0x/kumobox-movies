@@ -32,6 +32,36 @@ Code: `server/internal/providers` (common types, ranking, aggregation),
 providers), `server/internal/app/providers.go` (which providers, in which
 order) and `server/internal/api/providers_routes.go` (the HTTP API).
 
+## Downloads
+
+A provider's link can name any address, this computer's and the local
+network's included, and an HLS playlist names more of them. So downloads
+fetch what links lead to the way the in-app player does
+(`server/internal/stream`), never from this computer or the LAN, redirects
+included (the addresses of Stremio addons installed as local ones
+excepted), by what the link answers with
+(`server/internal/downloads/fetch.go`):
+
+* **A video file** is fetched by KumoBox itself, with the stream's
+  headers. When the connection breaks it picks up where it stopped (a byte
+  range from there, `If-Range` so a changed file starts over), and the
+  file is named after what it holds (a Matroska file a provider calls an
+  MP4 is saved as `.mkv`).
+* **An HLS stream** is copied by ffmpeg, which reads it through the stream
+  relay on this computer's loopback address: the relay fetches each
+  playlist and hands ffmpeg a rewritten copy in which every variant,
+  rendition, segment, key and init section is one of the relay's own
+  links, fetched in turn with the guarded client (playlists rewritten the
+  same way, segments refused when they're a playlist or a manifest). ffmpeg
+  may only speak plain HTTP to it (`-protocol_whitelist http,tcp`, plus
+  `crypto` for AES-128 encrypted streams). Of a master playlist, the
+  variant with the highest bandwidth is downloaded, with its renditions.
+* **A web page** (a stream marked as one, or a link answering with HTML)
+  goes to yt-dlp, which fetches what it finds by itself: only when the
+  page's host is on the internet, by its name and by the addresses it
+  resolves to (and not when `downloads.downloader` is `ffmpeg`).
+* DASH and other manifests aren't downloaded.
+
 ## Adding providers
 
 Providers are managed on the **Providers & extensions** page (devices on

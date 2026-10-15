@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,10 @@ import (
 // on this computer's loopback address, which fetches it with the stream
 // proxy's client (its headers, byte ranges for seeking, and above all the
 // same refusal to reach this computer or the LAN, redirects included).
+// HLS links (RegisterRemoteHLS) go through the relay too, their playlists
+// rewritten so that ffmpeg reads everything they name from it as well
+// (relayhls.go). Downloads use the same client and relay (Fetch,
+// RelayHLS).
 
 // RemotePrefix starts the paths of online streams.
 const RemotePrefix = "remote:"
@@ -45,6 +50,12 @@ type remoteSource struct {
 	url     string
 	headers map[string]string
 	used    time.Time
+	// hls: the link is an HLS playlist, served rewritten (relayhls.go),
+	// with the variant pick picks when it's a master playlist. Once
+	// scanned, crypto says whether its playlists have AES-128 keys (ffmpeg
+	// then needs its crypto protocol).
+	hls, scanned, crypto bool
+	pick                 string
 }
 
 var remotes = struct {
@@ -57,11 +68,23 @@ var remotes = struct {
 // as good as a library file's path there. The name is unguessable, so
 // nobody can have KumoBox fetch other links through it.
 func RegisterRemote(link string, headers map[string]string) string {
+	return register(link, headers, false, "")
+}
+
+// RegisterRemoteHLS is RegisterRemote for an HLS playlist's link: ffmpeg
+// reads it, and everything it names, through the relay (relayhls.go). Of
+// a master playlist, ffmpeg gets the best variant browsers play as it is
+// when there's one (pickPlayable), else the best one.
+func RegisterRemoteHLS(link string, headers map[string]string) string {
+	return register(link, headers, true, pickPlayable)
+}
+
+func register(link string, headers map[string]string, hls bool, pick string) string {
 	remotes.Lock()
 	defer remotes.Unlock()
 	now := time.Now()
 	for id, s := range remotes.m {
-		if s.url == link && sameHeaders(s.headers, headers) {
+		if s.url == link && s.hls == hls && s.pick == pick && sameHeaders(s.headers, headers) {
 			s.used = now
 			return RemotePrefix + id
 		}
@@ -86,7 +109,7 @@ func RegisterRemote(link string, headers map[string]string) string {
 		h[k] = v
 	}
 	id := newSessionID()
-	remotes.m[id] = &remoteSource{url: link, headers: h, used: now}
+	remotes.m[id] = &remoteSource{url: link, headers: h, used: now, hls: hls, pick: pick}
 	return RemotePrefix + id
 }
 
@@ -118,9 +141,10 @@ func remoteSourceOf(path string) (*remoteSource, string, bool) {
 // (forgotten, or KumoBox restarted): it asks the provider again.
 var ErrRemoteGone = errors.New("this stream has expired, play it again")
 
-// remoteInput is the relay URL ffmpeg reads an online stream from.
+// remoteInput is the relay URL ffmpeg reads an online stream from. An HLS
+// link's playlists are looked over first (once: see relayInputArgs).
 func remoteInput(path string) (string, error) {
-	_, id, ok := remoteSourceOf(path)
+	src, id, ok := remoteSourceOf(path)
 	if !ok {
 		return "", ErrRemoteGone
 	}
@@ -128,7 +152,29 @@ func remoteInput(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if src.hls {
+		ctx, cancel := context.WithTimeout(context.Background(), relayTimeout)
+		defer cancel()
+		if err := scanOnce(ctx, src); err != nil {
+			return "", err
+		}
+	}
 	return "http://" + addr + "/r/" + id, nil
+}
+
+// relayedSource is the stream a relay URL (remoteInput's) stands for, nil
+// for any other input.
+func relayedSource(input string) *remoteSource {
+	addr, err := startRelay()
+	if err != nil {
+		return nil
+	}
+	id, ok := strings.CutPrefix(input, "http://"+addr+"/r/")
+	if !ok {
+		return nil
+	}
+	src, _, _ := remoteSourceOf(RemotePrefix + id)
+	return src
 }
 
 var relay struct {
@@ -157,16 +203,28 @@ func startRelay() (string, error) {
 }
 
 // serveRelay passes one request of ffmpeg (a GET, maybe of a byte range) on
-// to the stream's link.
+// to the stream's link, or to what its HLS playlists name (/h/...).
 func serveRelay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/h/"); ok {
+		serveHLSRelay(w, r, rest)
+		return
+	}
 	id, ok := strings.CutPrefix(r.URL.Path, "/r/")
-	if !ok || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	src, _, ok := remoteSourceOf(RemotePrefix + id)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+	if src.hls {
+		serveHLSPlaylist(w, r, id, src, src.url, src.pick)
 		return
 	}
 	resp, err := fetchRemote(r.Context(), r.Method, src, r.Header.Get("Range"))
@@ -181,8 +239,8 @@ func serveRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	// ffmpeg reads the links in playlists and manifests (HLS, DASH...) by
 	// itself, not through the relay: they could name this computer or the
-	// LAN. Only media files are passed on (HLS plays through the proxy,
-	// which rewrites its playlists).
+	// LAN. Only media files are passed on (an HLS link is registered as
+	// one, and its playlists are served rewritten: relayhls.go).
 	body := io.Reader(resp.Body)
 	if resp.StatusCode < 300 {
 		var head []byte
@@ -231,12 +289,69 @@ func isManifest(ctype string, head []byte) bool {
 	return false
 }
 
+// What a link answers with (LinkKind).
+const (
+	LinkFile     = "file"     // a video file, or anything else
+	LinkHLS      = "hls"      // an HLS playlist
+	LinkPage     = "page"     // a web page
+	LinkManifest = "manifest" // another kind of playlist or manifest (DASH...)
+)
+
+// LinkKind tells what a link answered with, by its type and first bytes.
+func LinkKind(ctype string, head []byte) string {
+	ct := strings.ToLower(ctype)
+	h := bytes.ToLower(bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n"))
+	switch {
+	case strings.Contains(ct, "mpegurl") || bytes.HasPrefix(h, []byte("#extm3u")):
+		return LinkHLS
+	case strings.Contains(ct, "text/html") || strings.Contains(ct, "xhtml") || bytes.HasPrefix(h, []byte("<!doctype html")) || bytes.HasPrefix(h, []byte("<html")):
+		return LinkPage
+	case isManifest(ctype, head):
+		return LinkManifest
+	}
+	return LinkFile
+}
+
 // relayInputArgs are ffmpeg's and ffprobe's options for an input read
 // from the relay: plain HTTP to it only, so nothing in the stream (an SDP
 // description, a demuxer opening other resources) has them open files,
-// HTTPS or RTP/UDP addresses themselves.
-func relayInputArgs() []string {
-	return []string{"-protocol_whitelist", "http,tcp"}
+// HTTPS or RTP/UDP addresses themselves. An HLS link is read as HLS, with
+// the crypto protocol when its segments are AES-128 encrypted (it only
+// decrypts what comes from the relay, the keys included), and with any
+// segment names (see HLSExtensionPicky).
+func relayInputArgs(input, ffmpegPath string) []string {
+	args := []string{"-protocol_whitelist", "http,tcp"}
+	src := relayedSource(input)
+	if src == nil || !src.hls {
+		return args
+	}
+	remotes.Lock()
+	crypto := src.crypto
+	remotes.Unlock()
+	if crypto {
+		args[1] += ",crypto"
+	}
+	args = append(args, "-f", "hls")
+	if HLSExtensionPicky(ffmpegPath) {
+		args = append(args, "-extension_picky", "0")
+	}
+	return args
+}
+
+var picky sync.Map // ffmpeg's path -> whether it's picky
+
+// HLSExtensionPicky reports whether ffmpeg's HLS demuxer refuses segments
+// with unusual names unless told otherwise (ffmpeg 7.1 and later):
+// providers name them anyhow (.jpg, .html...), and the relay's names have
+// no extension at all. Older versions don't know the option.
+func HLSExtensionPicky(ffmpegPath string) bool {
+	if v, ok := picky.Load(ffmpegPath); ok {
+		return v.(bool)
+	}
+	out, _ := exec.Command(ffmpegPath, "-hide_banner", "-h", "demuxer=hls").CombinedOutput()
+	ok := strings.Contains(string(out), "extension_picky")
+	picky.Store(ffmpegPath, ok)
+	return ok
 }
 
 // hostOf is a link's host, for the logs (links often carry tokens).
@@ -245,6 +360,14 @@ func hostOf(link string) string {
 		return u.Host
 	}
 	return "?"
+}
+
+// Fetch requests a stream's link (GET, a byte range when rng is set) the
+// way the stream proxy does: with its headers, and never from this
+// computer or the LAN, redirects included, but at the address of a local
+// addon (LocalHosts). Downloads fetch video files with it.
+func Fetch(ctx context.Context, link string, headers map[string]string, rng string) (*http.Response, error) {
+	return fetchRemote(ctx, http.MethodGet, &remoteSource{url: link, headers: headers}, rng)
 }
 
 // fetchRemote requests a stream's link the way the stream proxy does.

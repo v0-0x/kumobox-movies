@@ -3,6 +3,12 @@ package downloads
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,9 +23,70 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
+	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
 
-const testURL = "http://127.0.0.1:9/ep.m3u8" // never fetched: every downloader is faked
+// testURL is a small HLS stream any test may download (the segment it
+// names isn't there: ffmpeg is faked where it's used).
+var testURL string
+
+// pageURL is a web page on the internet (lookupIP says so), for yt-dlp.
+const pageURL = "https://videos.example/watch?v=1"
+
+// allowed are the addresses on this computer the downloads may reach,
+// standing for public hosts (the stream package's LocalHosts).
+var allowed struct {
+	sync.Mutex
+	hosts []string
+}
+
+// allow lets downloads reach a test server for the rest of the test.
+func allow(t *testing.T, raw string) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed.Lock()
+	allowed.hosts = append(allowed.hosts, stream.HostKey(u))
+	allowed.Unlock()
+	t.Cleanup(func() {
+		allowed.Lock()
+		defer allowed.Unlock()
+		for i, h := range allowed.hosts {
+			if h == stream.HostKey(u) {
+				allowed.hosts = append(allowed.hosts[:i], allowed.hosts[i+1:]...)
+				break
+			}
+		}
+	})
+}
+
+func TestMain(m *testing.M) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		fmt.Fprint(w, "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg0.ts\n#EXT-X-ENDLIST\n")
+	}))
+	testURL = srv.URL + "/ep.m3u8"
+	u, _ := url.Parse(srv.URL)
+	stream.LocalHosts = func() []string {
+		allowed.Lock()
+		defer allowed.Unlock()
+		return append([]string{stream.HostKey(u)}, allowed.hosts...)
+	}
+	reconnectDelay = func(int) time.Duration { return 10 * time.Millisecond }
+	lookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		switch host {
+		case "videos.example":
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		case "rebound.example":
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}, {IP: net.ParseIP("192.168.1.20")}}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	code := m.Run()
+	srv.Close()
+	os.Exit(code)
+}
 
 func newTestManager(t *testing.T, mutate func(*config.Settings)) (*Manager, string) {
 	t.Helper()
@@ -66,6 +133,22 @@ func enqueue(t *testing.T, m *Manager, title string) *Item {
 		t.Fatal(err)
 	}
 	return it
+}
+
+// enqueueResolved queues a download whose link is res.
+func enqueueResolved(t *testing.T, m *Manager, title string, res *Resolved) *Item {
+	t.Helper()
+	m.Resolvers["test"] = func(context.Context, *Item) (*Resolved, error) { return res, nil }
+	it, err := m.Enqueue(Item{MediaID: 1, Episode: 1, Title: title, Source: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return it
+}
+
+// enqueuePage queues the download of a web page's video (yt-dlp).
+func enqueuePage(t *testing.T, m *Manager, title string) *Item {
+	return enqueueResolved(t, m, title, &Resolved{URL: pageURL, Page: true})
 }
 
 func find(m *Manager, id string) *Item {
@@ -306,7 +389,7 @@ printf 'fragment' > "$out.part-Frag1"
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		m, lib := newTestManager(t, func(c *config.Settings) { c.Downloads.Downloader = "yt-dlp" })
 		rec := record(t, m.hub)
-		it := enqueue(t, m, "Chatty")
+		it := enqueuePage(t, m, "Chatty")
 		got := waitFinal(t, m, it.ID, 15*time.Second)
 		if got.Status != StatusCompleted {
 			t.Fatalf("status = %s (%s), want completed", got.Status, got.Error)
@@ -330,7 +413,7 @@ exit 1
 `)
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		m, lib := newTestManager(t, func(c *config.Settings) { c.Downloads.Downloader = "yt-dlp" })
-		it := enqueue(t, m, "Gone")
+		it := enqueuePage(t, m, "Gone")
 		got := waitFinal(t, m, it.ID, 15*time.Second)
 		if got.Status != StatusFailed || got.Error != "ERROR: [generic] Unable to download webpage: HTTP Error 404: Not Found" {
 			t.Fatalf("got %s (%q), want failed with the ERROR line", got.Status, got.Error)
@@ -367,7 +450,12 @@ while :; do sleep 0.05; done
 			m, lib := newTestManager(t, func(c *config.Settings) {
 				c.Downloads.Downloader, c.Transcode.FfmpegPath = tc.name, script
 			})
-			it := enqueue(t, m, "Halt")
+			var it *Item
+			if tc.name == "yt-dlp" {
+				it = enqueuePage(t, m, "Halt")
+			} else {
+				it = enqueue(t, m, "Halt")
+			}
 			waitFile(t, filepath.Join(lib, "Halt", ".kumobox-download-"+it.ID, "Halt"+tc.partial))
 			m.Cancel(it.ID)
 			waitIdleWithin(t, m, 5*time.Second)
@@ -667,9 +755,11 @@ func TestDownloadContainer(t *testing.T) {
 	}
 }
 
-// ffmpeg copies the streams into the container of the file: the MP4 options
-// only go with an MP4 file, and nothing that only suits AAC audio (WebM has
-// Opus or Vorbis); yt-dlp merges into that container too.
+// ffmpeg copies the streams of HLS links into the container of the file:
+// the MP4 options only go with an MP4 file, and nothing that only suits
+// AAC audio (WebM has Opus or Vorbis); yt-dlp merges the videos of web
+// pages into that container too. ffmpeg reads the stream from the relay,
+// with nothing but plain HTTP to it.
 func TestDownloaderArgsFollowContainer(t *testing.T) {
 	bin := t.TempDir()
 	argsFile := filepath.Join(bin, "args")
@@ -691,19 +781,22 @@ printf 'video' > "$out"
 		downloader, container string
 		want, not             []string
 	}{
-		{"ffmpeg", "mp4", []string{"-c copy", "-movflags +faststart"}, []string{"aac_adtstoasc"}},
+		{"ffmpeg", "mp4", []string{"-protocol_whitelist http,tcp -f hls -i http://127.0.0.1:", "-c copy", "-movflags +faststart"}, []string{"aac_adtstoasc", testURL}},
 		{"ffmpeg", "webm", []string{"-c copy"}, []string{"aac_adtstoasc", "-movflags"}},
 		{"ffmpeg", "mkv", []string{"-c copy"}, []string{"aac_adtstoasc", "-movflags"}},
 		// The link after "--": yt-dlp never reads it as an option.
-		{"yt-dlp", "mkv", []string{"--merge-output-format mkv", " -- https://cdn.example/play"}, []string{"--merge-output-format mp4"}},
-		{"yt-dlp", "mp4", []string{"--merge-output-format mp4", " -- https://cdn.example/play"}, nil},
+		{"yt-dlp", "mkv", []string{"--merge-output-format mkv", " -- " + pageURL}, []string{"--merge-output-format mp4"}},
+		{"yt-dlp", "mp4", []string{"--merge-output-format mp4", " -- " + pageURL}, nil},
 	} {
 		_ = os.Remove(argsFile)
 		m, _ := newTestManager(t, func(cfg *config.Settings) {
 			cfg.Downloads.Downloader, cfg.Transcode.FfmpegPath = c.downloader, filepath.Join(bin, "ffmpeg")
 		})
 		m.Resolvers["test"] = func(context.Context, *Item) (*Resolved, error) {
-			return &Resolved{URL: "https://cdn.example/play", Container: c.container}, nil
+			if c.downloader == "yt-dlp" {
+				return &Resolved{URL: pageURL, Container: c.container, Page: true}, nil
+			}
+			return &Resolved{URL: testURL, Container: c.container}, nil
 		}
 		it, err := m.Enqueue(Item{MediaID: 1, Episode: 1, Title: "Film", Source: "test"})
 		if err != nil {
