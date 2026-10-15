@@ -17,6 +17,7 @@
 - **Local library** page with only the titles you have on disk: recently added, filters by list status, sorting, grid or list view with the episodes you have per season, size, resolution and release group, and one-click "play next".
 - **Library sharing** between the KumoBox apps on your computers at home: they find each other by themselves (or by address). Turn on **Share my library** in **Settings › Local Library › Library sharing** on the computer with the files: its movies and shows show up on the others and play like local files.
 - Library tools to fix matches by hand, change season/episode numbers, lock files and ignore junk. Safe with removable drives; symlinked folders are followed.
+- Stays smooth with libraries of thousands of titles and files: the Local library and library tools only draw what's on screen.
 
 **Movies & shows (TMDB)**
 - Posters, backdrops, descriptions, genres, certifications, cast & crew, trailers, collections (franchises), recommendations, and for shows every **season and episode** with titles, summaries, stills and air dates. All artwork is cached locally, so it loads instantly and still shows offline.

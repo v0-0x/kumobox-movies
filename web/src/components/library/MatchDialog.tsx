@@ -8,6 +8,7 @@ import type { LocalFile, Media } from "@/lib/types"
 import { cn, mediaSummary, poster, title } from "@/lib/utils"
 import { MediaPicker } from "../MediaPicker"
 import { Button, Dialog, Input } from "../ui"
+import { VirtualList } from "../VirtualList"
 
 type Numbering = "names" | "offset" | "season" | "order"
 
@@ -132,6 +133,8 @@ export function MatchDialog({
     }, [target?.id])
 
     const eps = useMemo(() => episodesFor(files, target, numbering, offset, season), [files, target, numbering, offset, season])
+    const sorted = useMemo(() => files.slice().sort((a, b) => naturalCompare(a.name, b.name)), [files])
+    const scroller = useRef<HTMLDivElement>(null)
     const show = !!target && mediaIsShow(target)
     const known = useMemo(() => new Set(target && show ? episodeKeys(target) : []), [target, show])
     // Episodes the show doesn't have (when its seasons are known).
@@ -271,19 +274,23 @@ export function MatchDialog({
                 </div>
             )}
 
-            <div className="mt-5 max-h-64 overflow-y-auto rounded-xl border border-line">
-                {files
-                    .slice()
-                    .sort((a, b) => naturalCompare(a.name, b.name))
-                    .map(f => (
-                        <div key={f.path} className="flex items-center gap-3 border-b border-line px-3 py-2 text-sm last:border-b-0">
+            {/* A flat folder can hold thousands of files: only those in view are rendered. */}
+            <div ref={scroller} className="mt-5 max-h-64 overflow-y-auto rounded-xl border border-line">
+                <VirtualList
+                    items={sorted}
+                    getKey={f => f.path}
+                    estimateSize={37}
+                    scrollerRef={scroller}
+                    renderItem={(f, i) => (
+                        <div className={cn("flex items-center gap-3 px-3 py-2 text-sm", i < sorted.length - 1 && "border-b border-line")}>
                             <span className="min-w-0 flex-1 truncate text-fg/85" title={f.path}>
                                 {f.name}
                             </span>
                             <ArrowRight className="size-3.5 shrink-0 text-subtle" />
                             <span className={cn("w-28 shrink-0 text-right font-semibold tabular-nums", unknown(eps.get(f.path)?.key ?? 0) && "text-amber-300")}>{label(f)}</span>
                         </div>
-                    ))}
+                    )}
+                />
             </div>
         </Dialog>
     )

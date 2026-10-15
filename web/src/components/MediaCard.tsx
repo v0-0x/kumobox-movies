@@ -193,6 +193,16 @@ function useProgressive(total: number, step: number, axis: "x" | "y") {
     return { shown, sentinel: more ? ref : null }
 }
 
+// cardMinWidth is the narrowest a MediaGrid card gets for a card size (its
+// grid columns below), for grids laid out in JavaScript (VirtualGrid).
+export function cardMinWidth(size?: string) {
+    return size === "sm" ? 130 : size === "lg" ? 200 : 160
+}
+
+// cardTextHeight is the height of a card's text under its artwork (title
+// on up to two lines, then the year and status line).
+export const cardTextHeight = 66
+
 export function MediaGrid({ children, className, size = "md" }: { children: React.ReactNode; className?: string; size?: string }) {
     const cols =
         size === "sm"

@@ -6,6 +6,7 @@ import { toast } from "@/lib/toast"
 import { LibraryFolders } from "@/components/library/LibraryFolders"
 import { MediaPicker } from "@/components/MediaPicker"
 import { Badge, Button, EmptyState, IconButton, Input, Select, Tabs } from "@/components/ui"
+import { cardRow, VirtualList } from "@/components/VirtualList"
 import { api } from "@/lib/api"
 import { episodeKey, formatKey, isShow, mediaRef, splitKey } from "@/lib/ids"
 import { useCollection, useLibraryFiles, useScan, useUnmatched } from "@/lib/queries"
@@ -59,10 +60,20 @@ export default function LibraryPage() {
     )
 }
 
+type UnmatchedGroup = { dir: string; title: string; files: LocalFile[] }
+
+// The Unmatched tab's rows: a group's header, then each of its files (a
+// row each, so a folder of thousands only renders those on screen).
+type UnmatchedRow = { kind: "group"; g: UnmatchedGroup } | { kind: "file"; f: LocalFile; last: boolean }
+
 function Unmatched() {
     const { data, isLoading } = useUnmatched()
     const [picking, setPicking] = useState<{ paths: string[]; title: string } | null>(null)
     const [selected, setSelected] = useState<Set<string>>(new Set())
+    const rows = useMemo(
+        () => (data ?? []).flatMap((g): UnmatchedRow[] => [{ kind: "group", g }, ...g.files.map((f, i) => ({ kind: "file" as const, f, last: i === g.files.length - 1 }))]),
+        [data],
+    )
     const qc = useQueryClient()
     const refresh = () => {
         qc.invalidateQueries({ queryKey: ["library"] })
@@ -95,29 +106,17 @@ function Unmatched() {
             </EmptyState>
         )
     return (
-        <div className="flex flex-col gap-5">
-            {data.map(g => {
-                const paths = g.files.map(f => f.path)
-                const chosen = paths.filter(p => selected.has(p))
-                return (
-                    <div key={g.dir} className="card overflow-hidden">
-                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-white/[0.02] px-5 py-4">
-                            <div className="min-w-0">
-                                <p className="truncate text-lg font-semibold">{g.title}</p>
-                                <p className="truncate text-xs text-subtle">{g.dir}</p>
-                            </div>
-                            <div className="flex gap-2">
-                                <Button size="sm" variant="primary" icon={<Wand2 className="size-4" />} onClick={() => setPicking({ paths: chosen.length ? chosen : paths, title: g.title })}>
-                                    Match {chosen.length ? `${chosen.length} selected` : "all"}
-                                </Button>
-                                <Button size="sm" variant="subtle" icon={<EyeOff className="size-4" />} onClick={() => ignore(chosen.length ? chosen : paths)}>
-                                    Ignore
-                                </Button>
-                            </div>
-                        </div>
-                        <div className="divide-y divide-line">
-                            {g.files.map(f => (
-                                <label key={f.path} className="flex cursor-pointer items-center gap-4 px-5 py-2.5 text-sm hover:bg-white/[0.02]">
+        <div>
+            <VirtualList
+                items={rows}
+                getKey={r => (r.kind === "group" ? `group:${r.g.dir}` : `file:${r.f.path}`)}
+                estimateSize={r => (r.kind === "group" ? 79 : 41)}
+                renderItem={r => {
+                    if (r.kind === "file") {
+                        const f = r.f
+                        return (
+                            <div className={cn(r.last && "pb-5")}>
+                                <label className={cn(cardRow(false, r.last), "flex cursor-pointer items-center gap-4 px-5 py-2.5 text-sm hover:bg-white/[0.02]")}>
                                     <input
                                         type="checkbox"
                                         checked={selected.has(f.path)}
@@ -137,11 +136,30 @@ function Unmatched() {
                                     {f.parsed.releaseGroup && <Badge tone="brand">{f.parsed.releaseGroup}</Badge>}
                                     <span className="w-20 text-right text-xs text-subtle">{formatBytes(f.size)}</span>
                                 </label>
-                            ))}
+                            </div>
+                        )
+                    }
+                    const g = r.g
+                    const paths = g.files.map(f => f.path)
+                    const chosen = paths.filter(p => selected.has(p))
+                    return (
+                        <div className={cn(cardRow(true, false), "flex flex-wrap items-center justify-between gap-3 bg-white/[0.02] px-5 py-4")}>
+                            <div className="min-w-0">
+                                <p className="truncate text-lg font-semibold">{g.title}</p>
+                                <p className="truncate text-xs text-subtle">{g.dir}</p>
+                            </div>
+                            <div className="flex gap-2">
+                                <Button size="sm" variant="primary" icon={<Wand2 className="size-4" />} onClick={() => setPicking({ paths: chosen.length ? chosen : paths, title: g.title })}>
+                                    Match {chosen.length ? `${chosen.length} selected` : "all"}
+                                </Button>
+                                <Button size="sm" variant="subtle" icon={<EyeOff className="size-4" />} onClick={() => ignore(chosen.length ? chosen : paths)}>
+                                    Ignore
+                                </Button>
+                            </div>
                         </div>
-                    </div>
-                )
-            })}
+                    )
+                }}
+            />
             <MediaPicker
                 open={!!picking}
                 onOpenChange={v => !v && setPicking(null)}
@@ -166,7 +184,12 @@ function AllFiles() {
         for (const i of coll?.localOnly ?? []) m.set(i.media.id, title(i.media))
         return m
     }, [coll])
-    const files = (data ?? []).filter(f => !f.ignored && (kind === "all" || f.kind === kind) && (!q || f.name.toLowerCase().includes(q.toLowerCase()) || (titles.get(f.mediaId) ?? "").toLowerCase().includes(q.toLowerCase())))
+    const files = useMemo(() => {
+        const needle = q.toLowerCase()
+        return (data ?? []).filter(
+            f => !f.ignored && (kind === "all" || f.kind === kind) && (!needle || f.name.toLowerCase().includes(needle) || (titles.get(f.mediaId) ?? "").toLowerCase().includes(needle)),
+        )
+    }, [data, kind, q, titles])
     const patch = async (f: LocalFile, body: Record<string, unknown>) => {
         try {
             await api.patch("/api/library/file", { path: f.path, ...body })
@@ -204,9 +227,13 @@ function AllFiles() {
                 />
             </div>
             <p className="text-sm text-subtle">{files.length} files</p>
-            <div className="card divide-y divide-line overflow-hidden">
-                {files.slice(0, 500).map(f => (
-                    <div key={f.path} className="flex items-center gap-4 px-4 py-2.5 text-sm">
+            {/* Every file, only those near the screen rendered. */}
+            <VirtualList
+                items={files}
+                getKey={f => f.path}
+                estimateSize={59}
+                renderItem={(f, i) => (
+                    <div className={cn(cardRow(i === 0, i === files.length - 1), "flex items-center gap-4 px-4 py-2.5 text-sm")}>
                         <div className="min-w-0 flex-1">
                             <p className="truncate font-medium" title={f.path}>
                                 {f.name}
@@ -238,8 +265,8 @@ function AllFiles() {
                             </IconButton>
                         )}
                     </div>
-                ))}
-            </div>
+                )}
+            />
         </div>
     )
 }
@@ -270,7 +297,7 @@ function KeyInput({ value, onChange }: { value: number; onChange: (key: number) 
 function Ignored() {
     const { data, isLoading } = useLibraryFiles()
     const qc = useQueryClient()
-    const files = (data ?? []).filter(f => f.ignored)
+    const files = useMemo(() => (data ?? []).filter(f => f.ignored), [data])
     const restore = async (paths: string[]) => {
         try {
             await api.post("/api/library/ignore", { paths, ignored: false })
@@ -295,9 +322,12 @@ function Ignored() {
                     Restore all
                 </Button>
             </div>
-            <div className="card divide-y divide-line">
-                {files.map(f => (
-                    <div key={f.path} className={cn("flex items-center gap-4 px-4 py-2.5 text-sm")}>
+            <VirtualList
+                items={files}
+                getKey={f => f.path}
+                estimateSize={47}
+                renderItem={(f, i) => (
+                    <div className={cn(cardRow(i === 0, i === files.length - 1), "flex items-center gap-4 px-4 py-2.5 text-sm")}>
                         <FileVideo className="size-4 text-subtle" />
                         <span className="min-w-0 flex-1 truncate" title={f.path}>
                             {f.name}
@@ -306,8 +336,8 @@ function Ignored() {
                             Restore
                         </Button>
                     </div>
-                ))}
-            </div>
+                )}
+            />
         </div>
     )
 }
