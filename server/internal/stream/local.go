@@ -71,6 +71,7 @@ type Probe struct {
 	Path         string         `json:"path"`
 	Container    string         `json:"container"`
 	Duration     float64        `json:"duration"`
+	Start        float64        `json:"start,omitempty"` // when its timestamps start (see seekKeyframe)
 	Size         int64          `json:"size"`
 	ModTime      int64          `json:"modTime"` // unix nanoseconds: a changed file is probed again
 	Video        []ProbeStream  `json:"video"`
@@ -212,6 +213,7 @@ func parseProbe(out []byte) (*Probe, error) {
 		Format struct {
 			FormatName string `json:"format_name"`
 			Duration   string `json:"duration"`
+			StartTime  string `json:"start_time"`
 		} `json:"format"`
 		Streams []struct {
 			Index       int               `json:"index"`
@@ -236,6 +238,9 @@ func parseProbe(out []byte) (*Probe, error) {
 	}
 	p := &Probe{Container: raw.Format.FormatName}
 	p.Duration, _ = strconv.ParseFloat(raw.Format.Duration, 64)
+	if st, err := strconv.ParseFloat(raw.Format.StartTime, 64); err == nil && st > 0 {
+		p.Start = st
+	}
 	counts := map[string]int{}
 	for _, s := range raw.Streams {
 		ps := ProbeStream{
@@ -484,6 +489,13 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 	}
 	if pl.audioCopy {
 		args = append(args, "-c:a", "copy")
+		if p.Audio[pl.audio].Codec == "aac" {
+			// AAC from MPEG-TS (HLS streams, .ts files) comes with ADTS
+			// headers, which MP4 doesn't take: without the filter the
+			// output has no audio or video at all. Other AAC passes
+			// through it as it is.
+			args = append(args, "-bsf:a", "aac_adtstoasc")
+		}
 	} else {
 		args = append(args, "-c:a", "aac", "-ac", "2", "-b:a", "192k")
 	}
@@ -509,7 +521,7 @@ func (l *Local) SeekPoint(ctx context.Context, path string, t float64, audio int
 	if err != nil {
 		return 0, err
 	}
-	return l.startFor(ctx, input, l.plan(p, method, audio, caps, hls), t), nil
+	return l.startFor(ctx, input, p.Start, l.plan(p, method, audio, caps, hls), t), nil
 }
 
 const seekMargin = 0.4
@@ -520,14 +532,16 @@ const seekMargin = 0.4
 // ending then isn't partly heard again.
 const seekAhead = 1.5
 
-func (l *Local) startFor(ctx context.Context, path string, pl plan, t float64) float64 {
+// startFor is where a conversion of the file at path (whose timestamps
+// start at offset, Probe.Start) asked to start at t starts.
+func (l *Local) startFor(ctx context.Context, path string, offset float64, pl plan, t float64) float64 {
 	if t <= 0 {
 		return 0
 	}
 	if !pl.videoCopy {
 		return t
 	}
-	if k, ok := l.seekKeyframe(ctx, path, t); ok {
+	if k, ok := l.seekKeyframe(ctx, path, offset, t); ok {
 		return k
 	}
 	return t
@@ -535,8 +549,10 @@ func (l *Local) startFor(ctx context.Context, path string, pl plan, t float64) f
 
 // seekKeyframe finds the keyframe a copy asked to start at t starts at: the
 // last one at or before t, or the next one when it's close (seekAhead) and
-// the last one isn't.
-func (l *Local) seekKeyframe(ctx context.Context, path string, t float64) (float64, bool) {
+// the last one isn't. t and the time returned count from the start of the
+// file, as ffmpeg's -ss does; ffprobe's intervals and packet times are the
+// timestamps themselves, which start at offset.
+func (l *Local) seekKeyframe(ctx context.Context, path string, offset, t float64) (float64, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cfg := l.settings.Get()
@@ -548,7 +564,7 @@ func (l *Local) seekKeyframe(ctx context.Context, path string, t float64) (float
 		}
 		args = append(args, "-v", "error", "-select_streams", "v:0",
 			"-show_entries", "packet=pts_time,flags", "-of", "csv=p=0",
-			"-read_intervals", fmt.Sprintf("%.3f%%%.3f", from, t+seekAhead+1), path)
+			"-read_intervals", fmt.Sprintf("%.3f%%%.3f", from+offset, t+offset+seekAhead+1), path)
 		out, err := exec.CommandContext(ctx, cfg.Transcode.FfprobePath, args...).Output()
 		if err != nil {
 			return 0, false
@@ -560,7 +576,7 @@ func (l *Local) seekKeyframe(ctx context.Context, path string, t float64) (float
 				continue
 			}
 			if v, err := strconv.ParseFloat(ts, 64); err == nil {
-				keys = append(keys, v)
+				keys = append(keys, max(0, v-offset))
 			}
 		}
 		sort.Float64s(keys)

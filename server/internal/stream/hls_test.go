@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,23 +72,35 @@ func TestSeekPointAcrossFormats(t *testing.T) {
 		extra []string
 		t     float64
 		want  float64
+		tol   float64
 	}{
-		{"opus audio", []string{"-c:a", "libopus"}, 12, 10},
-		{"no b-frames", []string{"-bf", "0"}, 12, 10},
+		{"opus audio", []string{"-c:a", "libopus"}, 12, 10, 0},
+		{"no b-frames", []string{"-bf", "0"}, 12, 10, 0},
 		// Keyframes 0.2s apart (10.2 is frame 245, at 10.208): ffmpeg can't
 		// be made to land on the first.
-		{"scene cut", []string{"-g", "1000", "-force_key_frames", "0,5,10,10.2,15,20,25"}, 10.1, 10.208},
+		{"scene cut", []string{"-g", "1000", "-force_key_frames", "0,5,10,10.2,15,20,25"}, 10.1, 10.208, 0},
+		// MPEG-TS timestamps start 1.4s in (HLS segments' too): the
+		// keyframe at 10s is the packet stamped about 11.4s. ffmpeg counts
+		// from the stream that starts first (here the audio, a few
+		// milliseconds before the video), hence the margin. Copied from
+		// MPEG-TS, the stream comes out up to a quarter second shorter.
+		{"mpeg-ts", []string{"-f", "mpegts"}, 12, 10, 0.05},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l, video := newFfmpegLocal(t, "libx264", tc.extra...)
 			got, err := l.SeekPoint(context.Background(), video, tc.t, 0, "remux", nil, false)
-			if err != nil || got != tc.want {
+			if err != nil || math.Abs(got-tc.want) > tc.tol {
 				t.Fatalf("SeekPoint(%v) = %v, %v; want %v", tc.t, got, err, tc.want)
+			}
+			p, _ := l.Probe(context.Background(), video)
+			want, short := p.Duration-got, 0.2
+			if tc.tol > 0 { // MPEG-TS
+				short = 0.3
 			}
 			rec := httptest.NewRecorder()
 			l.ServeTranscode(rec, httptest.NewRequest(http.MethodGet, "/", nil), video, got, 0, "remux", nil)
-			if d := probeDuration(t, rec.Body.Bytes()); d < 30-got-0.2 || d > 30-got+0.2 {
-				t.Errorf("stream from %v lasts %.2fs, want %.2f", got, d, 30-got)
+			if d := probeDuration(t, rec.Body.Bytes()); d < want-short || d > want+0.2 {
+				t.Errorf("stream from %v lasts %.2fs, want %.2f", got, d, want)
 			}
 		})
 	}

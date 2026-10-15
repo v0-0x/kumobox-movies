@@ -101,7 +101,7 @@ func (h *HLS) Start(ctx context.Context, req HLSRequest) (*HLSSession, error) {
 		return nil, err
 	}
 	pl := h.local.plan(p, req.Method, req.Audio, CapsOf(req.Caps), true)
-	start := h.local.startFor(ctx, file, pl, req.Start)
+	start := h.local.startFor(ctx, file, p.Start, pl, req.Start)
 	owner := req.Client + "\x00"
 	key := fmt.Sprintf("%s%s\x00%.3f\x00%+v", owner, file, start, pl)
 
