@@ -299,8 +299,9 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     // ---------------------------------------------------------- stream source
     // How to play a stream: as it is when the browser decodes what's in it,
     // else converted like a file (most providers link to Matroska, HEVC,
-    // AC-3/DTS audio...). HLS plays as it is. A link that can't be read
-    // is tried as it is all the same.
+    // AC-3/DTS audio...). HLS too: hls.js plays it as it is, unless its
+    // video or audio is one the browser can't decode (HEVC, AC-3, E-AC-3,
+    // DTS...). A link that can't be read is tried as it is all the same.
     useEffect(() => {
         if (req.kind !== "stream" || !sources.length || decided === sourceIdx) return
         const src = sources[sourceIdx]
@@ -311,7 +312,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             setDecided(sourceIdx)
             setLoading(false)
         }
-        if (!src?.remote || src.type === "m3u8" || /m3u8/i.test(src.originalUrl ?? "")) {
+        if (!src?.remote) {
             asIs()
             return
         }
@@ -324,7 +325,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 if (p.duration > 0) setDuration(p.duration)
                 const ai = Math.max(0, p.audio?.findIndex(a => a.default) ?? 0)
                 setAudioIndex(ai)
-                const m = p.method === "direct" && ai === 0 ? "direct" : p.method === "direct" ? "remux" : p.method
+                // hls.js picks an HLS stream's default audio by itself.
+                const m = p.method === "direct" && (ai === 0 || p.container === "hls") ? "direct" : p.method === "direct" ? "remux" : p.method
                 setMethod(m)
                 setOffset(m === "direct" ? 0 : startAt.current)
                 setDecided(sourceIdx)
@@ -473,6 +475,16 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     else if (method === "remux") setMethod("transcode")
                     else if (req.kind === "stream") nextSource()
                     else setError("This video could not be played (" + data.details + ")")
+                    return
+                }
+                if (method === "direct" && convertPath && probe && data.type !== Hls.ErrorTypes.NETWORK_ERROR) {
+                    // The browser couldn't play the stream as it is (a
+                    // codec it doesn't decode): convert it.
+                    toast.info("Switching to compatibility mode…")
+                    const at = v.currentTime > 0 ? v.currentTime : startAt.current
+                    startAt.current = 0
+                    setOffset(at)
+                    setMethod("remux")
                     return
                 }
                 if (sourceIdx + 1 < sources.length) nextSource()

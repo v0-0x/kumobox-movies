@@ -353,3 +353,75 @@ func TestHLSRelayNeverReachesLAN(t *testing.T) {
 		t.Errorf("copied %vs (%v), want the one real segment", d, err)
 	}
 }
+
+// An online HLS stream plays as it is when the browser decodes it, and
+// is converted like any other online stream when it doesn't: HEVC video,
+// AC-3 or E-AC-3 audio.
+func TestRemoteHLSConverts(t *testing.T) {
+	l, _ := newFfmpegLocal(t, "libx264")
+	dir := t.TempDir()
+	makeHLS(t, filepath.Join(dir, "plain"))
+	makeHLS(t, filepath.Join(dir, "ac3"), "-c:a", "ac3")
+	makeHLS(t, filepath.Join(dir, "eac3"), "-c:a", "eac3")
+	makeHLS(t, filepath.Join(dir, "hevc"), "-c:v", "libx265", "-tag:v", "hvc1", "-x265-params", "log-level=error")
+	provider := httptest.NewServer(http.FileServer(http.Dir(dir)))
+	defer provider.Close()
+	defer func(old func() []string) { LocalHosts = old }(LocalHosts)
+	u, _ := url.Parse(provider.URL)
+	LocalHosts = func() []string { return []string{HostKey(u)} } // stands for a public host
+
+	for _, tc := range []struct {
+		name   string
+		caps   Caps
+		method string
+		video  string // the converted stream's video codec
+	}{
+		{"plain", nil, "direct", ""},
+		{"ac3", nil, "transcode", "h264"},
+		{"eac3", nil, "transcode", "h264"},
+		{"hevc", nil, "transcode", "h264"},
+		{"hevc", CapsOf([]string{"hevc"}), "direct", ""},
+	} {
+		path := RegisterRemoteHLS(provider.URL+"/"+tc.name+"/index.m3u8", nil)
+		p, err := l.Probe(context.Background(), path)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		l.Decide(p, tc.caps)
+		if p.Container != "hls" || p.Method != tc.method {
+			t.Errorf("%s: %s %s (%s), want %s", tc.name, p.Container, p.Method, p.Reason, tc.method)
+		}
+		if tc.method == "direct" {
+			continue
+		}
+		// Converted from 4 seconds in: H.264 and AAC in fragmented MP4.
+		start, err := l.SeekPoint(context.Background(), path, 4, 0, "", tc.caps, false)
+		if err != nil {
+			t.Fatalf("%s: seek point: %v", tc.name, err)
+		}
+		w := httptest.NewRecorder()
+		l.ServeTranscode(w, httptest.NewRequest("GET", "/api/local/transcode", nil), path, start, 0, "", tc.caps)
+		if w.Code != http.StatusOK || w.Body.Len() < 1000 {
+			t.Fatalf("%s: transcode %d, %d bytes", tc.name, w.Code, w.Body.Len())
+		}
+		f := filepath.Join(t.TempDir(), "out.mp4")
+		if err := os.WriteFile(f, w.Body.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0", f).Output()
+		if got := strings.Fields(string(out)); strings.Join(got, ",") != tc.video+",aac" {
+			t.Errorf("%s: converted to %q, want %s and aac", tc.name, got, tc.video)
+		}
+		if d := probeDuration(t, w.Body.Bytes()); d < 3 || d > 8.5-start {
+			t.Errorf("%s: converted from %vs: %vs long", tc.name, start, d)
+		}
+	}
+
+	// Safari, iPhones and iPads get the conversion as HLS sessions.
+	h := NewHLS(l, filepath.Join(t.TempDir(), "hls"))
+	t.Cleanup(h.Close)
+	s, err := h.Start(context.Background(), HLSRequest{Path: RegisterRemoteHLS(provider.URL+"/eac3/index.m3u8", nil), Client: "a"})
+	if err != nil || s.Method != "transcode" {
+		t.Fatalf("HLS session: %+v, %v", s, err)
+	}
+}

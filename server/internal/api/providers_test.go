@@ -286,9 +286,9 @@ func TestProviderPlay(t *testing.T) {
 	direct, torrent, yt := res.Streams[0], res.Streams[1], res.Streams[2]
 
 	type source struct {
-		URL, OriginalURL, Type, Quality, Server, Provider, Referrer string
-		Headers                                                     map[string]string
-		Subtitles                                                   []struct{ URL, Language, Original string }
+		URL, OriginalURL, Type, Quality, Server, Provider, Referrer, Remote string
+		Headers                                                             map[string]string
+		Subtitles                                                           []struct{ URL, Language, Original string }
 	}
 	var played struct {
 		Action, Player, Title string
@@ -333,6 +333,10 @@ func TestProviderPlay(t *testing.T) {
 	decodeBody(t, do(s, "POST", "/api/providers/play", local, jsonBody(t, map[string]any{"mediaId": 155, "streamId": "0000000000000000", "stream": full, "player": "builtin"}), nil), &played)
 	if played.Action != "builtin" || played.Sources[0].OriginalURL != "https://other.example/x.m3u8" {
 		t.Fatalf("given stream: %+v", played)
+	}
+	// An HLS stream can be converted too (read through the relay).
+	if r := played.Sources[0].Remote; !stream.IsRemoteInput(r) || r == stream.RegisterRemote("https://other.example/x.m3u8", played.Sources[0].Headers) {
+		t.Fatalf("HLS stream named %q for the conversions", r)
 	}
 
 	// YouTube opens in the browser.
@@ -493,7 +497,7 @@ func TestProviderInstallsFromLAN(t *testing.T) {
 
 // A play request with refresh asks the providers again rather than using
 // the links found a moment ago (they expire); its sources can be converted
-// (a "remote:" path), except HLS.
+// (a "remote:" path).
 func TestProviderPlayRefresh(t *testing.T) {
 	s := newProvidersServer(t)
 	addon := installTestAddon(t, s)

@@ -284,12 +284,22 @@ func playerSource(st stream.Stream, addonSubs []providers.Subtitle, cfg config.S
 		"headers": headers, "referrer": referrer, "notWebReady": st.NotWebReady,
 	}
 	// What the player converts with ffmpeg when the browser can't play the
-	// link as it is (Matroska, HEVC, AC-3/DTS audio...): the link named for
-	// the conversion endpoints (stream/remote.go). HLS plays as it is.
-	if typ != providers.StreamM3U8 {
+	// link as it is (Matroska, HEVC, AC-3/E-AC-3/DTS audio...): the link
+	// named for the conversion endpoints (stream/remote.go). ffmpeg reads
+	// an HLS stream through the relay, which rewrites its playlists
+	// (stream/relayhls.go); one the browser plays goes on playing as it is.
+	if isHLS(typ, st.URL) {
+		src["remote"] = stream.RegisterRemoteHLS(st.URL, headers)
+	} else {
 		src["remote"] = stream.RegisterRemote(st.URL, headers)
 	}
 	return src
+}
+
+// isHLS reports a link to an HLS playlist, by its type or its address (as
+// the player tells them).
+func isHLS(typ, link string) bool {
+	return typ == providers.StreamM3U8 || strings.Contains(strings.ToLower(link), "m3u8")
 }
 
 func firstLine(s string) string {

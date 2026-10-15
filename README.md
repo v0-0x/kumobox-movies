@@ -34,7 +34,7 @@
 
 **Watching**
 - **mpv** (desktop media player, controlled over IPC) or the **in-app player**.
-- In-app player plays any file: direct play when the browser can, otherwise ffmpeg **remuxes or transcodes on the fly** (VA-API / NVENC / QSV supported). Embedded and external subtitles (ASS/SRT/VTT) and audio-track switching are supported.
+- In-app player plays any file: direct play when the browser can, otherwise ffmpeg **remuxes or transcodes on the fly** (VA-API / NVENC / QSV supported). Embedded and external subtitles (ASS/SRT/VTT) and audio-track switching are supported. Online streams too, HLS included: one with HEVC video or AC-3/E-AC-3/DTS audio is converted rather than failing.
 - **Resume exactly where you stopped**: the position is saved every few seconds, in both players.
 - **Plays the original language** (or your preferred dub) with its forced subtitles, and turns on subtitles in your language when the audio is foreign.
 - **Remembers your audio and subtitle track per movie or show.** Pick "French + English subtitles" once and every next episode opens with the same tracks, matched by language and title, so it works even when the track order changes.

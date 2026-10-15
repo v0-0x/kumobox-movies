@@ -349,8 +349,14 @@ func formatName(f string) string {
 
 var browserAudio = map[string]bool{"aac": true, "mp3": true, "opus": true, "vorbis": true, "flac": true}
 
+// hlsAudio is the audio of HLS streams every browser plays (through
+// hls.js): AC-3, E-AC-3 and DTS streams are converted.
+var hlsAudio = map[string]bool{"aac": true, "mp3": true}
+
 // decide picks direct play, remux (copy into fMP4) or transcode for a
-// player that decodes caps (nil: DefaultCaps).
+// player that decodes caps (nil: DefaultCaps). An online HLS stream
+// (container "hls") plays as it is when the player decodes its video and
+// its audio is AAC or MP3.
 func decide(p *Probe, mode string, audioIdx int, caps Caps) (string, string) {
 	if caps == nil {
 		caps = DefaultCaps
@@ -372,6 +378,12 @@ func decide(p *Probe, mode string, audioIdx int, caps Caps) (string, string) {
 	if len(p.Audio) > 0 {
 		a := p.Audio[min(max(audioIdx, 0), len(p.Audio)-1)]
 		audioOK = browserAudio[a.Codec] && a.Channels <= 2 || a.Codec == "aac" || a.Codec == "opus"
+		if p.Container == "hls" && audioIdx == 0 && hlsAudio[a.Codec] {
+			// An online HLS stream the player plays as it is (hls.js).
+			return "direct", "the browser can play this stream as is"
+		}
+	} else if p.Container == "hls" {
+		return "direct", "the browser can play this stream as is"
 	}
 	// ffprobe calls both Matroska and WebM "matroska,webm".
 	mkv := strings.Contains(p.Container, "matroska") && !strings.EqualFold(filepath.Ext(p.Path), ".webm")

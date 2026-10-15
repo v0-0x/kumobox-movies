@@ -32,6 +32,27 @@ Code: `server/internal/providers` (common types, ranking, aggregation),
 providers), `server/internal/app/providers.go` (which providers, in which
 order) and `server/internal/api/providers_routes.go` (the HTTP API).
 
+## The in-app player
+
+The in-app player gets a stream's direct links through `/api/proxy`
+(headers, CORS, HLS playlists rewritten so that everything goes through
+it), and each link named for the conversion endpoints (`remote`, a
+`remote:` path). Before playing a link, it has it probed: what the
+browser decodes plays as it is; anything else (Matroska, HEVC video,
+AC-3, E-AC-3, DTS or TrueHD audio...) is remuxed or transcoded by ffmpeg
+like a library file, ffmpeg reading the link from the stream relay on
+this computer's loopback address (`server/internal/stream/remote.go`),
+which fetches it with the proxy's guarded client.
+
+HLS streams are probed too: one whose video the browser decodes, with AAC
+or MP3 audio, plays as it is (hls.js), others are converted. ffmpeg reads
+them through the relay, which rewrites their playlists so that every link
+in them is the relay's (`relayhls.go`, see Downloads below). Of a master
+playlist, the variant probed and converted is the one with the highest
+bandwidth among those whose `CODECS` browsers play (H.264 with AAC or
+MP3), else the one with the highest bandwidth. A stream that fails in
+hls.js all the same (a codec error) is converted rather than skipped.
+
 ## Downloads
 
 A provider's link can name any address, this computer's and the local
@@ -119,7 +140,7 @@ repository).
 |---|---|
 | `GET /api/providers` | every provider, in order: `[{id, name, kind, icon, types, enabled, extension}]` |
 | `GET /api/providers/streams?mediaId=&episode=&provider=&refresh=1` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
-| `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
+| `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, each named for the conversion endpoints as `remote`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
 | `POST /api/providers/download` | `{mediaId, episodes: [keys], provider, quality}` → the queued downloads |
 | `GET /api/providers/search?provider=&q=`, `POST /api/providers/mapping` | an extension's titles, and picking one by hand `{provider, mediaId, id, title}` |
 | `GET/POST/DELETE /api/providers/stremio/addons` | installed addons; install `{url, allowLocal, allowAdult}` (409 `{error, code: "local" \| "adult" \| "configure" \| "unsupported", configureUrl}`); remove `?key=` (transport URL or `stremio:<id>`) |
