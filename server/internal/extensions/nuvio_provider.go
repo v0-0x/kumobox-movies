@@ -66,7 +66,8 @@ func (p *NuvioProvider) Supports(mediaType string) bool {
 // Streams runs the provider's getStreams() for the movie or episode.
 func (p *NuvioProvider) Streams(ctx context.Context, r providers.Request) ([]providers.Stream, error) {
 	if r.TMDBID <= 0 {
-		return nil, errors.New("Nuvio providers need the title's TMDB id")
+		// Not the provider's fault: its health stays as it is.
+		return nil, providers.Skip(errors.New("Nuvio providers need the title's TMDB id"))
 	}
 	if r.Type != providers.TypeMovie && r.Type != providers.TypeTV {
 		return nil, fmt.Errorf("unknown media type %q", r.Type)

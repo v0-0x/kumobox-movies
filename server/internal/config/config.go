@@ -336,6 +336,7 @@ func (c Settings) clone() Settings {
 	c.UI.HomeSections = slices.Clone(c.UI.HomeSections)
 	c.Providers.StremioCatalogs = slices.Clone(c.Providers.StremioCatalogs)
 	c.Providers.NuvioRepos = slices.Clone(c.Providers.NuvioRepos)
+	c.Providers.MediaServers = slices.Clone(c.Providers.MediaServers)
 	c.TorrentSources.Torznab = slices.Clone(c.TorrentSources.Torznab)
 	return c
 }

@@ -13,6 +13,7 @@ with the direct links. What the providers answered is kept five minutes.
 
 | Kind | Provider id | What | Ids it needs |
 |---|---|---|---|
+| Media servers | `jellyfin:<host:port>`, `emby:…`, `plex:…` | the user's own Jellyfin, Emby and Plex servers (Settings › Providers), asked first | TMDB id (IMDb id as a fallback) |
 | Internet Archive (built in) | `archive` | public-domain and freely licensed films hosted by archive.org | title + year |
 | Stremio addons | `stremio:<addon id>` | any addon serving `stream` (or `subtitles`) for `movie`/`series` | IMDb id (or `tmdb:` for addons that only take it) |
 | Nuvio providers | `nuvio:<id>` | JavaScript scrapers from Nuvio provider repositories, run in KumoBox's extension sandbox | TMDB id |
@@ -23,14 +24,56 @@ the episode picked (the next one to watch by default): play a direct link
 in the app or in mpv, download it into the library (its link is looked up
 again when the download starts, from the same provider in the closest
 quality: links expire), send a torrent to the torrent client (saved into
-the library), open a YouTube video or a web page in the browser.
+the library), open a YouTube video or a web page in the browser. Streams
+show as each provider answers (`GET /api/providers/streams/live`), with a
+spinner for the providers still looking and each one's error; once all
+have answered, the list is the ranked one above.
 
-Code: `server/internal/providers` (common types, ranking, aggregation),
-`providers/archive`, `providers/stremio`, `server/internal/extensions`
-(`nuvio*.go`) for Nuvio providers, `server/internal/stream`
-(`onlinestream.go`: the service asking them; `extension.go`: extensions as
-providers), `server/internal/app/providers.go` (which providers, in which
-order) and `server/internal/api/providers_routes.go` (the HTTP API).
+Above them, **Watch free** lists the services where the title is free,
+with or without ads, and **On streaming services** those that have it with
+a subscription, in the region of Settings › Metadata (TMDB's "where to
+watch", data from JustWatch: the `free`, `ads` and `flatrate` tiers of
+`Media.watchProviders`). Their logos open TMDB's watch page for the title
+in the browser. They show even without any provider enabled.
+
+### Health
+
+KumoBox keeps how each provider's searches went (in the database, so it
+lasts across restarts): answers and failures, failures in a row, the last
+error (the links it names cut down to their host: addon links can carry
+the addon's settings) and the last ten answers' times. An answer with no
+streams is a success; an addon that can't be asked about the title (no
+IMDb id...) counts neither way. **Settings › Providers › Provider health**
+lists them, with a **Test** button (this computer only) asking the provider
+right away for Night of the Living Dead (1968), a public-domain film.
+
+A provider that failed **3 times in a row** is demoted until it answers
+again: its streams are listed after the others' (it's still asked in Watch
+online, last), and the automatic picks (the Play button, the player's
+"ask for fresh links", auto play next from any provider) leave it out, so
+they don't wait for its timeout. Named (the default provider, the
+provider an episode played from), it's asked all the same.
+
+### The version of a show
+
+A stream of a show that plays past its first 10 seconds (in mpv or the
+in-app player) is remembered for the show: its provider and version (its
+quality, and the source and release group of its release or file name).
+The next episodes look for them first: Watch online lists that provider's
+matching links first (marked "Last used"), and the Play button picks the
+closest one when no other provider is asked for. Auto play next does the
+same with the version of the episode that just played.
+
+Code: `server/internal/providers` (common types, ranking, aggregation,
+`health.go`), `providers/mediaserver` (Jellyfin, Emby, Plex),
+`providers/archive`, `providers/stremio`,
+`server/internal/extensions` (`nuvio*.go`) for Nuvio providers,
+`server/internal/stream` (`onlinestream.go`: the service asking them;
+`live.go`: searches as they go; `version.go`: a show's version;
+`extension.go`: extensions as providers), `server/internal/app/providers.go`
+(which providers, in which order; `providerhealth.go`,
+`streamversion.go`) and `server/internal/api/providers_routes.go` (the
+HTTP API).
 
 ## The in-app player
 
@@ -115,6 +158,42 @@ the LAN can use them, not install, update, set up, turn on or off, reorder
 or remove them, nor read other collections and repositories than those of
 the settings).
 
+### Media servers (Jellyfin, Emby, Plex)
+
+Settings › Providers › Media servers (`providers.mediaServers`: `[{kind:
+"jellyfin" | "emby" | "plex", name, url, token, userId}]`), with a **Test**
+button (`POST /api/providers/mediaservers/test`, this computer only)
+showing the server's name and version. The token is a Jellyfin or Emby API
+key (or a user's access token), or an `X-Plex-Token`; `userId` (Jellyfin,
+Emby) limits the search to a user's libraries.
+
+* **Jellyfin / Emby**: `/Items` (`/Users/{userId}/Items` with a user),
+  `Recursive=true`, `IncludeItemTypes=Movie` or `Series`,
+  `Fields=ProviderIds`, matched on `ProviderIds.Tmdb`, else `Imdb`; a
+  movie's files are its `MediaSources` (`Ids=…&Fields=MediaSources`), an
+  episode's come from `/Shows/{id}/Episodes?season=N` (a file holding
+  several episodes, `IndexNumberEnd`, is each one's). Links:
+  `/Videos/{id}/stream?static=true&MediaSourceId=…` (the file as it is).
+  The token goes as `Authorization: MediaBrowser Token="…"` (Jellyfin) or
+  `X-Emby-Token` (Emby).
+* **Plex**: `/library/sections`, then each movie or show library's
+  `/all?type=1|2&includeGuids=1`, matched on the `tmdb://` guid, else
+  `imdb://`; a show's seasons and episodes are `/library/metadata/{key}/children`.
+  Links: the media parts' keys (`/library/parts/…`). The token goes as
+  `X-Plex-Token`.
+
+Each file is a direct link with its quality (from the video's size), size,
+codecs and container; files a browser can't play as they are (Matroska,
+HEVC, AC-3/DTS...) are converted by the in-app player, mpv plays them all.
+
+The token is a secret: devices on the LAN get the settings without it, the
+links listed and handed to players carry none, and it isn't logged. KumoBox
+adds it when it fetches a server's video itself (stream proxy, relay, mpv,
+downloads), and only for the video paths above: the stream proxy can't be
+used to call a server's API with it. The servers' addresses are trusted
+like local addons (the proxy and relay may reach them on the LAN), and
+their redirects are followed only on their own address.
+
 ### Stremio addons
 
 Providers & extensions › Stremio addons:
@@ -130,6 +209,23 @@ Providers & extensions › Stremio addons:
   collection is a JSON array of `{transportUrl, transportName, manifest,
   flags: {official, protected}}` (an addon catalog answer,
   `{"addons": [...]}`, works too).
+
+The browser lists each addon's name, description, version, types and
+resources (those KumoBox uses — streams, subtitles — as badges), whether
+it's installed (with Uninstall), and a **Configure** button opening the
+addon's `/configure` page in the browser when it's `configurable`; it
+searches names, descriptions and ids.
+
+* **Import from a Stremio account** (this computer only): KumoBox signs in
+  to Stremio's API (`POST /api/login` `{type: "Login", email, password}`,
+  then `POST /api/addonCollectionGet` `{type: "AddonCollectionGet",
+  authKey, update: true}`), installs the account's addons it can use and
+  lists the others with why they were left out: already installed (in
+  that configuration or another, which is kept), on this computer or the
+  LAN, adult, to configure, or of no use (catalogs, metadata). Those that
+  need a confirmation are installed by their URL. The password and the
+  session's key are used for those two requests only: never saved nor
+  logged. `KUMOBOX_STREMIO_API_URL` overrides the API's address (tests).
 
 KumoBox refuses addons it can't use (catalog- or metadata-only addons such
 as Cinemeta), asks for confirmation for addons flagged `adult` and for
@@ -166,8 +262,11 @@ repository).
 | Route | What |
 |---|---|
 | `GET /api/providers` | every provider, in order: `[{id, name, kind, icon, types, enabled, extension}]` |
-| `GET /api/providers/streams?mediaId=&episode=&provider=` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
+| `GET /api/providers/streams?mediaId=&episode=&provider=` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches, preferred}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`), `preferred` on those of the show's last version; `episode` is a key (a movie's is 1), `provider` empty for all |
 | `POST /api/providers/streams/refresh` | `{mediaId, episode, provider}`: the same, the providers asked again |
+| `GET /api/providers/streams/live?mediaId=&episode=&provider=` | the same search as NDJSON, a line as each provider answers: `{asking: [{provider, name, demoted}]}`, then `{provider, name, streams, error, ms, cached}` per provider, then `{done: true, result}` (`result` as above) or `{done: true, error}`; `POST` with `{mediaId, episode, provider, refresh: true}` asks the providers again |
+| `GET /api/providers/health` | every provider with `{successes, failures, consecutiveFailures, lastError, lastErrorAt, lastSuccessAt, latencies, avgMs, demoted}` |
+| `POST /api/providers/{id}/test` | `{mediaId, episode}` optional (Night of the Living Dead by default) → `{provider, name, title, streams, direct, error, ms, health}`; this computer only |
 | `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, each named for the conversion endpoints as `remote`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
 | `GET /api/providers/subtitles?mediaId=&episode=&remote=&filename=` | the subtitles of subtitle addons for the very file the stream `remote` (a source's `remote:` path) plays, matched by its size and OpenSubtitles hash: `[{url, language, label, original, addon}]`, WebVTT through the proxy, the preferred languages first |
 | `POST /api/providers/download` | `{mediaId, episodes: [keys], provider, quality}` → the queued downloads |
@@ -176,6 +275,8 @@ repository).
 | `PUT /api/providers/stremio/addons/enabled`, `…/order` | `{key, enabled}`, `{keys}` |
 | `POST /api/providers/stremio/refresh`, `GET /api/providers/stremio/catalog?url=` | manifests downloaded again; an addon collection (the first of `providers.stremioCatalogs` by default) |
 | `POST /api/providers/stremio/catalog/refresh` | `{url}`: the collection downloaded again |
+| `POST /api/providers/stremio/import` | `{email, password}` → `{added, skipped: [{id, name, transportUrl, reason}]}`: a Stremio account's addons (this computer only) |
+| `POST /api/providers/mediaservers/test` | `{kind, url, token, userId}` → `{name, version, userId, userName, libraries}` (this computer only; without a token, the saved server's) |
 | `GET /api/providers/nuvio/repo?url=`, `POST/DELETE /api/providers/nuvio/repos` | a repository with the installed and updatable providers marked; keeping or forgetting one |
 | `POST /api/providers/nuvio/install`, `…/install-all` | `{repo, id}`, `{repo}` (the repository is kept too) |
 

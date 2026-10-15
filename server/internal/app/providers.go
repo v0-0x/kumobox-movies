@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -14,16 +15,18 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/extensions"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/archive"
+	"github.com/v0-0x/kumobox-movies/server/internal/providers/mediaserver"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/stremio"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
 
 // Streaming providers
 //
-// Movies and episodes are streamed from, in this order: the built-in
-// Internet Archive provider (Settings › Providers), the Stremio addons the
-// user installed (in their order), the Nuvio providers and the online
-// streaming extensions. The stream service asks the enabled ones; the
+// Movies and episodes are streamed from, in this order: the user's own
+// Jellyfin, Emby and Plex servers and the built-in Internet Archive
+// provider (Settings › Providers), the Stremio addons the user installed
+// (in their order), the Nuvio providers and the online streaming
+// extensions. The stream service asks the enabled ones; the
 // Providers page lists them all.
 
 // providersUpdated tells the UI the provider list changed.
@@ -117,7 +120,8 @@ func (a *App) wireProviders() error {
 		a.Stream.Invalidate()
 		a.Hub.Publish(providersUpdated, nil)
 	}
-	// The in-app player may stream from the addons installed as local ones.
+	// The in-app player may stream from the addons installed as local ones,
+	// and from the user's media servers (often on the LAN).
 	stream.LocalHosts = func() []string {
 		var out []string
 		for _, ad := range store.List() {
@@ -125,17 +129,54 @@ func (a *App) wireProviders() error {
 				out = append(out, stream.HostKey(u))
 			}
 		}
-		return out
+		return append(out, mediaserver.Hosts(a.mediaServers())...)
 	}
+	// The media servers' tokens are added when KumoBox fetches their
+	// videos, never put in the links (mediaserver/credentials.go).
+	stream.Credentials = func(u *url.URL) map[string]string { return mediaserver.Credentials(a.mediaServers(), u) }
+	a.Settings.OnChange(func(old, cur config.Settings) {
+		if !reflect.DeepEqual(old.Providers.MediaServers, cur.Providers.MediaServers) {
+			a.Stream.Invalidate()
+			a.Hub.Publish(providersUpdated, nil)
+		}
+	})
 	a.Stream.Providers = a.StreamProviders
 	a.Stream.SubtitleProviders = a.Stremio.SubtitleProviders
+	// How each provider's searches go (providerhealth.go), and the version
+	// of each show that played last (streamversion.go).
+	a.healthStore = newHealthStore(a.DB)
+	a.Health = a.healthStore.health
+	a.Stream.Health = a.Health
+	a.versions = newStreamVersions(a.DB)
+	a.Stream.Versions = a.versions.Get
 	a.Downloads.Resolvers["stream"] = a.resolveStreamDownload
 	return nil
 }
 
-// StreamProviders returns the enabled streaming providers, in order.
-func (a *App) StreamProviders() []providers.Provider {
+// mediaServers are the media servers of Settings › Providers.
+func (a *App) mediaServers() []mediaserver.Config {
+	var out []mediaserver.Config
+	for _, s := range a.Settings.Get().Providers.MediaServers {
+		out = append(out, mediaserver.Config{Kind: s.Kind, Name: s.Name, URL: s.URL, Token: s.Token, UserID: s.UserID})
+	}
+	return out
+}
+
+// mediaServerProviders are the providers of the user's media servers.
+func (a *App) mediaServerProviders() []providers.Provider {
 	var out []providers.Provider
+	for _, c := range a.mediaServers() {
+		if p, err := mediaserver.New(c); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// StreamProviders returns the enabled streaming providers, in order: the
+// user's own media servers first.
+func (a *App) StreamProviders() []providers.Provider {
+	out := a.mediaServerProviders()
 	if a.Settings.Get().Providers.Archive {
 		out = append(out, archive.New())
 	}
@@ -163,7 +204,11 @@ func (a *App) wantsDub(mediaID int) bool {
 // ProviderInfos lists every streaming provider, disabled ones too, in the
 // order they're asked.
 func (a *App) ProviderInfos() []ProviderInfo {
-	out := []ProviderInfo{{Info: providers.Describe(archive.New()), Enabled: a.Settings.Get().Providers.Archive}}
+	var out []ProviderInfo
+	for _, p := range a.mediaServerProviders() {
+		out = append(out, ProviderInfo{Info: providers.Describe(p), Enabled: true})
+	}
+	out = append(out, ProviderInfo{Info: providers.Describe(archive.New()), Enabled: a.Settings.Get().Providers.Archive})
 	if a.Stremio != nil {
 		for _, addon := range a.Stremio.List() {
 			p := stremio.NewProvider(a.Stremio.Client(), addon)
@@ -231,7 +276,7 @@ func (a *App) resolveStreamDownload(ctx context.Context, it *downloads.Item) (*d
 	case providers.StreamMP4, providers.StreamM3U8:
 		r.Container = "mp4"
 	}
-	r.Headers, r.Referrer = stream.SplitReferrer(s.Headers)
+	r.Headers, r.Referrer = stream.SplitReferrer(stream.WithCredentials(s.URL, s.Headers))
 	// One subtitle file goes along: the stream's own, else an addon's, in
 	// the preferred language.
 	subs := append(append([]providers.Subtitle(nil), s.Subtitles...), res.Subtitles...)

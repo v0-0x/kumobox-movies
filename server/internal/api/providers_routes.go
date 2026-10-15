@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
@@ -16,6 +18,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/extensions"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers"
+	"github.com/v0-0x/kumobox-movies/server/internal/providers/mediaserver"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/stremio"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
@@ -36,6 +39,11 @@ func (s *Server) providerRoutes() {
 	m.HandleFunc("GET /api/providers", h(func(r *http.Request) (any, error) { return s.app.ProviderInfos(), nil }))
 	m.HandleFunc("GET /api/providers/streams", h(s.providerStreams))
 	m.HandleFunc("POST /api/providers/streams/refresh", h(s.refreshProviderStreams))
+	m.HandleFunc("GET /api/providers/streams/live", s.providerStreamsLive)
+	m.HandleFunc("POST /api/providers/streams/live", s.providerStreamsLive)
+	m.HandleFunc("GET /api/providers/health", h(func(r *http.Request) (any, error) { return s.app.ProviderHealth(), nil }))
+	m.HandleFunc("POST /api/providers/{id}/test", h(s.testProvider))
+	m.HandleFunc("POST /api/providers/mediaservers/test", h(s.testMediaServer))
 	m.HandleFunc("POST /api/providers/play", h(s.providerPlay))
 	m.HandleFunc("GET /api/providers/subtitles", h(s.providerSubtitles))
 	m.HandleFunc("POST /api/providers/download", h(s.providerDownload))
@@ -51,6 +59,7 @@ func (s *Server) providerRoutes() {
 	m.HandleFunc("POST /api/providers/stremio/refresh", h(thisComputer(s.refreshStremioAddons)))
 	m.HandleFunc("GET /api/providers/stremio/catalog", h(s.stremioCatalog))
 	m.HandleFunc("POST /api/providers/stremio/catalog/refresh", h(thisComputer(s.refreshStremioCatalog)))
+	m.HandleFunc("POST /api/providers/stremio/import", h(s.importStremioAccount))
 
 	m.HandleFunc("GET /api/providers/nuvio/repo", h(s.nuvioRepo))
 	m.HandleFunc("POST /api/providers/nuvio/repos", h(s.addNuvioRepo))
@@ -127,6 +136,181 @@ func (s *Server) streams(ctx context.Context, mediaID, episode int, provider str
 	return res, nil
 }
 
+// providerStreamsLive is GET /api/providers/streams/live (same query as
+// /api/providers/streams): the same search, written as the providers
+// answer, as NDJSON (one JSON object a line):
+//
+//	{"asking": [{provider, name, demoted}]}                 the providers asked
+//	{"provider", "name", "streams", "error", "ms"}          one per provider, as it answers
+//	{"done": true, "result": {...}}                         what /api/providers/streams answers
+//
+// The providers failing again and again are asked last ("demoted": their
+// streams come last). Answers kept from a moment ago come all at once
+// (with "cached": true). An error before the search started is answered as
+// usual (JSON, 4xx); one after it ends the lines with
+// {"done": true, "error"}.
+func (s *Server) providerStreamsLive(w http.ResponseWriter, r *http.Request) {
+	fail := func(err error) { h(func(*http.Request) (any, error) { return nil, err })(w, r) }
+	// GET reads (the providers' answers kept a few minutes do); asking the
+	// providers again is a POST {mediaId, episode, provider, refresh}, like
+	// /api/providers/streams/refresh, so another site can't have it done.
+	var body struct {
+		MediaID  int    `json:"mediaId"`
+		Episode  int    `json:"episode"`
+		Provider string `json:"provider"`
+		Refresh  bool   `json:"refresh"`
+	}
+	if r.Method == http.MethodPost {
+		if err := decode(r, &body); err != nil {
+			fail(err)
+			return
+		}
+	} else {
+		body.MediaID, body.Episode, body.Provider = queryInt(r, "mediaId"), queryInt(r, "episode"), r.URL.Query().Get("provider")
+	}
+	media, episode, err := s.providerMedia(r.Context(), body.MediaID, body.Episode)
+	if err != nil {
+		fail(err)
+		return
+	}
+	provider := body.Provider
+	if provider == "all" {
+		provider = ""
+	}
+	var mu sync.Mutex
+	started := false
+	enc := json.NewEncoder(w)
+	rc := http.NewResponseController(w)
+	line := func(v any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !started {
+			started = true
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.Header().Set("Cache-Control", "no-store")
+			// Proxies in front of KumoBox mustn't hold the lines back.
+			w.Header().Set("X-Accel-Buffering", "no")
+			w.WriteHeader(http.StatusOK)
+		}
+		_ = enc.Encode(v)
+		_ = rc.Flush()
+	}
+	res, err := s.app.Stream.StreamsLive(r.Context(), media, episode, provider, body.Refresh, &stream.Progress{
+		Asking: func(asked []stream.Asked) { line(map[string]any{"asking": asked}) },
+		Answer: func(a stream.Answer) { line(a) },
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		mu.Lock()
+		wrote := started
+		mu.Unlock()
+		if !wrote {
+			fail(providerError(err))
+			return
+		}
+		line(map[string]any{"done": true, "error": err.Error()})
+		return
+	}
+	if res.Streams == nil {
+		res.Streams = []stream.Stream{}
+	}
+	line(map[string]any{"done": true, "result": res})
+}
+
+// testTitle is what a provider's Test button looks for without a title
+// given: Night of the Living Dead (1968), in the public domain, which the
+// Internet Archive and many addons have.
+var testTitle = providers.Request{
+	MediaID: 10331, TMDBID: 10331, IMDbID: "tt0063350", Type: providers.TypeMovie,
+	Title: "Night of the Living Dead", Year: 1968,
+}
+
+// testProvider is POST /api/providers/{id}/test ({mediaId, episode}
+// optional): asks one enabled provider right away for a title (Night of the
+// Living Dead by default) and records how it went in its health:
+// {provider, name, title, streams, direct, error, ms, health}. Only on
+// this computer: the Providers settings are its own.
+func (s *Server) testProvider(r *http.Request) (any, error) {
+	if !isTrusted(r) {
+		return nil, forbidden("providers can only be tested on this computer")
+	}
+	var body struct {
+		MediaID int `json:"mediaId"`
+		Episode int `json:"episode"`
+	}
+	if r.ContentLength != 0 {
+		if err := decode(r, &body); err != nil {
+			return nil, err
+		}
+	}
+	id := r.PathValue("id")
+	var p providers.Provider
+	for _, x := range s.app.StreamProviders() {
+		if x.ID() == id {
+			p = x
+		}
+	}
+	if p == nil {
+		return nil, notFound(fmt.Sprintf("streaming provider %q is not installed or is disabled", id))
+	}
+	req, title := testTitle, "Night of the Living Dead (1968)"
+	if body.MediaID > 0 {
+		media, episode, err := s.providerMedia(r.Context(), body.MediaID, body.Episode)
+		if err != nil {
+			return nil, err
+		}
+		req, title = stream.RequestFor(media, episode), app.EpisodeTitle(media, episode)
+	}
+	if !p.Supports(req.Type) {
+		what := "movies"
+		if req.Type == providers.TypeTV {
+			what = "shows"
+		}
+		return nil, badRequest(fmt.Sprintf("%s has no %s: test it with a title it has (from its Watch online)", p.Name(), what))
+	}
+	a := s.app.Stream.Test(r.Context(), p, req)
+	direct := 0
+	for _, st := range a.Streams {
+		if st.Kind == stream.KindDirect {
+			direct++
+		}
+	}
+	return map[string]any{
+		"provider": a.Provider, "name": a.Name, "title": title, "streams": len(a.Streams), "direct": direct,
+		"error": a.Error, "ms": a.Ms, "health": s.app.Health.Get(id),
+	}, nil
+}
+
+// testMediaServer is POST /api/providers/mediaservers/test {kind, url,
+// token, userId}: connects to a Jellyfin, Emby or Plex server as Settings ›
+// Providers has it (saved or not) → {name, version, userId, userName,
+// libraries}. Only on this computer: it's sent the server's token. Without
+// a token, the saved server's at that address is used.
+func (s *Server) testMediaServer(r *http.Request) (any, error) {
+	if !isTrusted(r) {
+		return nil, forbidden("media servers can only be tested on this computer")
+	}
+	var body config.MediaServer
+	if err := decode(r, &body); err != nil {
+		return nil, err
+	}
+	c := mediaserver.Config{Kind: body.Kind, Name: body.Name, URL: strings.TrimSpace(body.URL), Token: strings.TrimSpace(body.Token), UserID: strings.TrimSpace(body.UserID)}
+	if c.Token == "" {
+		for _, saved := range s.app.Settings.Get().Providers.MediaServers {
+			if saved.Kind == c.Kind && strings.TrimRight(saved.URL, "/") == strings.TrimRight(c.URL, "/") {
+				c.Token = saved.Token
+			}
+		}
+	}
+	info, err := mediaserver.Check(r.Context(), c)
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	return info, nil
+}
+
 type providerPlayBody struct {
 	MediaID int `json:"mediaId"`
 	Episode int `json:"episode"`
@@ -193,7 +377,7 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 	// next asks the same provider for the next episode (app/playback.go).
 	t := s.app.PlayTitles(r.Context(), media.ID, episode, media.PreferredTitle())
 	if playerName == "mpv" {
-		headers, referrer := stream.SplitReferrer(st.Headers)
+		headers, referrer := stream.SplitReferrer(stream.WithCredentials(st.URL, st.Headers))
 		// mpv loads every subtitle file it's given when it starts: only a
 		// few, in the preferred languages.
 		subs := append(append([]providers.Subtitle(nil), st.Subtitles...), stream.SortSubtitles(addonSubs, cfg.Playback.PreferredSubLang, 4)...)
@@ -204,7 +388,7 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 		sess, err := s.app.Player.PlayMpv(player.PlayRequest{
 			MediaID: media.ID, Episode: episode, Title: t.Window, MediaTitle: t.Media, EpisodeTitle: t.Episode,
 			Source: "stream", Target: stream.CleanLink(st.URL), Headers: headers, Referrer: referrer, SubFiles: files, Start: body.Start,
-			Provider: st.Provider,
+			Provider: st.Provider, Quality: st.Quality, Release: stream.ReleaseName(st.Stream),
 		})
 		if err != nil {
 			return nil, err
@@ -245,13 +429,13 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 	}, nil
 }
 
-// pickStream finds the stream a play request is about.
+// pickStream finds the stream a play request is about. Without one picked,
+// the pick is automatic (stream.Service.BestFor): providers failing again
+// and again are left out, and for a show the version that played last
+// comes first.
 func (s *Server) pickStream(ctx context.Context, media *catalog.Media, episode int, body providerPlayBody) (stream.Stream, *stream.Result, error) {
 	if body.Refresh {
-		if _, err := s.app.Stream.Streams(ctx, media, episode, body.Provider, true); err != nil {
-			return stream.Stream{}, nil, err
-		}
-		return s.app.Stream.Best(ctx, media, episode, body.Provider)
+		return s.app.Stream.BestFor(ctx, media, episode, stream.Pick{Provider: body.Provider, Refresh: true})
 	}
 	if body.StreamID != "" {
 		st, res, err := s.app.Stream.Find(ctx, media, episode, body.StreamID)
@@ -269,7 +453,7 @@ func (s *Server) pickStream(ctx context.Context, media *catalog.Media, episode i
 		}
 		return stream.Wrap(st), nil, nil
 	}
-	return s.app.Stream.Best(ctx, media, episode, body.Provider)
+	return s.app.Stream.BestFor(ctx, media, episode, stream.Pick{Provider: body.Provider})
 }
 
 // playerSource is a direct link as the in-app player takes it: through the
@@ -296,7 +480,7 @@ func playerSource(st stream.Stream, addonSubs []providers.Subtitle, cfg config.S
 	}
 	src := map[string]any{
 		"id": st.ID, "url": stream.ProxyURL(st.URL, headers), "originalUrl": st.URL, "type": typ, "quality": st.Quality,
-		"label": firstLine(st.Title), "server": st.ProviderName, "provider": st.Provider, "subtitles": subs,
+		"label": firstLine(st.Title), "release": stream.ReleaseName(st.Stream), "server": st.ProviderName, "provider": st.Provider, "subtitles": subs,
 		"headers": headers, "referrer": referrer, "notWebReady": st.NotWebReady, "filename": st.Filename,
 	}
 	// What the player converts with ffmpeg when the browser can't play the
@@ -654,6 +838,34 @@ func (s *Server) collection(r *http.Request, u string, refresh bool) (any, error
 		list = []stremio.Addon{}
 	}
 	return map[string]any{"url": u, "catalogs": catalogs, "addons": list}, nil
+}
+
+// importStremioAccount is POST /api/providers/stremio/import {email,
+// password}: signs in to a Stremio account and installs the addons on it
+// KumoBox can use → {added, skipped: [{id, name, transportUrl, reason}]}.
+// Only on this computer. The password and the session's key are used for
+// the sign-in and the addon list, then forgotten: neither is saved nor
+// logged.
+func (s *Server) importStremioAccount(r *http.Request) (any, error) {
+	if !isTrusted(r) {
+		return nil, errLANManage
+	}
+	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := decode(r, &body); err != nil {
+		return nil, err
+	}
+	addons, err := stremio.AccountAddons(r.Context(), stremio.APIURL(), body.Email, body.Password)
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	res := s.app.Stremio.Import(r.Context(), addons)
+	if n := len(res.Added); n > 0 {
+		s.app.Hub.Success(fmt.Sprintf("Imported %d addon(s) from Stremio", n))
+	}
+	return res, nil
 }
 
 // ---------------------------------------------------------------------------

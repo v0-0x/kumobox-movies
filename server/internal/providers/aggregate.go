@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +19,26 @@ type ProviderError struct {
 
 func (e ProviderError) Error() string { return e.Name + ": " + e.Message }
 
+// ErrorText is err's message, the links it names cut down to their host:
+// addon links often carry the user's addon settings or keys in their path
+// or query, and errors are shown (to devices on the LAN too) and kept (see
+// Health).
+func ErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.URL != "" {
+		short := "a link"
+		if u, perr := url.Parse(ue.URL); perr == nil && u.Host != "" {
+			short = u.Scheme + "://" + u.Host + "/…"
+		}
+		msg = strings.ReplaceAll(msg, ue.URL, short)
+	}
+	return msg
+}
+
 // Aggregate asks every provider that supports r.Type for streams, all at
 // once, giving each one at most timeout (no limit when 0). It returns the
 // streams in provider order (each provider's own order kept, duplicates
@@ -25,54 +47,85 @@ func (e ProviderError) Error() string { return e.Name + ": " + e.Message }
 // failed or didn't answer in time. A provider that ignores its context
 // doesn't hold the others up: its late answer is dropped.
 func Aggregate(ctx context.Context, ps []Provider, r Request, timeout time.Duration) ([]Stream, []ProviderError) {
-	type result struct {
-		streams []Stream
-		err     error
-		ran     bool
-	}
-	results := make([]result, len(ps))
+	return AggregateEach(ctx, ps, r, timeout, nil)
+}
+
+// Answer is what one provider answered Aggregate.
+type Answer struct {
+	Provider Provider
+	// Streams are the provider's playable streams, cleaned up as Aggregate
+	// returns them (but not yet told apart from the other providers').
+	Streams []Stream
+	Err     error
+	// Took is how long the provider took to answer (or to fail).
+	Took time.Duration
+}
+
+// AggregateEach is Aggregate, calling each (when not nil) with every
+// provider's answer as soon as it comes in: the UI shows the streams found
+// so far, and the providers' health is recorded. each is called once at a
+// time, and never after AggregateEach returned.
+func AggregateEach(ctx context.Context, ps []Provider, r Request, timeout time.Duration, each func(Answer)) ([]Stream, []ProviderError) {
+	results := make([]*Answer, len(ps))
 	var wg sync.WaitGroup
+	var mu sync.Mutex
 	for i, p := range ps {
 		if p == nil || !p.Supports(r.Type) {
 			continue
 		}
-		results[i].ran = true
 		wg.Add(1)
 		go func(i int, p Provider) {
 			defer wg.Done()
+			start := time.Now()
 			streams, err := callWithTimeout(ctx, timeout, func(ctx context.Context) ([]Stream, error) {
 				return p.Streams(ctx, r)
 			})
-			results[i].streams, results[i].err = streams, err
+			a := &Answer{Provider: p, Err: err, Took: time.Since(start)}
+			if err == nil {
+				a.Streams = clean(p, streams)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			results[i] = a
+			if each != nil {
+				each(*a)
+			}
 		}(i, p)
 	}
 	wg.Wait()
 
 	var out []Stream
 	var errs []ProviderError
-	for i, res := range results {
-		if !res.ran {
+	for _, a := range results {
+		if a == nil {
 			continue
 		}
-		p := ps[i]
-		if res.err != nil {
-			errs = append(errs, ProviderError{Provider: p.ID(), Name: p.Name(), Message: res.err.Error()})
+		if a.Err != nil {
+			errs = append(errs, ProviderError{Provider: a.Provider.ID(), Name: a.Provider.Name(), Message: ErrorText(a.Err)})
 			continue
 		}
-		for _, s := range res.streams {
-			if !Playable(s) {
-				continue
-			}
-			if s.Provider == "" {
-				s.Provider = p.ID()
-			}
-			if s.ProviderName == "" {
-				s.ProviderName = p.Name()
-			}
-			out = append(out, normalize(s))
-		}
+		out = append(out, a.Streams...)
 	}
 	return Dedupe(out), errs
+}
+
+// clean keeps the streams of p that have something to play, with their
+// provider and the fields every consumer expects filled in.
+func clean(p Provider, streams []Stream) []Stream {
+	out := make([]Stream, 0, len(streams))
+	for _, s := range streams {
+		if !Playable(s) {
+			continue
+		}
+		if s.Provider == "" {
+			s.Provider = p.ID()
+		}
+		if s.ProviderName == "" {
+			s.ProviderName = p.Name()
+		}
+		out = append(out, normalize(s))
+	}
+	return out
 }
 
 // AggregateSubtitles asks every subtitle provider at once, like Aggregate.
@@ -121,7 +174,7 @@ func aggregateSubtitles(ctx context.Context, ps []SubtitleProvider, timeout time
 	for i, res := range results {
 		if res.err != nil {
 			id, name := describeAny(ps[i])
-			errs = append(errs, ProviderError{Provider: id, Name: name, Message: res.err.Error()})
+			errs = append(errs, ProviderError{Provider: id, Name: name, Message: ErrorText(res.err)})
 			continue
 		}
 		for _, s := range res.subs {

@@ -26,6 +26,7 @@ import type {
     MediaPage,
     NuvioRepo,
     PluginState,
+    ProviderHealth,
     ProviderInfo,
     RawCollection,
     ScheduleItem,
@@ -34,7 +35,6 @@ import type {
     SharedLibrary,
     SharingStatus,
     Status,
-    StreamsResult,
     StremioAddon,
     Torrent,
     TorrentProviderInfo,
@@ -372,18 +372,12 @@ export function useProviders() {
     return useQuery({ queryKey: ["providers"], queryFn: () => api.get<ProviderInfo[]>("/api/providers"), staleTime: 5 * 60_000 })
 }
 
-// The streams of a movie (episode 1) or of a show's episode (a key), best
-// first, from every enabled provider ("" ) or one. The server keeps them a
-// few minutes; links expire, so they aren't kept longer here either.
-export function useProviderStreams(mediaId: number, episode: number, provider = "", enabled = true) {
-    return useQuery({
-        queryKey: ["provider-streams", mediaId, episode, provider],
-        queryFn: () => api.get<StreamsResult>(`/api/providers/streams${qs({ mediaId, episode, provider })}`),
-        enabled: enabled && mediaId > 0 && episode > 0,
-        retry: false,
-        staleTime: 4 * 60_000,
-        gcTime: 5 * 60_000,
-    })
+// The streams of a movie or episode: see useLiveStreams (lib/liveStreams),
+// which shows them as the providers find them.
+
+// How each streaming provider's searches went (Settings › Providers).
+export function useProviderHealth(enabled = true) {
+    return useQuery({ queryKey: ["provider-health"], queryFn: () => api.get<ProviderHealth[]>("/api/providers/health"), enabled, refetchInterval: 60_000 })
 }
 
 export function useStremioAddons() {
@@ -415,6 +409,7 @@ export function useNuvioRepo(url: string, enabled = true) {
 export function invalidateProviders(qc: QueryClient) {
     qc.invalidateQueries({ queryKey: ["providers"] })
     qc.invalidateQueries({ queryKey: ["provider-streams"] })
+    qc.invalidateQueries({ queryKey: ["provider-health"] })
     qc.invalidateQueries({ queryKey: ["stremio-addons"] })
     qc.invalidateQueries({ queryKey: ["stremio-catalog"] })
     qc.invalidateQueries({ queryKey: ["nuvio-repo"] })

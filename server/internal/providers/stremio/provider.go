@@ -55,7 +55,9 @@ func (p *AddonProvider) Streams(ctx context.Context, r providers.Request) ([]pro
 	}
 	id, err := p.addon.Manifest.VideoID(ResourceStream, r)
 	if err != nil {
-		return nil, err
+		// The addon can't be asked about this title: not a failure of the
+		// addon (its health stays as it is).
+		return nil, providers.Skip(err)
 	}
 	return p.client.Streams(ctx, p.addon, Type(r.Type), id)
 }

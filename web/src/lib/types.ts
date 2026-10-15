@@ -468,7 +468,15 @@ export type ProviderSettings = {
     nuvioRepos: string[]
     preferredQuality: string // 2160p, 1080p, 720p, 480p or "" (best first)
     timeoutSeconds: number
+    // The user's own Jellyfin, Emby and Plex servers (tokens are blank on
+    // devices of the network).
+    mediaServers?: MediaServer[]
 }
+
+export type MediaServerKind = "jellyfin" | "emby" | "plex"
+export type MediaServer = { kind: MediaServerKind; name: string; url: string; token: string; userId?: string }
+// POST /api/providers/mediaservers/test
+export type MediaServerInfo = { name: string; version: string; userId?: string; userName?: string; libraries?: number }
 
 export type TorznabIndexer = { name: string; url: string; apiKey: string; enabled: boolean }
 export type TorrentSource = { enabled: boolean; url: string }
@@ -583,6 +591,9 @@ export type StreamSource = {
     type: string
     quality: string
     label?: string
+    // The release (or file) name: with the provider and quality, the
+    // version the next episodes are looked for in.
+    release?: string
     // server: the provider's name.
     server: string
     provider?: string
@@ -606,7 +617,7 @@ export type StreamSubtitle = { url: string; language: string; label?: string; is
 // ---------------------------------------------------------------------------
 // Streaming providers (server/internal/providers, docs/PROVIDERS.md)
 
-export type ProviderKind = "builtin" | "stremio" | "nuvio" | "extension"
+export type ProviderKind = "mediaserver" | "builtin" | "stremio" | "nuvio" | "extension"
 
 // GET /api/providers: every provider, in the order they're asked. Ids are
 // "archive", "stremio:<addon id>", "nuvio:<id>" and "ext:<extension id>".
@@ -645,9 +656,38 @@ export type ProviderStream = {
     notWebReady?: boolean
     filename?: string
     seeders?: number
+    // The streams most like the version of the show that played last.
+    preferred?: boolean
 }
 
 export type ProviderError = { provider: string; name: string; error: string }
+
+// The provider and version of a show that played last (its next episodes
+// are looked for in it first).
+export type StreamVersion = { provider: string; quality?: string; source?: string; group?: string; dub?: boolean }
+
+// GET /api/providers/streams/live, one JSON object a line: the providers
+// asked, each one's answer as it comes, then the whole result.
+export type LiveAsked = { provider: string; name: string; demoted?: boolean }
+export type LiveAnswer = { provider: string; name: string; streams: ProviderStream[]; error?: string; ms: number; cached?: boolean }
+export type LiveLine = { asking: LiveAsked[] } | LiveAnswer | { done: true; result?: StreamsResult; error?: string }
+
+// GET /api/providers/health: how each provider's searches went.
+export type ProviderHealth = ProviderInfo & {
+    successes: number
+    failures: number
+    consecutiveFailures: number
+    lastError?: string
+    lastErrorAt?: number
+    lastSuccessAt?: number
+    latencies?: number[]
+    avgMs: number
+    // After 3 failures in a row: listed last, left out of automatic picks.
+    demoted: boolean
+}
+
+// POST /api/providers/{id}/test
+export type ProviderTestResult = { provider: string; name: string; title: string; streams: number; direct: number; error?: string; ms: number }
 
 // The title an extension provider matched (it searches by title).
 export type ProviderMatch = { provider: string; name: string; id: string; title: string; score: number; manual: boolean }
@@ -661,6 +701,7 @@ export type StreamsResult = {
     subtitles: ProviderSubtitle[]
     providers: string[]
     matches?: ProviderMatch[]
+    preferred?: StreamVersion
     fetchedAt: number
 }
 
@@ -670,6 +711,11 @@ export type PlayResult =
     | { action: "mpv"; provider: string }
     | { action: "torrent"; savePath: string }
     | { action: "external"; url: string }
+
+// POST /api/providers/stremio/import: a Stremio account's addons, those
+// installed and those left out (with why).
+export type StremioImported = { id: string; name: string; transportUrl: string; reason?: string }
+export type StremioImportResult = { added: StremioImported[]; skipped: StremioImported[] }
 
 export type StremioManifest = {
     id: string

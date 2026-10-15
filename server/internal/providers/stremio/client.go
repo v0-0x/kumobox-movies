@@ -347,6 +347,13 @@ func (c *Client) FetchCollection(ctx context.Context, rawURL string) ([]Addon, e
 		}
 		entries = wrapped.Addons
 	}
+	return parseCollection(entries), nil
+}
+
+// parseCollection reads the entries of an addon collection
+// ({transportUrl, transportName, manifest, flags}), skipping those that
+// make no sense and the second of two at the same address.
+func parseCollection(entries []json.RawMessage) []Addon {
 	out := make([]Addon, 0, len(entries))
 	seen := map[string]bool{}
 	for _, e := range entries {
@@ -373,7 +380,7 @@ func (c *Client) FetchCollection(ctx context.Context, rawURL string) ([]Addon, e
 			Local: IsLocalURL(transport), Supported: m.Useful(), raw: entry.Manifest,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // FetchCollection downloads an addon collection with DefaultClient.

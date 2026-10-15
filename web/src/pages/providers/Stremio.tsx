@@ -1,19 +1,29 @@
 import { useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, ArrowDown, ArrowUp, CheckCircle2, Download, ExternalLink, Link2, RefreshCw, Search, Settings2, ShieldAlert, Trash2 } from "lucide-react"
+import { AlertTriangle, ArrowDown, ArrowUp, CheckCircle2, Download, ExternalLink, Link2, RefreshCw, Search, Settings2, ShieldAlert, Trash2, UserRound } from "lucide-react"
 import { useMemo, useState } from "react"
 import { Badge, Button, Dialog, EmptyState, IconButton, Input, Select, Switch } from "@/components/ui"
 import { api, ApiError } from "@/lib/api"
 import { openExternal } from "@/lib/play"
 import { invalidateProviders, useStatus, useStremioAddons, useStremioCatalog } from "@/lib/queries"
 import { toast } from "@/lib/toast"
-import type { StremioAddon, StremioManifest } from "@/lib/types"
+import type { StremioAddon, StremioImportResult, StremioManifest } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { ExtIcon, LanNote, TabSection, TypeBadges } from "./parts"
 
 // The resources of an addon KumoBox uses.
 function serves(m: StremioManifest) {
-    const names = (m.resources ?? []).map(r => (typeof r === "string" ? r : r.name))
+    const names = resourceNames(m)
     return { streams: names.includes("stream"), subtitles: names.includes("subtitles") }
+}
+
+// Every resource an addon serves (catalog, meta, stream, subtitles…).
+const resourceNames = (m: StremioManifest) => [...new Set((m.resources ?? []).map(r => (typeof r === "string" ? r : r.name)).filter(Boolean))]
+
+// The resources KumoBox doesn't use, said quietly next to the ones it does.
+function OtherResources({ m }: { m: StremioManifest }) {
+    const other = resourceNames(m).filter(r => r !== "stream" && r !== "subtitles")
+    if (!other.length) return null
+    return <span className="text-[11px] text-subtle">also {other.join(", ")}</span>
 }
 
 const baseUrl = (a: StremioAddon) => a.transportUrl.replace(/\/manifest\.json$/, "")
@@ -73,6 +83,7 @@ export function StremioTab() {
                     <p className="text-xs text-subtle">The manifest URL, the addon's address or a stremio:// link. Addons configured on their own page keep their settings in the URL they give you.</p>
                 </div>
             )}
+            {!lan && <ImportAccount />}
             <Installed lan={lan} />
             <Browse lan={lan} install={install} busy={busy} />
             {pending && (
@@ -82,6 +93,85 @@ export function StremioTab() {
                     onConfirm={p => install(p.url, p).then(a => a && p.url === url.trim() && setUrl(""))}
                     busy={busy === pending.url}
                 />
+            )}
+        </div>
+    )
+}
+
+// Importing the addons of a Stremio account: KumoBox signs in once, installs
+// those it can use and says why it left the others out. The password isn't
+// kept (here or on the server).
+function ImportAccount() {
+    const qc = useQueryClient()
+    const [open, setOpen] = useState(false)
+    const [email, setEmail] = useState("")
+    const [password, setPassword] = useState("")
+    const [busy, setBusy] = useState(false)
+    const [result, setResult] = useState<StremioImportResult | null>(null)
+    const go = async () => {
+        setBusy(true)
+        try {
+            const res = await api.post<StremioImportResult>("/api/providers/stremio/import", { email: email.trim(), password })
+            setResult(res)
+            setPassword("")
+            invalidateProviders(qc)
+            if (!res.added.length) toast.info("Nothing new to install from this account")
+        } catch (e: any) {
+            toast.error(e.message)
+        } finally {
+            setBusy(false)
+        }
+    }
+    if (!open)
+        return (
+            <div className="card flex items-center justify-between gap-4 p-4">
+                <div>
+                    <p className="text-sm font-medium">Import from your Stremio account</p>
+                    <p className="text-xs text-subtle">Install the addons you use in Stremio. KumoBox signs in once and doesn't keep your password.</p>
+                </div>
+                <Button size="sm" icon={<UserRound className="size-4" />} onClick={() => setOpen(true)}>
+                    Import
+                </Button>
+            </div>
+        )
+    return (
+        <div className="card flex flex-col gap-3 p-4">
+            <p className="text-sm font-medium">Import from your Stremio account</p>
+            <form
+                className="flex flex-wrap gap-2"
+                onSubmit={e => {
+                    e.preventDefault()
+                    if (email.trim() && password) go()
+                }}
+            >
+                <Input className="min-w-56 flex-1" type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" />
+                <Input className="min-w-56 flex-1" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" />
+                <Button type="submit" variant="primary" loading={busy} disabled={!email.trim() || !password}>
+                    Import addons
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => (setOpen(false), setResult(null), setPassword(""))}>
+                    Close
+                </Button>
+            </form>
+            <p className="text-xs text-subtle">
+                Addons serving streams or subtitles are installed. Those running on your computer or network, adult ones and those to configure are left out: install them by their URL to confirm. Your password is only sent to Stremio.
+            </p>
+            {result && (
+                <div className="flex flex-col gap-2 text-[13px]">
+                    {result.added.length > 0 && (
+                        <p className="flex flex-wrap items-center gap-1.5">
+                            <CheckCircle2 className="size-4 text-emerald-300" /> Installed: {result.added.map(a => a.name).join(", ")}
+                        </p>
+                    )}
+                    {result.skipped.map(a => (
+                        <p key={a.transportUrl} className="flex items-start gap-1.5 text-muted">
+                            <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-300" />
+                            <span>
+                                <span className="font-medium text-fg/85">{a.name}</span>: {a.reason}
+                            </span>
+                        </p>
+                    ))}
+                </div>
             )}
         </div>
     )
@@ -217,6 +307,7 @@ function Installed({ lan }: { lan: boolean }) {
                                         {a.local && <Badge tone="amber">On your network</Badge>}
                                         {m.behaviorHints?.adult && <Badge tone="red">Adult</Badge>}
                                         {!a.supported && <Badge tone="amber">Not supported</Badge>}
+                                        <OtherResources m={m} />
                                     </div>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
@@ -260,13 +351,15 @@ function Installed({ lan }: { lan: boolean }) {
 
 // ---------------------------------------------------------------------------
 
+// The addons of the collections of Settings › Providers: search them, see
+// what each serves, install or uninstall one, open its configuration page.
 function Browse({ lan, install, busy }: { lan: boolean; install: (url: string, opts?: { name?: string }) => Promise<StremioAddon | undefined>; busy: string }) {
     const { data: status } = useStatus()
+    const qc = useQueryClient()
     const catalogs = status?.settings.providers?.stremioCatalogs ?? []
     const [url, setUrl] = useState("")
     const effective = url || catalogs[0] || ""
     const { data, isLoading, error, refetch, isFetching } = useStremioCatalog(effective)
-    const qc = useQueryClient()
     const [reloading, setReloading] = useState(false)
     // Downloaded again on this computer; devices on the LAN read it as it
     // was last downloaded.
@@ -283,15 +376,31 @@ function Browse({ lan, install, busy }: { lan: boolean; install: (url: string, o
     }
     const [q, setQ] = useState("")
     const [all, setAll] = useState(false)
+    const [removing, setRemoving] = useState("")
     const addons = useMemo(() => {
         let list = data?.addons ?? []
         if (!all) list = list.filter(a => a.supported && serves(a.manifest).streams)
         if (q.trim()) {
             const s = q.toLowerCase()
-            list = list.filter(a => a.manifest.name.toLowerCase().includes(s) || a.manifest.description?.toLowerCase().includes(s))
+            list = list.filter(a => a.manifest.name.toLowerCase().includes(s) || a.manifest.description?.toLowerCase().includes(s) || a.manifest.id.toLowerCase().includes(s))
         }
         return list
     }, [data, q, all])
+    // Removed by its manifest id: the installed copy may be another
+    // configuration of the addon listed.
+    const uninstall = async (a: StremioAddon) => {
+        if (!confirm(`Uninstall ${a.manifest.name}?`)) return
+        setRemoving(a.transportUrl)
+        try {
+            await api.del(`/api/providers/stremio/addons?key=${encodeURIComponent("stremio:" + a.manifest.id)}`)
+            toast.success(`Uninstalled ${a.manifest.name}`)
+            invalidateProviders(qc)
+        } catch (e: any) {
+            toast.error(e.message)
+        } finally {
+            setRemoving("")
+        }
+    }
     return (
         <TabSection
             title="Browse"
@@ -344,12 +453,20 @@ function Browse({ lan, install, busy }: { lan: boolean; install: (url: string, o
                                 {m.behaviorHints?.configurationRequired && <Badge tone="amber">Needs configuring</Badge>}
                                 {m.behaviorHints?.adult && <Badge tone="red">Adult</Badge>}
                                 {!a.supported && <Badge tone="amber">Not supported</Badge>}
+                                <OtherResources m={m} />
                             </div>
                             <div className="mt-auto flex items-center gap-2 pt-1">
                                 {a.installed ? (
-                                    <Badge tone="green">
-                                        <CheckCircle2 className="size-3" /> Installed
-                                    </Badge>
+                                    <>
+                                        <Badge tone="green">
+                                            <CheckCircle2 className="size-3" /> Installed
+                                        </Badge>
+                                        {!lan && (
+                                            <Button size="sm" variant="ghost" icon={<Trash2 className="size-4" />} loading={removing === a.transportUrl} onClick={() => uninstall(a)}>
+                                                Uninstall
+                                            </Button>
+                                        )}
+                                    </>
                                 ) : (
                                     !lan &&
                                     a.supported && (

@@ -108,6 +108,7 @@ func TestGetReturnsCopies(t *testing.T) {
 	cur := s.Get()
 	cur.TorrentSources.Torznab = []TorznabIndexer{{Name: "Prowlarr", APIKey: "secret"}}
 	cur.Providers.NuvioRepos = []string{"https://example.com/manifest.json"}
+	cur.Providers.MediaServers = []MediaServer{{Kind: MediaServerJellyfin, URL: "http://nas:8096", Token: "secret"}}
 	if _, err := s.Save(cur); err != nil {
 		t.Fatal(err)
 	}
@@ -116,11 +117,33 @@ func TestGetReturnsCopies(t *testing.T) {
 	c.UI.HomeSections[0] = "changed"
 	c.Providers.StremioCatalogs[0] = "changed"
 	c.Providers.NuvioRepos[0] = "changed"
+	c.Providers.MediaServers[0].Token = "changed"
 	c.TorrentSources.Torznab[0].APIKey = "changed"
 	got := s.Get()
 	if got.Library.IgnorePatterns[0] == "changed" || got.UI.HomeSections[0] == "changed" || got.Providers.StremioCatalogs[0] == "changed" ||
-		got.Providers.NuvioRepos[0] == "changed" || got.TorrentSources.Torznab[0].APIKey == "changed" {
+		got.Providers.NuvioRepos[0] == "changed" || got.Providers.MediaServers[0].Token == "changed" || got.TorrentSources.Torznab[0].APIKey == "changed" {
 		t.Fatal("a copy shares its slices with the live settings")
+	}
+}
+
+// Media servers are trimmed; those of an unknown kind or without an
+// address are dropped.
+func TestSanitizeMediaServers(t *testing.T) {
+	got := sanitizeMediaServers([]MediaServer{
+		{Kind: " Jellyfin ", Name: " Den ", URL: " http://nas:8096/ ", Token: " key ", UserID: " u1 "},
+		{Kind: "plex", URL: "https://plex.example:32400"},
+		{Kind: "kodi", URL: "http://kodi:8080"},
+		{Kind: "emby", URL: "  "},
+	})
+	want := []MediaServer{
+		{Kind: MediaServerJellyfin, Name: "Den", URL: "http://nas:8096", Token: "key", UserID: "u1"},
+		{Kind: MediaServerPlex, URL: "https://plex.example:32400"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %+v", got)
+	}
+	if got := sanitizeMediaServers(nil); got == nil || len(got) != 0 {
+		t.Fatalf("nil: %#v", got)
 	}
 }
 
