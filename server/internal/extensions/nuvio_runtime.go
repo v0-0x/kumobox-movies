@@ -54,18 +54,19 @@ func compileNuvio(man *Manifest, code string) (*goja.Program, error) {
 
 // startNuvio starts a Nuvio provider's runtime (Manager.start calls it for
 // TypeNuvioProvider extensions).
-func (m *Manager) startNuvio(ctx context.Context, man *Manifest, payload string) (*Runtime, error) {
+func (m *Manager) startNuvio(ctx context.Context, man *Manifest, payload string, onTooMuchMemory func(*Runtime)) (*Runtime, error) {
 	prog, err := compileNuvio(man, payload)
 	if err != nil {
 		return nil, err
 	}
 	return NewRuntime(man, prog, RuntimeOptions{
-		Context:     ctx,
-		LoadTimeout: m.loadTimeout,
-		Store:       m.store(man.ID),
-		Storage:     NewStorage(m.db, man.ID),
-		Fetcher:     m.fetcher.Isolated(), // own cookie jar, not shared across extensions
-		Extra:       installNuvio,
+		Context:         ctx,
+		LoadTimeout:     m.loadTimeout,
+		Store:           m.store(man.ID),
+		Storage:         NewStorage(m.db, man.ID),
+		Fetcher:         m.fetcher.Isolated(), // own cookie jar, not shared across extensions
+		Extra:           installNuvio,
+		OnTooMuchMemory: onTooMuchMemory,
 	})
 }
 
@@ -235,6 +236,13 @@ func installNuvioCrypto(vm *goja.Runtime) {
 // episode) and returns its result as JSON.
 func (r *Runtime) callNuvio(ctx context.Context, tmdbID, mediaType string, season, episode int) (json.RawMessage, error) {
 	defer r.use()()
+	release, err := acquireVM(ctx) // its turn (memory.go)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	watch := r.watchMemory()
+	defer watch.stop()
 	type result struct {
 		raw json.RawMessage
 		err error
@@ -271,15 +279,18 @@ func (r *Runtime) callNuvio(ctx context.Context, tmdbID, mediaType string, seaso
 	defer timeout.Stop()
 	select {
 	case res := <-ch:
-		if res.err != nil {
-			r.log("error", "getStreams: "+res.err.Error())
+		if err := r.callError(res.err); err != nil {
+			r.log("error", "getStreams: "+err.Error())
+			return nil, err
 		}
-		return res.raw, res.err
+		return res.raw, nil
 	case <-ctx.Done():
 		r.unstick()
 		return nil, ctx.Err()
 	case <-r.ctx.Done():
-		return nil, errStopped
+		return nil, r.callError(errStopped)
+	case <-watch.tripped:
+		return nil, ErrTooMuchMemory
 	case <-timeout.C:
 		r.unstick()
 		return nil, errors.New("getStreams() timed out")

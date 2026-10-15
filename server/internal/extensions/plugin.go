@@ -242,13 +242,14 @@ func (m *Manager) launchPlugin(ctx context.Context, l *Loaded) {
 		storage = NewStorage(m.db, man.ID)
 	}
 	rt, err = NewRuntime(man, prog, RuntimeOptions{
-		Context:     ctx,
-		LoadTimeout: m.loadTimeout,
-		Prefs:       prefs,
-		Store:       m.store(man.ID),
-		Storage:     storage,
-		Fetcher:     m.fetcher.Isolated().WithDomains(domains), // own cookie jar, not shared across plugins
-		Extra:       h.install,
+		Context:         ctx,
+		LoadTimeout:     m.loadTimeout,
+		Prefs:           prefs,
+		Store:           m.store(man.ID),
+		Storage:         storage,
+		Fetcher:         m.fetcher.Isolated().WithDomains(domains), // own cookie jar, not shared across plugins
+		Extra:           h.install,
+		OnTooMuchMemory: func(rt *Runtime) { m.pluginUsedTooMuchMemory(l, rt) },
 	})
 	if err != nil {
 		fail(err) // rt is nil: NewRuntime closed it
@@ -271,8 +272,22 @@ func (m *Manager) launchPlugin(ctx context.Context, l *Loaded) {
 	m.hub.Publish(events.ExtensionsUpdate, nil)
 }
 
+// pluginUsedTooMuchMemory stops a plugin whose runtime the memory watchdog
+// stopped (memory.go): it stays off until it's turned on again (or KumoBox
+// starts again), its card saying why.
+func (m *Manager) pluginUsedTooMuchMemory(l *Loaded, rt *Runtime) {
+	m.stopPlugin(l.Manifest.ID)
+	l.mu.Lock()
+	l.err = errPluginMemory.Error()
+	l.lastLogs = rt.Logs()
+	l.mu.Unlock()
+	m.hub.Publish(events.ExtensionsUpdate, nil)
+}
+
 // init runs the plugin's init() and renders its UI.
 func (h *PluginHost) init(ctx context.Context, timeout time.Duration) error {
+	watch := h.rt.watchMemory()
+	defer watch.stop()
 	done := make(chan error, 1)
 	ok := h.rt.RunOnLoop(func(vm *goja.Runtime) {
 		defer func() {
@@ -296,12 +311,20 @@ func (h *PluginHost) init(ctx context.Context, timeout time.Duration) error {
 	defer t.Stop()
 	select {
 	case err := <-done:
+		if err != nil && h.rt.memoryStopped.Load() {
+			return errPluginMemory
+		}
 		return err
 	case <-t.C:
 		return errors.New("plugin took too long to start")
 	case <-ctx.Done():
 		return errStopped
+	case <-watch.tripped:
+		return errPluginMemory
 	case <-h.rt.ctx.Done():
+		if h.rt.memoryStopped.Load() {
+			return errPluginMemory
+		}
 		return errStopped
 	}
 }
@@ -356,9 +379,13 @@ func (m *Manager) FireHook(name string, data any) {
 	}
 }
 
+// dispatch and fireHook run the plugin's handlers under the memory
+// watchdog (memory.go), as calls into providers do.
 func (h *PluginHost) dispatch(evt map[string]any) {
 	raw, _ := json.Marshal(evt)
 	h.rt.RunOnLoop(func(vm *goja.Runtime) {
+		watch := h.rt.watchMemory()
+		defer watch.stop()
 		if _, err := h.runEvent(goja.Undefined(), vm.ToValue(string(raw))); err != nil {
 			h.rt.log("error", "event: "+jsError(err).Error())
 		}
@@ -367,6 +394,8 @@ func (h *PluginHost) dispatch(evt map[string]any) {
 
 func (h *PluginHost) fireHook(name string, raw []byte) {
 	h.rt.RunOnLoop(func(vm *goja.Runtime) {
+		watch := h.rt.watchMemory()
+		defer watch.stop()
 		if _, err := h.runHook(goja.Undefined(), vm.ToValue(name), vm.ToValue(string(raw))); err != nil {
 			h.rt.log("error", name+": "+jsError(err).Error())
 		}

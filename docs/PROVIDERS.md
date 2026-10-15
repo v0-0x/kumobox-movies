@@ -243,6 +243,16 @@ Differences with the Nuvio app:
   30 seconds. So a development server on the LAN (`npm start` in the
   nuvio-providers repository) can't be used: publish the repository
   somewhere public (a GitHub repository, a gist...) to test it.
+* Memory is bounded, for every extension (`server/internal/extensions/memory.go`):
+  `fetch` reads answers up to 8 MB (HTML, JSON, JavaScript, XML, text;
+  16 MB for other types) and rejects larger ones; at most 8 providers run
+  at once (the others wait their turn, within their timeout); a call during
+  which KumoBox's memory grows by more than half its soft limit (128 MB by
+  default, see `KUMOBOX_MEMORY_LIMIT_MB`) is stopped with "the provider
+  used too much memory and was stopped", and the provider starts afresh on
+  its next call. `String.prototype.repeat`/`padStart`/`padEnd` refuse
+  results over 32 M characters (a `RangeError`, as V8 does past its own
+  limit).
 * `console.log`/`error` go to the provider's logs (Extensions › the
   provider › Logs).
 * Do no network work at the top level of the file: only in `getStreams`.

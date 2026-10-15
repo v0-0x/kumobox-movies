@@ -55,7 +55,7 @@ See [docs/PROVIDERS.md](docs/PROVIDERS.md) for the formats and how to write a pr
 - **Auto downloader** for shows: rules per show (resolution, release groups, keywords, minimum seeders, season packs) grab new episodes as they air.
 
 **Extensions & plugins**
-- Runs online-streaming, torrent and Nuvio providers in a sandboxed JavaScript runtime with the APIs extensions use (`fetch`, `LoadDoc`/cheerio, `CryptoJS`, `$store`, `$storage`, user config…), and **UI plugins** (trays, title-page buttons, webviews, toasts, storage). Plugins never get file, command or local-network access.
+- Runs online-streaming, torrent and Nuvio providers in a sandboxed JavaScript runtime with the APIs extensions use (`fetch`, `LoadDoc`/cheerio, `CryptoJS`, `$store`, `$storage`, user config…), and **UI plugins** (trays, title-page buttons, webviews, toasts, storage). Plugins never get file, command or local-network access, and an extension that uses too much memory is stopped (see [docs/PROVIDERS.md](docs/PROVIDERS.md)).
 
 **Extras**: can keep running in the tray (or the Dock) when its window is closed, so streaming to other devices and downloads go on, and start in the background when you log in (Settings › App › Desktop app); updates itself from the Home page, Discord rich presence (local IPC), accent colours, spoiler blur, Ctrl+K quick search, server logs and cache viewer.
 
@@ -125,7 +125,7 @@ cd web && npm run dev                # UI dev server on :43100 (proxies /api)
 cd desktop && npm i && npx electron .   # desktop window (uses ../dist/kumobox)
 ```
 
-`KUMOBOX_DATA_DIR` moves the data folder; `KUMOBOX_TMDB_URL` / `KUMOBOX_TMDB_IMAGE_URL` point the catalog at another TMDB-compatible host, and `KUMOBOX_LETTERBOXD_URL` / `KUMOBOX_LETTERBOXD_API_URL` the Letterboxd sync at another host serving the diary feeds (`<url>/<username>/rss/`) and the API (tests, offline demos). `KUMOBOX_MEMORY_LIMIT_MB` changes the server's soft memory limit (256 MB; `0` turns it off, `GOMEMLIMIT` wins when set).
+`KUMOBOX_DATA_DIR` moves the data folder; `KUMOBOX_TMDB_URL` / `KUMOBOX_TMDB_IMAGE_URL` point the catalog at another TMDB-compatible host, and `KUMOBOX_LETTERBOXD_URL` / `KUMOBOX_LETTERBOXD_API_URL` the Letterboxd sync at another host serving the diary feeds (`<url>/<username>/rss/`) and the API (tests, offline demos). `KUMOBOX_MEMORY_LIMIT_MB` changes the server's soft memory limit (256 MB; `0` turns it off, `GOMEMLIMIT` wins when set); an extension call that grows the heap by more than half of it is stopped.
 
 | Path | What |
 |---|---|
