@@ -29,6 +29,13 @@ show as each provider answers (`GET /api/providers/streams/live`), with a
 spinner for the providers still looking and each one's error; once all
 have answered, the list is the ranked one above.
 
+Above them, **Watch free** lists the services where the title is free,
+with or without ads, and **On streaming services** those that have it with
+a subscription, in the region of Settings › Metadata (TMDB's "where to
+watch", data from JustWatch: the `free`, `ads` and `flatrate` tiers of
+`Media.watchProviders`). Their logos open TMDB's watch page for the title
+in the browser. They show even without any provider enabled.
+
 ### Health
 
 KumoBox keeps how each provider's searches went (in the database, so it

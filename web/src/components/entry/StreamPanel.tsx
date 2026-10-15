@@ -32,6 +32,7 @@ import { useProviders, useSeason, useStatus } from "@/lib/queries"
 import type { EntryView, ProviderError, ProviderInfo, ProviderStream, Season, StreamsResult } from "@/lib/types"
 import { cn, copyText, formatBytes, plural } from "@/lib/utils"
 import { Badge, Button, Dialog, EmptyState, Field, IconButton, Input, Select, Skeleton, Tabs, Tooltip } from "../ui"
+import { WatchServices } from "./WatchServices"
 
 // "Watch online": the streams of the movie, or of the episode picked, from
 // every provider (Internet Archive, Stremio addons, Nuvio providers,
@@ -69,7 +70,13 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
     const [matchFor, setMatchFor] = useState<{ provider: string; name: string } | null>(null)
     const [dlOpen, setDlOpen] = useState(false)
 
-    if (providers && usable.length === 0) return <NoProviders show={show} />
+    if (providers && usable.length === 0)
+        return (
+            <div className="flex flex-col gap-5">
+                <WatchServices wp={media.watchProviders} />
+                <NoProviders show={show} />
+            </div>
+        )
 
     // While the providers look, what they found so far (once one answered:
     // until then the last list stays); then the server's ranked list.
@@ -132,6 +139,8 @@ export function StreamPanel({ entry }: { entry: EntryView }) {
                     {summary}
                 </div>
             )}
+
+            <WatchServices wp={media.watchProviders} />
 
             {search && <SearchProgress progress={search} timeout={timeout} fallback={usable.length} />}
 

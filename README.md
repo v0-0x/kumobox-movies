@@ -46,6 +46,7 @@
 - **Stremio addons**: browse the official addon collection (or any other collection) and install or uninstall addons in one click, open their configuration page, paste any addon's manifest URL, or import the addons of your Stremio account (your password isn't kept). Their streams play in KumoBox; torrent streams go to your torrent client; subtitle addons add subtitles.
 - **Nuvio provider repositories**: add a repository URL and install its JavaScript providers, which run in KumoBox's sandbox.
 - **KumoBox/Seanime-style extensions** from an extension marketplace.
+- **Watch free**: Watch online lists the free and ad-supported services that have the title in your region (and the subscriptions that do), from TMDB/JustWatch, linking to where to watch it.
 - **Watch online** shows each provider's sources as soon as it answers, with a spinner for those still looking. **Provider health** (Settings › Providers) shows which providers work and how fast, with a Test button; one that keeps failing is listed last and skipped by automatic picks until it answers again. A show's next episodes play from the provider and version (quality, release) you watched it in last.
 - **Download** movies and episodes (single or ranges) with yt-dlp or ffmpeg straight into your library; they're matched instantly.
 
