@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/v0-0x/kumobox-movies/server/internal/providers"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
 
@@ -171,8 +172,11 @@ func serveRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := fetchRemote(r.Context(), r.Method, src, r.Header.Get("Range"))
 	if err != nil {
-		log.Printf("stream relay: %s: %v", hostOf(src.url), err)
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		// Only the host: the error names the link, which may carry an
+		// addon's settings or keys.
+		msg := providers.ErrorText(err)
+		log.Printf("stream relay: %s: %s", hostOf(src.url), msg)
+		http.Error(w, msg, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -264,6 +268,9 @@ func fetchRemote(ctx context.Context, method string, src *remoteSource, rng stri
 	}
 	req.Header.Set("User-Agent", util.UserAgent)
 	for k, v := range src.headers {
+		req.Header.Set(k, v)
+	}
+	for k, v := range credentialsFor(u) {
 		req.Header.Set(k, v)
 	}
 	if rng != "" {

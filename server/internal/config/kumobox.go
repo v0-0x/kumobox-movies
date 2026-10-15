@@ -62,6 +62,34 @@ type ProviderSettings struct {
 	PreferredQuality string `json:"preferredQuality"`
 	// TimeoutSeconds bounds each provider's search for sources.
 	TimeoutSeconds int `json:"timeoutSeconds"`
+	// MediaServers are the user's own Jellyfin, Emby and Plex servers:
+	// their movies and episodes are streamed like any provider's.
+	MediaServers []MediaServer `json:"mediaServers"`
+}
+
+// Media server kinds.
+const (
+	MediaServerJellyfin = "jellyfin"
+	MediaServerEmby     = "emby"
+	MediaServerPlex     = "plex"
+)
+
+// MediaServer is a Jellyfin, Emby or Plex server the user streams from.
+// Token is a secret: an API key (Jellyfin, Emby: Dashboard › API Keys) or
+// the account's X-Plex-Token. It's never shown to devices on the LAN, nor
+// put in the links handed to players: KumoBox adds it when it fetches the
+// server's videos.
+type MediaServer struct {
+	// Kind is MediaServerJellyfin, MediaServerEmby or MediaServerPlex.
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	// URL is the server's address (http://192.168.1.10:8096,
+	// https://plex.example:32400...).
+	URL   string `json:"url"`
+	Token string `json:"token"`
+	// UserID is the Jellyfin/Emby user whose libraries are searched (empty:
+	// the token's own, or all of them for an API key).
+	UserID string `json:"userId,omitempty"`
 }
 
 // TorznabIndexer is a Torznab feed: an indexer of Jackett or Prowlarr (the
@@ -107,7 +135,31 @@ func defaultProviders() ProviderSettings {
 		NuvioRepos:       []string{},
 		PreferredQuality: "1080p",
 		TimeoutSeconds:   20,
+		MediaServers:     []MediaServer{},
 	}
+}
+
+// sanitizeMediaServers trims the media servers' fields and drops those of
+// an unknown kind or without an address.
+func sanitizeMediaServers(list []MediaServer) []MediaServer {
+	out := []MediaServer{}
+	for _, s := range list {
+		s.Kind = strings.ToLower(strings.TrimSpace(s.Kind))
+		s.Name = strings.TrimSpace(s.Name)
+		s.URL = strings.TrimRight(strings.TrimSpace(s.URL), "/")
+		s.Token = strings.TrimSpace(s.Token)
+		s.UserID = strings.TrimSpace(s.UserID)
+		switch s.Kind {
+		case MediaServerJellyfin, MediaServerEmby, MediaServerPlex:
+		default:
+			continue
+		}
+		if s.URL == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func defaultTorrentSources() TorrentSourceSettings {
@@ -145,6 +197,7 @@ func sanitizeKumoBox(s *Settings) {
 	if s.Providers.TimeoutSeconds < 5 || s.Providers.TimeoutSeconds > 120 {
 		s.Providers.TimeoutSeconds = d.Providers.TimeoutSeconds
 	}
+	s.Providers.MediaServers = sanitizeMediaServers(s.Providers.MediaServers)
 	if s.TorrentSources.Torznab == nil {
 		s.TorrentSources.Torznab = []TorznabIndexer{}
 	}

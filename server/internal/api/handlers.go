@@ -470,7 +470,7 @@ func (s *Server) playStream(r *http.Request) (any, error) {
 	}
 	return s.app.Player.PlayMpv(player.PlayRequest{
 		MediaID: body.MediaID, Episode: body.Episode, Title: body.Title, MediaTitle: t.Media, EpisodeTitle: t.Episode,
-		Source: util2(body.Source, "stream"), Target: body.URL, Headers: body.Headers, Referrer: body.Referrer,
+		Source: util2(body.Source, "stream"), Target: body.URL, Headers: stream.WithCredentials(body.URL, body.Headers), Referrer: body.Referrer,
 		SubFiles: body.Subtitles, Start: body.Start, Provider: body.Provider, Dub: body.Dub,
 		Quality: body.Quality, Release: body.Release,
 	})

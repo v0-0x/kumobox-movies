@@ -468,7 +468,15 @@ export type ProviderSettings = {
     nuvioRepos: string[]
     preferredQuality: string // 2160p, 1080p, 720p, 480p or "" (best first)
     timeoutSeconds: number
+    // The user's own Jellyfin, Emby and Plex servers (tokens are blank on
+    // devices of the network).
+    mediaServers?: MediaServer[]
 }
+
+export type MediaServerKind = "jellyfin" | "emby" | "plex"
+export type MediaServer = { kind: MediaServerKind; name: string; url: string; token: string; userId?: string }
+// POST /api/providers/mediaservers/test
+export type MediaServerInfo = { name: string; version: string; userId?: string; userName?: string; libraries?: number }
 
 export type TorznabIndexer = { name: string; url: string; apiKey: string; enabled: boolean }
 export type TorrentSource = { enabled: boolean; url: string }
@@ -601,7 +609,7 @@ export type StreamSource = {
 // ---------------------------------------------------------------------------
 // Streaming providers (server/internal/providers, docs/PROVIDERS.md)
 
-export type ProviderKind = "builtin" | "stremio" | "nuvio" | "extension"
+export type ProviderKind = "mediaserver" | "builtin" | "stremio" | "nuvio" | "extension"
 
 // GET /api/providers: every provider, in the order they're asked. Ids are
 // "archive", "stremio:<addon id>", "nuvio:<id>" and "ext:<extension id>".

@@ -396,6 +396,13 @@ func settingsFor(r *http.Request, cfg config.Settings) config.Settings {
 			indexers[i] = ix
 		}
 		cfg.TorrentSources.Torznab = indexers
+		// Nor the media servers' tokens (a copy, as above).
+		servers := make([]config.MediaServer, len(cfg.Providers.MediaServers))
+		for i, ms := range cfg.Providers.MediaServers {
+			ms.Token = ""
+			servers[i] = ms
+		}
+		cfg.Providers.MediaServers = servers
 	}
 	return cfg
 }

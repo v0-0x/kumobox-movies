@@ -28,6 +28,8 @@ const (
 	KindStremio   = "stremio"
 	KindNuvio     = "nuvio"
 	KindExtension = "extension"
+	// KindMediaServer is the user's own Jellyfin, Emby or Plex server.
+	KindMediaServer = "mediaserver"
 )
 
 // Stream types.

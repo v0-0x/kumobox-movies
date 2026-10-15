@@ -5,7 +5,7 @@ import { useProviders, useSaveSettings, useStatus } from "@/lib/queries"
 import type { ProviderInfo } from "@/lib/types"
 import { ExtIcon, TabSection, TypeBadges } from "./parts"
 
-const kindName: Record<ProviderInfo["kind"], string> = { builtin: "Built in", stremio: "Stremio addon", nuvio: "Nuvio provider", extension: "Extension" }
+const kindName: Record<ProviderInfo["kind"], string> = { mediaserver: "Media server", builtin: "Built in", stremio: "Stremio addon", nuvio: "Nuvio provider", extension: "Extension" }
 
 // The Internet Archive, and every provider in the order they're asked.
 export function BuiltInTab() {
@@ -58,7 +58,7 @@ export function BuiltInTab() {
                             </div>
                             <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
                                 <TypeBadges types={p.types} />
-                                <Badge tone={p.kind === "builtin" ? "brand" : p.kind === "stremio" ? "blue" : "gray"}>{kindName[p.kind]}</Badge>
+                                <Badge tone={p.kind === "builtin" || p.kind === "mediaserver" ? "brand" : p.kind === "stremio" ? "blue" : "gray"}>{kindName[p.kind]}</Badge>
                                 {p.enabled ? <Badge tone="green">On</Badge> : <Badge>Off</Badge>}
                             </div>
                         </div>

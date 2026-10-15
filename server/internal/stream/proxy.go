@@ -65,6 +65,44 @@ var localProxyClient = &http.Client{
 	},
 }
 
+// Credentials, when set, gives the headers authenticating a request for a
+// stream's link with the media server it's on (the token of a Jellyfin,
+// Emby or Plex server of Settings › Providers), nil for any other link.
+// KumoBox adds them when it fetches the link itself (proxy, relay) or has
+// mpv or a downloader fetch it on this computer: they're never handed to
+// the browser, nor put in links.
+var Credentials func(u *url.URL) map[string]string
+
+// credentialsFor is Credentials' answer for u (nil when unset).
+func credentialsFor(u *url.URL) map[string]string {
+	if Credentials == nil || u == nil {
+		return nil
+	}
+	return Credentials(u)
+}
+
+// WithCredentials returns a stream's headers with the credentials its link
+// needs added (for mpv and the downloaders, which fetch it themselves).
+// headers is left alone.
+func WithCredentials(link string, headers map[string]string) map[string]string {
+	u, err := url.Parse(CleanLink(link))
+	if err != nil {
+		return headers
+	}
+	creds := credentialsFor(u)
+	if len(creds) == 0 {
+		return headers
+	}
+	out := make(map[string]string, len(headers)+len(creds))
+	for k, v := range headers {
+		out[k] = v
+	}
+	for k, v := range creds {
+		out[k] = v
+	}
+	return out
+}
+
 // HostKey is a URL's host and port, the port filled in from the scheme, to
 // compare addresses.
 func HostKey(u *url.URL) string {
@@ -173,6 +211,9 @@ func ServeProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("User-Agent", util.UserAgent)
 	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	for k, v := range credentialsFor(tu) {
 		req.Header.Set(k, v)
 	}
 	if rg := r.Header.Get("Range"); rg != "" && format == "" {

@@ -166,7 +166,7 @@ func (a *App) nextEpisode(ctx context.Context, s *player.Session) (*player.PlayR
 		}
 		req.Target, req.Provider, req.Dub = st.URL, s.Provider, s.Dub
 		req.Quality, req.Release = st.Quality, stream.ReleaseName(st.Stream)
-		req.Headers, req.Referrer = stream.SplitReferrer(st.Headers)
+		req.Headers, req.Referrer = stream.SplitReferrer(stream.WithCredentials(st.URL, st.Headers))
 		for _, sub := range st.Subtitles {
 			req.SubFiles = append(req.SubFiles, sub.URL)
 		}

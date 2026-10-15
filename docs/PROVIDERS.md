@@ -13,6 +13,7 @@ with the direct links. What the providers answered is kept five minutes.
 
 | Kind | Provider id | What | Ids it needs |
 |---|---|---|---|
+| Media servers | `jellyfin:<host:port>`, `emby:…`, `plex:…` | the user's own Jellyfin, Emby and Plex servers (Settings › Providers), asked first | TMDB id (IMDb id as a fallback) |
 | Internet Archive (built in) | `archive` | public-domain and freely licensed films hosted by archive.org | title + year |
 | Stremio addons | `stremio:<addon id>` | any addon serving `stream` (or `subtitles`) for `movie`/`series` | IMDb id (or `tmdb:` for addons that only take it) |
 | Nuvio providers | `nuvio:<id>` | JavaScript scrapers from Nuvio provider repositories, run in KumoBox's extension sandbox | TMDB id |
@@ -57,7 +58,8 @@ closest one when no other provider is asked for. Auto play next does the
 same with the version of the episode that just played.
 
 Code: `server/internal/providers` (common types, ranking, aggregation,
-`health.go`), `providers/archive`, `providers/stremio`,
+`health.go`), `providers/mediaserver` (Jellyfin, Emby, Plex),
+`providers/archive`, `providers/stremio`,
 `server/internal/extensions` (`nuvio*.go`) for Nuvio providers,
 `server/internal/stream` (`onlinestream.go`: the service asking them;
 `live.go`: searches as they go; `version.go`: a show's version;
@@ -70,6 +72,42 @@ HTTP API).
 
 Providers are managed on the **Providers & extensions** page (devices on
 the LAN can use them, not install or remove them).
+
+### Media servers (Jellyfin, Emby, Plex)
+
+Settings › Providers › Media servers (`providers.mediaServers`: `[{kind:
+"jellyfin" | "emby" | "plex", name, url, token, userId}]`), with a **Test**
+button (`POST /api/providers/mediaservers/test`, this computer only)
+showing the server's name and version. The token is a Jellyfin or Emby API
+key (or a user's access token), or an `X-Plex-Token`; `userId` (Jellyfin,
+Emby) limits the search to a user's libraries.
+
+* **Jellyfin / Emby**: `/Items` (`/Users/{userId}/Items` with a user),
+  `Recursive=true`, `IncludeItemTypes=Movie` or `Series`,
+  `Fields=ProviderIds`, matched on `ProviderIds.Tmdb`, else `Imdb`; a
+  movie's files are its `MediaSources` (`Ids=…&Fields=MediaSources`), an
+  episode's come from `/Shows/{id}/Episodes?season=N` (a file holding
+  several episodes, `IndexNumberEnd`, is each one's). Links:
+  `/Videos/{id}/stream?static=true&MediaSourceId=…` (the file as it is).
+  The token goes as `Authorization: MediaBrowser Token="…"` (Jellyfin) or
+  `X-Emby-Token` (Emby).
+* **Plex**: `/library/sections`, then each movie or show library's
+  `/all?type=1|2&includeGuids=1`, matched on the `tmdb://` guid, else
+  `imdb://`; a show's seasons and episodes are `/library/metadata/{key}/children`.
+  Links: the media parts' keys (`/library/parts/…`). The token goes as
+  `X-Plex-Token`.
+
+Each file is a direct link with its quality (from the video's size), size,
+codecs and container; files a browser can't play as they are (Matroska,
+HEVC, AC-3/DTS...) are converted by the in-app player, mpv plays them all.
+
+The token is a secret: devices on the LAN get the settings without it, the
+links listed and handed to players carry none, and it isn't logged. KumoBox
+adds it when it fetches a server's video itself (stream proxy, relay, mpv,
+downloads), and only for the video paths above: the stream proxy can't be
+used to call a server's API with it. The servers' addresses are trusted
+like local addons (the proxy and relay may reach them on the LAN), and
+their redirects are followed only on their own address.
 
 ### Stremio addons
 

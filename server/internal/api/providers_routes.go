@@ -17,6 +17,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/extensions"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers"
+	"github.com/v0-0x/kumobox-movies/server/internal/providers/mediaserver"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/stremio"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
@@ -37,6 +38,7 @@ func (s *Server) providerRoutes() {
 	m.HandleFunc("GET /api/providers/streams/live", s.providerStreamsLive)
 	m.HandleFunc("GET /api/providers/health", h(func(r *http.Request) (any, error) { return s.app.ProviderHealth(), nil }))
 	m.HandleFunc("POST /api/providers/{id}/test", h(s.testProvider))
+	m.HandleFunc("POST /api/providers/mediaservers/test", h(s.testMediaServer))
 	m.HandleFunc("POST /api/providers/play", h(s.providerPlay))
 	m.HandleFunc("POST /api/providers/download", h(s.providerDownload))
 	// Extensions find titles by searching: the match can be picked by hand.
@@ -243,6 +245,34 @@ func (s *Server) testProvider(r *http.Request) (any, error) {
 	}, nil
 }
 
+// testMediaServer is POST /api/providers/mediaservers/test {kind, url,
+// token, userId}: connects to a Jellyfin, Emby or Plex server as Settings ›
+// Providers has it (saved or not) → {name, version, userId, userName,
+// libraries}. Only on this computer: it's sent the server's token. Without
+// a token, the saved server's at that address is used.
+func (s *Server) testMediaServer(r *http.Request) (any, error) {
+	if !isTrusted(r) {
+		return nil, forbidden("media servers can only be tested on this computer")
+	}
+	var body config.MediaServer
+	if err := decode(r, &body); err != nil {
+		return nil, err
+	}
+	c := mediaserver.Config{Kind: body.Kind, Name: body.Name, URL: strings.TrimSpace(body.URL), Token: strings.TrimSpace(body.Token), UserID: strings.TrimSpace(body.UserID)}
+	if c.Token == "" {
+		for _, saved := range s.app.Settings.Get().Providers.MediaServers {
+			if saved.Kind == c.Kind && strings.TrimRight(saved.URL, "/") == strings.TrimRight(c.URL, "/") {
+				c.Token = saved.Token
+			}
+		}
+	}
+	info, err := mediaserver.Check(r.Context(), c)
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	return info, nil
+}
+
 type providerPlayBody struct {
 	MediaID int `json:"mediaId"`
 	Episode int `json:"episode"`
@@ -309,7 +339,7 @@ func (s *Server) providerPlay(r *http.Request) (any, error) {
 	// next asks the same provider for the next episode (app/playback.go).
 	t := s.app.PlayTitles(r.Context(), media.ID, episode, media.PreferredTitle())
 	if playerName == "mpv" {
-		headers, referrer := stream.SplitReferrer(st.Headers)
+		headers, referrer := stream.SplitReferrer(stream.WithCredentials(st.URL, st.Headers))
 		// mpv loads every subtitle file it's given when it starts: only a
 		// few, in the preferred languages.
 		subs := append(append([]providers.Subtitle(nil), st.Subtitles...), stream.SortSubtitles(addonSubs, cfg.Playback.PreferredSubLang, 4)...)
