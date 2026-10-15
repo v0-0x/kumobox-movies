@@ -24,6 +24,17 @@ import (
 
 const testInfoHash = "0123456789abcdef0123456789abcdef01234567"
 
+// testVideoHash is the OpenSubtitles hash of the fake addon's video.mkv
+// (327680 bytes of "KumoBox!").
+var testVideoHash = func() string {
+	word := uint64(0)
+	for i, c := range []byte("KumoBox!") {
+		word |= uint64(c) << (8 * i)
+	}
+	h := strconv.FormatUint(327680+2*8192*word, 16)
+	return strings.Repeat("0", 16-len(h)) + h
+}()
+
 // fakeAddon is a Stremio addon on this computer (so it needs the local
 // confirmation): streams for The Dark Knight and Breaking Bad S01E02,
 // English subtitles for the movie, and, next to it, an adult addon and a
@@ -62,6 +73,12 @@ func newFakeAddon(t *testing.T) *fakeAddon {
 				{"name":"Test","title":"Trailer","ytId":"EXeTwQWrcwY"}]}`)
 		case "/subtitles/movie/tt0468569.json":
 			_, _ = io.WriteString(w, `{"subtitles":[{"id":"2","url":"https://subs.example/dk.en.srt","lang":"eng"}]}`)
+		case "/video.mkv":
+			// A video file the subtitles are matched with (by its hash).
+			http.ServeContent(w, r, "video.mkv", time.Time{}, strings.NewReader(strings.Repeat("KumoBox!", 40<<10)))
+		case "/subtitles/movie/tt0468569/filename=The.Dark.Knight.mkv&videoHash=" + testVideoHash + "&videoSize=327680.json":
+			_, _ = io.WriteString(w, `{"subtitles":[{"id":"3","url":"https://subs.example/dk.fr.matched.srt","lang":"fre"},
+				{"id":"4","url":"https://subs.example/dk.en.matched.srt","lang":"eng","label":"English (this release)"}]}`)
 		case "/stream/series/tt0903747:1:2.json":
 			_, _ = io.WriteString(w, `{"streams":[{"name":"Test 720p","title":"Breaking.Bad.S01E02.720p","url":"https://cdn.example/bb.s01e02.m3u8"}]}`)
 		default:
@@ -498,6 +515,41 @@ func TestProviderInstallsFromLAN(t *testing.T) {
 // A play request with refresh asks the providers again rather than using
 // the links found a moment ago (they expire); its sources can be converted
 // (a "remote:" path).
+// The in-app player asks the subtitle addons for the subtitles of the
+// very file an online stream plays: its size and hash (read from the
+// stream) and name go along, and the subtitles come as WebVTT through the
+// proxy, the preferred language first.
+func TestProviderSubtitles(t *testing.T) {
+	s := newProvidersServer(t)
+	addon := installTestAddon(t, s)
+	var played struct {
+		Action  string
+		Sources []struct{ Remote, Filename string }
+	}
+	given := map[string]any{"url": addon.URL + "/video.mkv", "title": "The Dark Knight", "filename": "The.Dark.Knight.mkv", "provider": "stremio:test.addon"}
+	decodeBody(t, do(s, "POST", "/api/providers/play", lan, jsonBody(t, map[string]any{"mediaId": 155, "stream": given, "player": "builtin"}), nil), &played)
+	if played.Action != "builtin" || len(played.Sources) != 1 || played.Sources[0].Filename != "The.Dark.Knight.mkv" {
+		t.Fatalf("play: %+v", played)
+	}
+	src := played.Sources[0]
+	var subs []struct {
+		URL, Language, Label, Original string
+		Addon                          bool
+	}
+	path := "/api/providers/subtitles?mediaId=155&remote=" + url.QueryEscape(src.Remote) + "&filename=" + url.QueryEscape(src.Filename)
+	decodeBody(t, do(s, "GET", path, lan, "", nil), &subs)
+	if len(subs) != 2 || subs[0].Original != "https://subs.example/dk.en.matched.srt" || subs[0].Label != "English (this release)" ||
+		subs[1].Language != "fre" || !subs[0].Addon || !strings.HasPrefix(subs[0].URL, "/api/proxy?") || !strings.HasSuffix(subs[0].URL, "&fmt=vtt") {
+		t.Fatalf("subtitles: %+v (hash %s)", subs, testVideoHash)
+	}
+	if w := do(s, "GET", "/api/providers/subtitles?mediaId=155&remote=nope", local, "", nil); w.Code != http.StatusBadRequest {
+		t.Errorf("not a stream: %d", w.Code)
+	}
+	if w := do(s, "GET", "/api/providers/subtitles?mediaId=155&remote="+url.QueryEscape(stream.RemotePrefix+"0123456789abcdef01234567"), local, "", nil); w.Code != http.StatusNotFound {
+		t.Errorf("a stream KumoBox doesn't know: %d", w.Code)
+	}
+}
+
 func TestProviderPlayRefresh(t *testing.T) {
 	s := newProvidersServer(t)
 	addon := installTestAddon(t, s)

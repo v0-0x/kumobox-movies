@@ -586,14 +586,22 @@ export type StreamSource = {
     // server: the provider's name.
     server: string
     provider?: string
-    subtitles: { url: string; language: string; label?: string; isDefault: boolean; original: string }[]
+    subtitles: StreamSubtitle[]
     headers: Record<string, string>
     referrer?: string
     notWebReady?: boolean
     // The link named for the conversion endpoints (/api/local/probe,
     // transcode, hls…), when the browser may not play it as it is.
     remote?: string
+    // The video's file name, when the provider gives it.
+    filename?: string
 }
+
+// A subtitle file of a stream, as WebVTT through the proxy (url) and as
+// the provider links to it (original). addon: from a subtitle addon (GET
+// /api/providers/subtitles finds those made for the very file playing),
+// not the stream's own.
+export type StreamSubtitle = { url: string; language: string; label?: string; isDefault?: boolean; original: string; addon?: boolean }
 
 // ---------------------------------------------------------------------------
 // Streaming providers (server/internal/providers, docs/PROVIDERS.md)

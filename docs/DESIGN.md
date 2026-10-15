@@ -99,7 +99,11 @@ hosts (tests, offline demos).
   isn't in the user's languages (that one or `preferredAudioLang`),
   without it whenever `preferredSubLang` is set; otherwise off, except
   forced subtitles in the audio's language. The in-app player gets the
-  same choice for local files (`choice` of `POST /api/playback/local`).
+  same choice for local files (`choice` of `POST /api/playback/local`),
+  and makes it by the same rules for online streams (`streamSub`): among
+  the stream's own subtitles and those of subtitle addons, the ones found
+  for the very file playing (by its size and OpenSubtitles hash, `GET
+  /api/providers/subtitles`, see docs/PROVIDERS.md) first.
 * **Episodes**: sessions, history and progress use episode keys (a file
   holding several episodes moves the progress on to its last one); auto
   play next (`app/playback.go`) is `Media.NextEpisode` across seasons,

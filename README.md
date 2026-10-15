@@ -42,7 +42,7 @@
 
 **Streaming providers**
 - **Internet Archive** built in: thousands of public-domain and Creative Commons films, streamed straight from archive.org.
-- **Stremio addons**: browse the official addon collection (or any other collection) and install addons in one click, or paste any addon's manifest URL. Their streams play in KumoBox; torrent streams go to your torrent client; subtitle addons add subtitles.
+- **Stremio addons**: browse the official addon collection (or any other collection) and install addons in one click, or paste any addon's manifest URL. Their streams play in KumoBox; torrent streams go to your torrent client; subtitle addons add subtitles to online streams in the in-app player, found for the very file playing (by its size and OpenSubtitles hash).
 - **Nuvio provider repositories**: add a repository URL and install its JavaScript providers, which run in KumoBox's sandbox.
 - **KumoBox/Seanime-style extensions** from an extension marketplace.
 - **Download** movies and episodes (single or ranges) straight into your library; they're matched instantly. Video files are fetched by KumoBox itself (picking up where they stopped after a dropped connection), HLS streams with ffmpeg and web pages with yt-dlp, never from your own computer or local network.

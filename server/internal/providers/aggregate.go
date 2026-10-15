@@ -77,6 +77,24 @@ func Aggregate(ctx context.Context, ps []Provider, r Request, timeout time.Durat
 
 // AggregateSubtitles asks every subtitle provider at once, like Aggregate.
 func AggregateSubtitles(ctx context.Context, ps []SubtitleProvider, r Request, timeout time.Duration) ([]Subtitle, []ProviderError) {
+	return aggregateSubtitles(ctx, ps, timeout, func(ctx context.Context, p SubtitleProvider) ([]Subtitle, error) {
+		return p.Subtitles(ctx, r)
+	})
+}
+
+// AggregateVideoSubtitles is AggregateSubtitles for the video file v: the
+// providers that can match subtitles with the very file are told about
+// it.
+func AggregateVideoSubtitles(ctx context.Context, ps []SubtitleProvider, r Request, v Video, timeout time.Duration) ([]Subtitle, []ProviderError) {
+	return aggregateSubtitles(ctx, ps, timeout, func(ctx context.Context, p SubtitleProvider) ([]Subtitle, error) {
+		if vp, ok := p.(VideoSubtitleProvider); ok {
+			return vp.VideoSubtitles(ctx, r, v)
+		}
+		return p.Subtitles(ctx, r)
+	})
+}
+
+func aggregateSubtitles(ctx context.Context, ps []SubtitleProvider, timeout time.Duration, ask func(context.Context, SubtitleProvider) ([]Subtitle, error)) ([]Subtitle, []ProviderError) {
 	type result struct {
 		subs []Subtitle
 		err  error
@@ -91,7 +109,7 @@ func AggregateSubtitles(ctx context.Context, ps []SubtitleProvider, r Request, t
 		go func(i int, p SubtitleProvider) {
 			defer wg.Done()
 			subs, err := callWithTimeout(ctx, timeout, func(ctx context.Context) ([]Subtitle, error) {
-				return p.Subtitles(ctx, r)
+				return ask(ctx, p)
 			})
 			results[i] = result{subs, err}
 		}(i, p)

@@ -26,7 +26,7 @@ import { prefersHls, randomId, videoCaps } from "@/lib/playback"
 import { useSettings, useStatus } from "@/lib/queries"
 import { skipAt, skipName, skipOn, skipRun, isSkippable } from "@/lib/skips"
 import { playerStore, type PlayerRequest } from "@/lib/store"
-import type { EntryView, EpisodeView, PlayResult, Probe, Settings, SkipInterval, StreamSource, TrackPrefs } from "@/lib/types"
+import type { EntryView, EpisodeView, PlayResult, Probe, Settings, SkipInterval, StreamSource, StreamSubtitle, TrackPrefs } from "@/lib/types"
 import { cn, formatDuration } from "@/lib/utils"
 import { parseVTT, type Cue } from "@/lib/vtt"
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger } from "../ui"
@@ -129,6 +129,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
 
     const [subs, setSubs] = useState<SubOption[]>([])
     const [subKey, setSubKey] = useState<string>("off")
+    // The subtitles of this stream were picked by hand.
+    const subPicked = useRef(false)
     const [cues, setCues] = useState<Cue[]>([])
     const [skips, setSkips] = useState<SkipInterval[]>([])
 
@@ -288,13 +290,53 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
-    const applyStreamSubs = (src?: StreamSource) => {
-        const opts: SubOption[] = (src?.subtitles ?? []).map((s, i) => ({ key: `s${i}`, label: s.label || s.language || `Subtitle ${i + 1}`, lang: s.language, title: s.language, index: i, url: s.url }))
+    // A stream's subtitles: its own, then the subtitle addons', those found
+    // for the very file playing (matched) first. They're told apart by
+    // their links, so the one picked stays picked when more come.
+    const setStreamSubs = (src: StreamSource | undefined, matched: StreamSubtitle[]) => {
+        const all = src?.subtitles ?? []
+        const seen = new Set<string>()
+        const named: Record<string, number> = {}
+        const opts: SubOption[] = []
+        for (const s of [...all.filter(x => !x.addon), ...matched, ...all.filter(x => x.addon)]) {
+            const key = `s:${s.original || s.url}`
+            if (seen.has(key)) continue
+            seen.add(key)
+            // By language ("English", "English 2"...), unless it has a
+            // label of its own.
+            let label = (s.label && s.label !== s.language ? s.label : langName(s.language)) || `Subtitle ${opts.length + 1}`
+            named[label] = (named[label] ?? 0) + 1
+            if (named[label] > 1) label += ` ${named[label]}`
+            opts.push({ key, label, lang: s.language, title: s.language, index: opts.length, url: s.url })
+        }
         setSubs(opts)
         // Providers' streams are in the original version (a dub is another
-        // stream).
-        setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, false))
+        // stream). Subtitles picked by hand stay.
+        if (!subPicked.current) setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, false))
     }
+    const applyStreamSubs = (src?: StreamSource) => {
+        subPicked.current = false
+        setStreamSubs(src, [])
+    }
+
+    // Subtitles made for the very file playing: once the way a stream plays
+    // is decided, the subtitle addons are asked again with its size and
+    // hash (which the server reads from the stream) and its name.
+    useEffect(() => {
+        if (req.kind !== "stream" || decided !== sourceIdx) return
+        const src = sources[sourceIdx]
+        if (!src?.remote) return
+        let cancelled = false
+        api.get<StreamSubtitle[]>(`/api/providers/subtitles${qs({ mediaId, episode, remote: src.remote, filename: src.filename })}`)
+            .then(matched => {
+                if (!cancelled && matched?.length) setStreamSubs(src, matched)
+            })
+            .catch(() => {})
+        return () => {
+            cancelled = true
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sources, sourceIdx, decided])
 
     // ---------------------------------------------------------- stream source
     // How to play a stream: as it is when the browser decodes what's in it,
@@ -514,8 +556,11 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     }, [videoSrc, stream])
 
     // ------------------------------------------------------------- subtitles
+    // Loaded again only when another file is picked (not when more
+    // subtitles come for a stream).
+    const selectedSub = subs.find(s => s.key === subKey)
     useEffect(() => {
-        const sub = subs.find(s => s.key === subKey)
+        const sub = selectedSub
         if (!sub) {
             setCues([])
             return
@@ -541,7 +586,8 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         return () => {
             cancelled = true
         }
-    }, [subKey, subs])
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedSub?.url, selectedSub?.bitmap])
 
     useEffect(() => {
         const v = videoRef.current
@@ -652,6 +698,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         saveTrackPrefs({ audio: i })
     }
     const changeSub = (key: string) => {
+        subPicked.current = true
         setSubKey(key)
         saveTrackPrefs({ sub: key })
     }

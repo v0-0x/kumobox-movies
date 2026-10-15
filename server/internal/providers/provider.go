@@ -141,6 +141,22 @@ type SubtitleProvider interface {
 	Subtitles(ctx context.Context, r Request) ([]Subtitle, error)
 }
 
+// Video is the file a stream links to, as subtitle providers match
+// subtitles with it: its size in bytes and OpenSubtitles hash (0 and ""
+// when unknown), and its file name.
+type Video struct {
+	Size     int64
+	Hash     string
+	Filename string
+}
+
+// VideoSubtitleProvider is a SubtitleProvider that can also find the
+// subtitles made for the very video file playing.
+type VideoSubtitleProvider interface {
+	SubtitleProvider
+	VideoSubtitles(ctx context.Context, r Request, v Video) ([]Subtitle, error)
+}
+
 // Iconer is implemented by providers that have a logo.
 type Iconer interface {
 	Icon() string

@@ -53,6 +53,22 @@ bandwidth among those whose `CODECS` browsers play (H.264 with AAC or
 MP3), else the one with the highest bandwidth. A stream that fails in
 hls.js all the same (a codec error) is converted rather than skipped.
 
+Subtitles: a stream's own subtitle files and those the subtitle addons
+found for the title are listed in the player's subtitle menu (by
+language) as WebVTT, fetched through the proxy and converted from SubRip
+or ASS/SSA (UTF-8, UTF-16 or Windows-1252, gzipped or not). Once a
+link's way of playing is decided, the player asks the subtitle addons
+again for the very file (`GET /api/providers/subtitles`): KumoBox reads
+its size and OpenSubtitles hash (the size plus the sum of the
+little-endian 64-bit words of its first and last 64 KiB) with two byte
+ranges, fetched like the stream, and sends them as Stremio does
+(`videoSize`, `videoHash`, `filename`). Those come first, and the
+default subtitles are picked again from them by the usual rules (the
+title's remembered choice, else `playback.preferredSubLang` when the
+audio is foreign), unless subtitles were picked by hand. Subtitles
+inside an online stream's file aren't shown in the app (that would mean
+reading all of it): mpv shows them.
+
 ## Downloads
 
 A provider's link can name any address, this computer's and the local
@@ -141,6 +157,7 @@ repository).
 | `GET /api/providers` | every provider, in order: `[{id, name, kind, icon, types, enabled, extension}]` |
 | `GET /api/providers/streams?mediaId=&episode=&provider=&refresh=1` | `{streams, errors: [{provider, name, error}], subtitles, providers, matches}`; each stream has a stable `id` and a `kind` (`direct`, `torrent`, `youtube`, `external`); `episode` is a key (a movie's is 1), `provider` empty for all |
 | `POST /api/providers/play` | `{mediaId, episode, streamId \| stream \| provider, player: "builtin" \| "mpv", start}` → `{action: "builtin", sources, title, resumeAt, tracks}` (sources through `/api/proxy`, each named for the conversion endpoints as `remote`, the stream picked first), `{action: "mpv", session}`, `{action: "torrent", savePath}` or `{action: "external", url}` |
+| `GET /api/providers/subtitles?mediaId=&episode=&remote=&filename=` | the subtitles of subtitle addons for the very file the stream `remote` (a source's `remote:` path) plays, matched by its size and OpenSubtitles hash: `[{url, language, label, original, addon}]`, WebVTT through the proxy, the preferred languages first |
 | `POST /api/providers/download` | `{mediaId, episodes: [keys], provider, quality}` → the queued downloads |
 | `GET /api/providers/search?provider=&q=`, `POST /api/providers/mapping` | an extension's titles, and picking one by hand `{provider, mediaId, id, title}` |
 | `GET/POST/DELETE /api/providers/stremio/addons` | installed addons; install `{url, allowLocal, allowAdult}` (409 `{error, code: "local" \| "adult" \| "configure" \| "unsupported", configureUrl}`); remove `?key=` (transport URL or `stremio:<id>`) |
