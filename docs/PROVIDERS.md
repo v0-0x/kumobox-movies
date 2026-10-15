@@ -53,6 +53,15 @@ bandwidth among those whose `CODECS` browsers play (H.264 with AAC or
 MP3), else the one with the highest bandwidth. A stream that fails in
 hls.js all the same (a codec error) is converted rather than skipped.
 
+When a source can't be played, the player tries the next one (and asks
+the providers again for fresh links once they're all used up). When it
+gives up, the **Playback failed** dialog offers **Try next source** (when
+more remain), **Open in mpv** (when mpv is installed, on this computer)
+and **Copy details**: the error, the title, the provider, the source's
+label, the link's host and the HTTP status its host answers (asked again
+through the proxy), with every link cut down to its host and path (no
+query string, no token-like path parts) so the details can be shared.
+
 Subtitles: a stream's own subtitle files and those the subtitle addons
 found for the title are listed in the player's subtitle menu (by
 language) as WebVTT, fetched through the proxy and converted from SubRip
