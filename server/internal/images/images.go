@@ -30,12 +30,21 @@ type Cache struct {
 	inflight map[string]chan struct{}
 	queue    chan string
 	queued   sync.Map
+
+	// ctx ends the background downloads (Close); workers are the
+	// goroutines making them.
+	ctx     context.Context
+	cancel  context.CancelFunc
+	workers sync.WaitGroup
 }
 
 func New(dir string) *Cache {
 	_ = os.MkdirAll(dir, 0o755)
+	ctx, cancel := context.WithCancel(context.Background())
 	c := &Cache{
-		dir: dir,
+		ctx:    ctx,
+		cancel: cancel,
+		dir:    dir,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			// Connections (and their TLS buffers) are let go once the
@@ -46,9 +55,18 @@ func New(dir string) *Cache {
 		queue:    make(chan string, 4096),
 	}
 	for i := 0; i < 4; i++ {
+		c.workers.Add(1)
 		go c.worker()
 	}
 	return c
+}
+
+// Close stops the background downloads, the ones under way too, and waits
+// for them: nothing is written into the folder once it returns (it may be
+// removed, as tests do with theirs).
+func (c *Cache) Close() {
+	c.cancel()
+	c.workers.Wait()
 }
 
 func key(u string) string {
@@ -204,6 +222,9 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Prefetch downloads images in the background (skipping cached ones).
 func (c *Cache) Prefetch(urls ...string) {
+	if c.ctx.Err() != nil {
+		return // closed
+	}
 	for _, u := range urls {
 		if !valid(u) {
 			continue
@@ -223,11 +244,17 @@ func (c *Cache) Prefetch(urls ...string) {
 }
 
 func (c *Cache) worker() {
-	for u := range c.queue {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		_, _ = c.fetch(ctx, u)
-		cancel()
-		c.queued.Delete(u)
+	defer c.workers.Done()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case u := <-c.queue:
+			ctx, cancel := context.WithTimeout(c.ctx, 45*time.Second)
+			_, _ = c.fetch(ctx, u)
+			cancel()
+			c.queued.Delete(u)
+		}
 	}
 }
 

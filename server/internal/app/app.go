@@ -283,6 +283,7 @@ func (a *App) Start() {
 
 func (a *App) Shutdown() {
 	a.cancel()
+	a.Images.Close()
 	a.Share.Stop()
 	a.Update.Stop()
 	a.HLS.Close()
