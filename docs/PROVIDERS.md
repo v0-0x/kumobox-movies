@@ -15,6 +15,8 @@ with the direct links. What the providers answered is kept five minutes.
 |---|---|---|---|
 | Media servers | `jellyfin:<host:port>`, `emby:…`, `plex:…` | the user's own Jellyfin, Emby and Plex servers (Settings › Providers), asked first | TMDB id (IMDb id as a fallback) |
 | Internet Archive (built in) | `archive` | public-domain and freely licensed films hosted by archive.org | title + year |
+| luffy's site (built in, off by default) | `cinejoy` | Cinejoy, the source of the [luffy](https://github.com/DemonKingSwarn/luffy) command-line app: HLS (or MP4) from its servers | TMDB id |
+| FreeFlix's sites (built in, off by default) | `vidlink`, `hexa`, `xpass`, `mapple`, `videasy` | the movie and show resolvers of the [FreeFlix](https://github.com/freedy237/freeflix-cli) command-line app ("GoldenMS") | TMDB id (Videasy: title too) |
 | Stremio addons | `stremio:<addon id>` | any addon serving `stream` (or `subtitles`) for `movie`/`series` | IMDb id (or `tmdb:` for addons that only take it) |
 | Nuvio providers | `nuvio:<id>` | JavaScript scrapers from Nuvio provider repositories, run in KumoBox's extension sandbox | TMDB id |
 | Extensions | `ext:<extension id>` | KumoBox/Seanime-style `onlinestream-provider` extensions: searched by title (+ year), the best match kept (wrong match? pick it by hand in Watch online), episodes numbered from the show's first one | title |
@@ -66,7 +68,8 @@ same with the version of the episode that just played.
 
 Code: `server/internal/providers` (common types, ranking, aggregation,
 `health.go`), `providers/mediaserver` (Jellyfin, Emby, Plex),
-`providers/archive`, `providers/stremio`,
+`providers/archive`, `providers/cinejoy` (luffy's site),
+`providers/freeflix` (FreeFlix's sites), `providers/stremio`,
 `server/internal/extensions` (`nuvio*.go`) for Nuvio providers,
 `server/internal/stream` (`onlinestream.go`: the service asking them;
 `live.go`: searches as they go; `version.go`: a show's version;
@@ -193,6 +196,56 @@ downloads), and only for the video paths above: the stream proxy can't be
 used to call a server's API with it. The servers' addresses are trusted
 like local addons (the proxy and relay may reach them on the LAN), and
 their redirects are followed only on their own address.
+
+### The luffy and FreeFlix sites
+
+The streaming sites of two command-line apps are built in, ported to Go:
+**Cinejoy** from [luffy](https://github.com/DemonKingSwarn/luffy) (its
+default source) and **Vidlink, Hexa, Xpass, Mapple and Videasy** from
+[FreeFlix](https://github.com/freedy237/freeflix-cli) (its "GoldenMS"
+movies & series source; FreeFlix's other sources are anime or French
+sites, and its YTS/EZTV torrents are already KumoBox torrent sources).
+They're unofficial sites: each is off until turned on, on the Providers &
+extensions page (Built-in) or in Settings › Providers, which also takes a
+mirror's address for each (`providers.sites`: `{cinejoy, vidlink, hexa,
+xpass, mapple, videasy: {enabled, url}, decryptUrl}`). Each is a provider
+of its own (its health, its Test button, the default provider), asked
+after the Internet Archive, and finds movies and episodes by their TMDB id.
+Their CDNs want a Referer (and Origin): the streams carry it, the stream
+proxy and mpv send it.
+
+* **Cinejoy** (`url`: the resolver, `https://api.shegu.st`): the resolver
+  only takes requests sealed by Cinejoy's own encoder, `crush.wasm`
+  (an ephemeral key; the answer comes back AES-256-GCM encrypted).
+  KumoBox downloads it from the resolver, checks its SHA-256 against the
+  build luffy pins (`cinejoy.EncoderSHA256`: a changed encoder is refused
+  until KumoBox is updated), refuses it if it imports anything from its
+  host, and runs it in [wazero](https://wazero.io) with nothing but its own
+  memory (32 MiB at most, 5 seconds a request). Like luffy, it asks the
+  servers proven to work (Lisbon, Nebula, Solara) that `/servers` says are
+  up, all at once, and lists a server's stream only once its playlist and
+  first segment (or the file's first bytes) load; once one has, the others
+  get 3 more seconds. The best quality comes from the master playlist.
+* **Vidlink**, **Hexa** and **Videasy** encrypt requests or answers with
+  keys their web players work out: like FreeFlix, KumoBox has
+  [enc-dec.app](https://enc-dec.app)'s API do it (`decryptUrl` to use
+  another one), which is sent what they're asked for. Vidlink answers an
+  HLS playlist or MP4 files per quality with subtitles; Hexa, HLS from its
+  servers; Videasy (Cineby's player) asks eight servers by title, year and
+  ids.
+* **Xpass** and **Mapple** need no one else: Xpass's data is AES-256-GCM
+  encrypted with a key made of its player's build
+  (`freeflix.XpassKeyPrefix`, updated when Xpass ships a new player), the
+  data link's path and token; Mapple hands out a request token, then a
+  link per source.
+
+The sites go through a client with Chrome's TLS fingerprint (FreeFlix uses
+curl_cffi's), which can't reach this computer or the LAN, as every
+provider's. When a site moves, set its mirror; when one changes how it
+works, the code to look at is `server/internal/providers/cinejoy` and
+`server/internal/providers/freeflix` (one file per site), with luffy's
+`core/providers/cinejoy.go` and FreeFlix's `scraping/goldenms.py` as the
+references.
 
 ### Stremio addons
 

@@ -35,8 +35,8 @@ import { Badge, Button, Dialog, EmptyState, Field, IconButton, Input, Select, Sk
 import { WatchServices } from "./WatchServices"
 
 // "Watch online": the streams of the movie, or of the episode picked, from
-// every provider (Internet Archive, Stremio addons, Nuvio providers,
-// extensions). They show as each provider answers; once all have, best first
+// every provider (Internet Archive, the luffy and FreeFlix sites, Stremio
+// addons, Nuvio providers, extensions). They show as each provider answers; once all have, best first
 // as the server ranks them.
 export function StreamPanel({ entry }: { entry: EntryView }) {
     const media = entry.media
@@ -217,7 +217,7 @@ function ProvidersLink() {
 function NoProviders({ show }: { show: boolean }) {
     return (
         <EmptyState icon={<Puzzle className="size-6" />} title="No streaming providers" action={<ProvidersLink />}>
-            Turn on the Internet Archive (public-domain films), install Stremio addons or Nuvio providers, or add extensions to watch {show ? "shows" : "movies"} online.
+            Turn on the Internet Archive (public-domain films) or the luffy and FreeFlix sites, install Stremio addons or Nuvio providers, or add extensions to watch {show ? "shows" : "movies"} online.
         </EmptyState>
     )
 }

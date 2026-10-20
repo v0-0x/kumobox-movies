@@ -563,7 +563,7 @@ function Welcome({ tmdb, letterboxd, hasDir, onLetterboxd }: { tmdb: boolean; le
             done: false,
             icon: <Puzzle className="size-5" />,
             title: "Add streaming providers",
-            text: "Turn on the Internet Archive, or add Stremio addons, Nuvio repositories and extensions.",
+            text: "Turn on the Internet Archive or the luffy and FreeFlix sites, or add Stremio addons, Nuvio repositories and extensions.",
             action: (
                 <Link to="/extensions">
                     <Button size="sm">Providers & extensions</Button>

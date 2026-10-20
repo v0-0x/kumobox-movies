@@ -47,11 +47,14 @@ type LetterboxdSettings struct {
 }
 
 // ProviderSettings configure where movies and episodes are streamed from:
-// the built-in Internet Archive provider (public-domain films), Stremio
-// addons, Nuvio provider repositories and KumoBox/Seanime extensions.
+// the built-in Internet Archive provider (public-domain films), the
+// built-in streaming sites of the luffy and FreeFlix apps, Stremio addons,
+// Nuvio provider repositories and KumoBox/Seanime extensions.
 type ProviderSettings struct {
 	// Archive enables the Internet Archive (archive.org) provider.
 	Archive bool `json:"archive"`
+	// Sites are the built-in streaming sites.
+	Sites StreamSiteSettings `json:"sites"`
 	// StremioCatalogs are addon collections the Providers page lists
 	// (JSON arrays of addon descriptors, like Stremio's own).
 	StremioCatalogs []string `json:"stremioCatalogs"`
@@ -65,6 +68,48 @@ type ProviderSettings struct {
 	// MediaServers are the user's own Jellyfin, Emby and Plex servers:
 	// their movies and episodes are streamed like any provider's.
 	MediaServers []MediaServer `json:"mediaServers"`
+}
+
+// StreamSite is a built-in streaming site: on or off, and its address
+// (empty: its own; sites move to mirrors from time to time).
+type StreamSite struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
+}
+
+// StreamSiteSettings are the streaming sites the luffy and FreeFlix
+// command-line apps stream from, built in: luffy's Cinejoy, and FreeFlix's
+// Vidlink, Hexa, Xpass, Mapple and Videasy. They're unofficial sites: off
+// until the user turns them on.
+type StreamSiteSettings struct {
+	Cinejoy StreamSite `json:"cinejoy"`
+	Vidlink StreamSite `json:"vidlink"`
+	Hexa    StreamSite `json:"hexa"`
+	Xpass   StreamSite `json:"xpass"`
+	Mapple  StreamSite `json:"mapple"`
+	Videasy StreamSite `json:"videasy"`
+	// DecryptURL is the enc-dec.app API Vidlink, Hexa and Videasy go
+	// through (empty: enc-dec.app's own).
+	DecryptURL string `json:"decryptUrl"`
+}
+
+// Site returns the settings of the site with id ("cinejoy", "vidlink"...).
+func (s StreamSiteSettings) Site(id string) (StreamSite, bool) {
+	switch id {
+	case "cinejoy":
+		return s.Cinejoy, true
+	case "vidlink":
+		return s.Vidlink, true
+	case "hexa":
+		return s.Hexa, true
+	case "xpass":
+		return s.Xpass, true
+	case "mapple":
+		return s.Mapple, true
+	case "videasy":
+		return s.Videasy, true
+	}
+	return StreamSite{}, false
 }
 
 // Media server kinds.
@@ -198,6 +243,11 @@ func sanitizeKumoBox(s *Settings) {
 		s.Providers.TimeoutSeconds = d.Providers.TimeoutSeconds
 	}
 	s.Providers.MediaServers = sanitizeMediaServers(s.Providers.MediaServers)
+	sites := &s.Providers.Sites
+	for _, site := range []*StreamSite{&sites.Cinejoy, &sites.Vidlink, &sites.Hexa, &sites.Xpass, &sites.Mapple, &sites.Videasy} {
+		site.URL = strings.TrimSpace(site.URL)
+	}
+	sites.DecryptURL = strings.TrimSpace(sites.DecryptURL)
 	if s.TorrentSources.Torznab == nil {
 		s.TorrentSources.Torznab = []TorznabIndexer{}
 	}

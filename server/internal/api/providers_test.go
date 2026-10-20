@@ -17,8 +17,10 @@ import (
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
+	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/downloads"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
+	"github.com/v0-0x/kumobox-movies/server/internal/providers/cinejoy"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
 
@@ -99,6 +101,10 @@ func (f *fakeAddon) asked(path string) bool {
 	}
 	return false
 }
+
+// streamSites are the built-in streaming sites, listed (off by default)
+// after the Internet Archive.
+var streamSites = []string{"cinejoy", "vidlink", "hexa", "xpass", "mapple", "videasy"}
 
 // newProvidersServer is a catalog test server (fake TMDB) without the
 // Internet Archive (no network in tests), open to the LAN.
@@ -199,11 +205,19 @@ func TestStremioAddonInstall(t *testing.T) {
 		t.Fatalf("refresh: %+v", refreshed.Errors)
 	}
 
+	// The Internet Archive and the streaming sites (off), then the addons
+	// in their order.
 	var infos []app.ProviderInfo
 	decodeBody(t, do(s, "GET", "/api/providers", local, "", nil), &infos)
-	if len(infos) != 3 || infos[0].ID != "archive" || infos[0].Enabled || infos[1].ID != "stremio:test.adult" || infos[2].ID != "stremio:test.addon" ||
-		!infos[2].Enabled || infos[2].Kind != "stremio" || infos[2].Icon == "" || strings.Join(infos[2].Types, ",") != "movie,tv" {
+	n := 1 + len(streamSites)
+	if len(infos) != n+2 || infos[0].ID != "archive" || infos[0].Enabled || infos[n].ID != "stremio:test.adult" || infos[n+1].ID != "stremio:test.addon" ||
+		!infos[n+1].Enabled || infos[n+1].Kind != "stremio" || infos[n+1].Icon == "" || strings.Join(infos[n+1].Types, ",") != "movie,tv" {
 		t.Fatalf("providers: %+v", infos)
+	}
+	for i, id := range streamSites {
+		if x := infos[1+i]; x.ID != id || x.Enabled || x.Kind != "builtin" || strings.Join(x.Types, ",") != "movie,tv" {
+			t.Fatalf("site %d: %+v", i, x)
+		}
 	}
 
 	// Disabled: still listed, not asked.
@@ -211,8 +225,8 @@ func TestStremioAddonInstall(t *testing.T) {
 		t.Fatalf("disable: %d %s", w.Code, w.Body.String())
 	}
 	decodeBody(t, do(s, "GET", "/api/providers", local, "", nil), &infos)
-	if infos[1].ID != "stremio:test.adult" || infos[1].Enabled {
-		t.Fatalf("disabled: %+v", infos[1])
+	if infos[n].ID != "stremio:test.adult" || infos[n].Enabled {
+		t.Fatalf("disabled: %+v", infos[n])
 	}
 
 	if w := do(s, "DELETE", "/api/providers/stremio/addons?key="+url.QueryEscape("stremio:test.adult"), lan, "", nil); w.Code != http.StatusForbidden {
@@ -579,5 +593,42 @@ func TestProviderPlayRefresh(t *testing.T) {
 	}
 	if src := played.Sources[0]; !strings.HasPrefix(src.Remote, stream.RemotePrefix) || src.OriginalURL != "https://cdn.example/dk.1080p.mp4" {
 		t.Fatalf("source: %+v", src)
+	}
+}
+
+// The streaming sites are turned on, and pointed at a mirror, on this
+// computer only.
+func TestStreamSitesSettings(t *testing.T) {
+	s := newProvidersServer(t)
+	cfg := s.app.Settings.Get()
+	cfg.Providers.Sites.Cinejoy = config.StreamSite{Enabled: true, URL: " https://resolver.example "}
+	cfg.Providers.Sites.Xpass.Enabled = true
+	raw, _ := json.Marshal(cfg)
+	wantCode(t, do(s, "PUT", "/api/settings", lan, string(raw), nil), http.StatusOK, "LAN settings")
+	if got := s.app.Settings.Get().Providers.Sites; got != (config.StreamSiteSettings{}) {
+		t.Fatalf("a LAN device changed the sites: %+v", got)
+	}
+	wantCode(t, do(s, "PUT", "/api/settings", local, string(raw), nil), http.StatusOK, "settings")
+	if got := s.app.Settings.Get().Providers.Sites.Cinejoy; got != (config.StreamSite{Enabled: true, URL: "https://resolver.example"}) {
+		t.Fatalf("Cinejoy: %+v", got)
+	}
+	var ids []string
+	for _, p := range s.app.StreamProviders() {
+		ids = append(ids, p.ID())
+		if c, ok := p.(*cinejoy.Provider); ok && c.APIURL != "https://resolver.example" {
+			t.Errorf("Cinejoy's resolver: %q", c.APIURL)
+		}
+	}
+	if strings.Join(ids, ",") != "cinejoy,xpass" {
+		t.Errorf("providers asked: %v", ids)
+	}
+	var infos []app.ProviderInfo
+	decodeBody(t, do(s, "GET", "/api/providers", lan, "", nil), &infos)
+	on := map[string]bool{}
+	for _, x := range infos {
+		on[x.ID] = x.Enabled
+	}
+	if !on["cinejoy"] || !on["xpass"] || on["vidlink"] || on["archive"] {
+		t.Errorf("providers: %+v", infos)
 	}
 }

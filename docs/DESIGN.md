@@ -14,7 +14,7 @@ parts:
 | AniList (metadata + list)            | **TMDB** metadata (`internal/catalog`) + local list                     |
 | AniList account sync                 | **Letterboxd** sync (`internal/letterboxd`): RSS diary, export import, CSV export, optional API |
 | ani.zip episode metadata             | TMDB seasons/episodes (titles, overviews, stills)                       |
-| ani-cli streaming                    | **Providers**: the user's Jellyfin/Emby/Plex servers, Internet Archive (built in), Stremio addons, Nuvio provider repos, Seanime-style extensions |
+| ani-cli streaming                    | **Providers**: the user's Jellyfin/Emby/Plex servers, Internet Archive and the luffy/FreeFlix sites (built in), Stremio addons, Nuvio provider repos, Seanime-style extensions |
 | Nyaa / AnimeTosho                    | **Torznab** (Jackett/Prowlarr), YTS, EZTV, The Pirate Bay (apibay), Torrents-CSV, Internet Archive, extension providers |
 | anime file-name parser (habari)      | movie/TV release-name parser (`internal/release`)                        |
 | AniSkip                              | skipping intros/recaps/credits by chapter names                         |
@@ -53,7 +53,7 @@ parts:
 | `catalog` | TMDB client (`tmdb.go`), types, ids, `Platform` (cache + local list + diary), discover, search, schedule, seasons |
 | `letterboxd` | RSS diary reader, export-ZIP importer, Letterboxd-import CSV writer, optional API client, `Sync` service |
 | `release` | parses movie/TV file and release names: title, year, season, episode(s), resolution, source, codec, HDR, audio, group, edition, extras |
-| `providers` | streaming providers: `mediaserver` (the user's Jellyfin, Emby and Plex servers), `archive` (Internet Archive), `stremio` (addon protocol client + catalogs), Nuvio JS providers (run in `extensions`' sandbox); provider health |
+| `providers` | streaming providers: `mediaserver` (the user's Jellyfin, Emby and Plex servers), `archive` (Internet Archive), `cinejoy` and `freeflix` (the luffy and FreeFlix apps' sites), `stremio` (addon protocol client + catalogs), Nuvio JS providers (run in `extensions`' sandbox); provider health |
 | `torrent` | clients (qBittorrent, Transmission — unchanged), search sources (Torznab, YTS, EZTV, apibay, Torrents-CSV, Internet Archive), auto downloader for shows |
 | `library` | scanner/matcher using `release` + `catalog` (folders like `Movie (2010)/`, `Show/Season 01/S01E02.mkv`): files matched by movie/show folder (earlier matches, `{tmdb-…}`/`{imdb-…}`/`{tvdb-…}` tags, the list, then a remembered TMDB search); kinds `main`, `part` (a movie's later part), `special`, `extra`; a multi-episode file's last key in `episodeEnd` |
 | `stream` | in-app player helpers (unchanged) + `Service` aggregating the providers |

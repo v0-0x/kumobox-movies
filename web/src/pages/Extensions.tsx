@@ -68,7 +68,7 @@ export default function ExtensionsPage() {
             <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
                 <div>
                     <h1 className="text-[1.75rem] font-semibold tracking-tight">Providers & extensions</h1>
-                    <p className="mt-1 max-w-2xl text-muted">Where movies and episodes stream from (the Internet Archive, Stremio addons, Nuvio providers, extensions), plus torrent providers and plugins.</p>
+                    <p className="mt-1 max-w-2xl text-muted">Where movies and episodes stream from (the Internet Archive, the luffy and FreeFlix sites, Stremio addons, Nuvio providers, extensions), plus torrent providers and plugins.</p>
                 </div>
                 {tab === "extensions" && status?.client !== "lan" && (
                     <Button icon={<Link2 className="size-4" />} onClick={() => setManualOpen(true)}>

@@ -4,7 +4,8 @@ import { Link } from "react-router-dom"
 import { Button, Input, Select, Switch } from "@/components/ui"
 import { api } from "@/lib/api"
 import { useProviders, useStatus } from "@/lib/queries"
-import type { TorrentSource, TorrentSourceSettings, TorznabIndexer } from "@/lib/types"
+import { DEFAULT_DECRYPT_URL, SITE_OFF, STREAM_SITES, type StreamSiteKey } from "@/lib/streamSites"
+import type { StreamSite, StreamSiteSettings, TorrentSource, TorrentSourceSettings, TorznabIndexer } from "@/lib/types"
 import { Ext, Group, LanOnly, ListInput, Password, PathInput, Row, type SectionProps, Stack, useLan } from "./parts"
 import { MediaServersGroup } from "./MediaServers"
 import { ProviderHealthGroup } from "./ProviderHealth"
@@ -18,6 +19,8 @@ export function ProvidersSection({ draft, set }: SectionProps) {
     const { data: providers } = useProviders()
     const p = draft.providers
     const dl = draft.downloads
+    const sites = p?.sites
+    const setSite = (key: StreamSiteKey, v: StreamSite) => sites && set("providers", { sites: { ...sites, [key]: v } as StreamSiteSettings })
     return (
         <>
             <Group title="Online streaming">
@@ -62,6 +65,46 @@ export function ProvidersSection({ draft, set }: SectionProps) {
                 <Row label="Use the Internet Archive">
                     <Switch checked={p?.archive ?? false} onChange={v => set("providers", { archive: v })} />
                 </Row>
+            </Group>
+
+            <Group
+                title="luffy and FreeFlix sites"
+                description="The sites the luffy and FreeFlix command-line apps stream from, built in. They're unofficial sites, off until you turn them on; each can point to a mirror when it moves."
+            >
+                {STREAM_SITES.map(site => {
+                    const cur = sites?.[site.key] ?? SITE_OFF
+                    return (
+                        <div key={site.key} className="flex flex-col gap-2.5 px-4 py-3.5">
+                            <div className="flex items-center justify-between gap-6">
+                                <div className="min-w-0">
+                                    <p className="text-sm font-medium">{site.name}</p>
+                                    <p className="mt-0.5 text-xs text-subtle">
+                                        From {site.app} · {site.help}
+                                    </p>
+                                </div>
+                                <Switch checked={cur.enabled} disabled={lan || !sites} onChange={v => setSite(site.key, { ...cur, enabled: v })} />
+                            </div>
+                            {cur.enabled && (
+                                <Input
+                                    value={cur.url}
+                                    disabled={lan}
+                                    placeholder={`Mirror address (optional, default ${site.url})`}
+                                    onChange={e => setSite(site.key, { ...cur, url: e.target.value.trim() })}
+                                />
+                            )}
+                        </div>
+                    )
+                })}
+                {STREAM_SITES.some(x => x.decrypts && sites?.[x.key]?.enabled) && (
+                    <Stack label="Decryption service" help="Vidlink, Hexa and Videasy have enc-dec.app work out their keys, as FreeFlix does: it's sent what they're asked for.">
+                        <Input
+                            value={sites?.decryptUrl ?? ""}
+                            disabled={lan}
+                            placeholder={DEFAULT_DECRYPT_URL}
+                            onChange={e => sites && set("providers", { sites: { ...sites, decryptUrl: e.target.value.trim() } })}
+                        />
+                    </Stack>
+                )}
             </Group>
 
             <Group

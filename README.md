@@ -44,6 +44,7 @@
 **Streaming providers**
 - **Your own Jellyfin, Emby and Plex servers**: add them in Settings › Providers (with a Test button) and their movies and episodes show in Watch online, matched by TMDB/IMDb id, playing the files as they are. Their tokens stay on this computer.
 - **Internet Archive** built in: thousands of public-domain and Creative Commons films, streamed straight from archive.org.
+- **The luffy and FreeFlix sites** built in: the sources of the [luffy](https://github.com/DemonKingSwarn/luffy) and [FreeFlix](https://github.com/freedy237/freeflix-cli) command-line apps (Cinejoy; Vidlink, Hexa, Xpass, Mapple, Videasy), ported, each a provider you turn on (they're off by default) and can point at a mirror. Movies and episodes are found by their TMDB id; Cinejoy's own request encoder runs sandboxed and pinned to the build luffy checked.
 - **Stremio addons**: browse the official addon collection (or any other collection) and install or uninstall addons in one click, open their configuration page, paste any addon's manifest URL, or import the addons of your Stremio account (your password isn't kept). Their streams play in KumoBox; torrent streams go to your torrent client; subtitle addons add subtitles to online streams in the in-app player, found for the very file playing (by its size and OpenSubtitles hash).
 - **Nuvio provider repositories**: add a repository URL and install its JavaScript providers, which run in KumoBox's sandbox.
 - **KumoBox/Seanime-style extensions** from an extension marketplace.
@@ -98,7 +99,7 @@ Without a password dialog (e.g. when KumoBox runs as the `kumobox-server` servic
 1. **Settings › Metadata (TMDB)**: paste a free TMDB key. Create a themoviedb.org account, then [Settings › API](https://www.themoviedb.org/settings/api); either the "API Key" or the "API Read Access Token" works. KumoBox shows a banner until it has one: every title, poster and episode comes from TMDB.
 2. **Settings › Local Library**: pick your movies/TV folder(s) and save. The first scan starts on its own.
 3. Click your avatar, then **Connect Letterboxd** (optional): your username, and optionally your Letterboxd export.
-4. **Providers & extensions**: install Stremio addons or add a Nuvio repository (the Internet Archive provider is on already).
+4. **Providers & extensions**: install Stremio addons, add a Nuvio repository or turn on the luffy and FreeFlix sites (the Internet Archive provider is on already).
 5. **Settings › Torrent Client** and **Settings › Torrent Sources** (optional): your qBittorrent/Transmission details, and your Jackett/Prowlarr indexers.
 
 ### Headless / other devices
@@ -145,4 +146,4 @@ Data lives in `~/.local/share/kumobox` (SQLite database, artwork cache, extensio
 - TMDB's API may rate-limit large first scans; KumoBox waits and retries automatically.
 - Letterboxd only tracks films: shows are tracked in KumoBox. The public diary feed holds your most recent viewings; import your Letterboxd export once to bring in everything older.
 - Image-based subtitles (PGS/VobSub) only render in mpv.
-- KumoBox is a personal project, unaffiliated with TMDB, Letterboxd, Stremio, Nuvio or the Internet Archive. This product uses the TMDB API but is not endorsed or certified by TMDB. Licensed GPL-3.0.
+- KumoBox is a personal project, unaffiliated with TMDB, Letterboxd, Stremio, Nuvio, the Internet Archive, luffy, FreeFlix or the sites they stream from. This product uses the TMDB API but is not endorsed or certified by TMDB. Licensed GPL-3.0.

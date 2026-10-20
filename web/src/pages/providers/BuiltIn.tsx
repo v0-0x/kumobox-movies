@@ -1,19 +1,24 @@
-import { Landmark, Settings2 } from "lucide-react"
+import { Clapperboard, Landmark, Settings2 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Badge, Button, Switch } from "@/components/ui"
 import { useProviders, useSaveSettings, useStatus } from "@/lib/queries"
+import { SITE_OFF, STREAM_SITES } from "@/lib/streamSites"
 import type { ProviderInfo } from "@/lib/types"
 import { ExtIcon, TabSection, TypeBadges } from "./parts"
 
 const kindName: Record<ProviderInfo["kind"], string> = { mediaserver: "Media server", builtin: "Built in", stremio: "Stremio addon", nuvio: "Nuvio provider", extension: "Extension" }
 
-// The Internet Archive, and every provider in the order they're asked.
+// The Internet Archive, the sites of the luffy and FreeFlix apps, and every
+// provider in the order they're asked.
 export function BuiltInTab() {
     const { data: status } = useStatus()
     const settings = status?.settings
     const save = useSaveSettings()
     const { data: providers } = useProviders()
     const archive = settings?.providers?.archive ?? false
+    const sites = settings?.providers?.sites
+    // Devices on the network can't turn providers on or off.
+    const lan = status?.client === "lan"
     return (
         <div className="flex flex-col gap-10">
             <TabSection title="Built in">
@@ -34,6 +39,46 @@ export function BuiltInTab() {
                         disabled={!settings || save.isPending}
                         onChange={v => settings && save.mutate({ ...settings, providers: { ...settings.providers, archive: v } })}
                     />
+                </div>
+            </TabSection>
+
+            <TabSection
+                title="From luffy and FreeFlix"
+                description="The sites the luffy and FreeFlix command-line apps stream from, built in. They're unofficial sites, off until you turn them on; each finds movies and episodes by their TMDB id."
+                actions={
+                    <Link to="/settings?tab=providers">
+                        <Button size="sm" icon={<Settings2 className="size-4" />}>
+                            Mirrors
+                        </Button>
+                    </Link>
+                }
+            >
+                <div className="grid gap-3 lg:grid-cols-2">
+                    {STREAM_SITES.map(site => {
+                        const cur = sites?.[site.key] ?? SITE_OFF
+                        return (
+                            <div key={site.key} className="card flex items-start gap-4 p-4">
+                                <span className="grid size-12 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-fg/80">
+                                    <Clapperboard className="size-6" />
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                    <p className="font-semibold">{site.name}</p>
+                                    <p className="mt-0.5 text-sm text-muted">{site.help}</p>
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                        <Badge>Movies</Badge>
+                                        <Badge>Shows</Badge>
+                                        <Badge tone="blue">{site.app}</Badge>
+                                        {site.decrypts && <Badge tone="amber">Through enc-dec.app</Badge>}
+                                    </div>
+                                </div>
+                                <Switch
+                                    checked={cur.enabled}
+                                    disabled={!settings || !sites || lan || save.isPending}
+                                    onChange={v => settings && sites && save.mutate({ ...settings, providers: { ...settings.providers, sites: { ...sites, [site.key]: { ...cur, enabled: v } } } })}
+                                />
+                            </div>
+                        )
+                    })}
                 </div>
             </TabSection>
 

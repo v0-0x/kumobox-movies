@@ -464,6 +464,8 @@ export type LetterboxdSettings = {
 
 export type ProviderSettings = {
     archive: boolean
+    // The streaming sites of the luffy and FreeFlix apps, built in.
+    sites: StreamSiteSettings
     stremioCatalogs: string[]
     nuvioRepos: string[]
     preferredQuality: string // 2160p, 1080p, 720p, 480p or "" (best first)
@@ -471,6 +473,20 @@ export type ProviderSettings = {
     // The user's own Jellyfin, Emby and Plex servers (tokens are blank on
     // devices of the network).
     mediaServers?: MediaServer[]
+}
+
+// A built-in streaming site: on or off, and a mirror's address ("": its
+// own).
+export type StreamSite = { enabled: boolean; url: string }
+export type StreamSiteSettings = {
+    cinejoy: StreamSite
+    vidlink: StreamSite
+    hexa: StreamSite
+    xpass: StreamSite
+    mapple: StreamSite
+    videasy: StreamSite
+    // The enc-dec.app API Vidlink, Hexa and Videasy go through ("": its own).
+    decryptUrl: string
 }
 
 export type MediaServerKind = "jellyfin" | "emby" | "plex"
@@ -620,7 +636,8 @@ export type StreamSubtitle = { url: string; language: string; label?: string; is
 export type ProviderKind = "mediaserver" | "builtin" | "stremio" | "nuvio" | "extension"
 
 // GET /api/providers: every provider, in the order they're asked. Ids are
-// "archive", "stremio:<addon id>", "nuvio:<id>" and "ext:<extension id>".
+// "archive", the sites' ("cinejoy", "vidlink"...), "stremio:<addon id>",
+// "nuvio:<id>" and "ext:<extension id>".
 export type ProviderInfo = {
     id: string
     name: string

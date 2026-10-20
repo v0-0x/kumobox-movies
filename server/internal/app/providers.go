@@ -15,6 +15,8 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/extensions"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/archive"
+	"github.com/v0-0x/kumobox-movies/server/internal/providers/cinejoy"
+	"github.com/v0-0x/kumobox-movies/server/internal/providers/freeflix"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/mediaserver"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/stremio"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
@@ -23,11 +25,11 @@ import (
 // Streaming providers
 //
 // Movies and episodes are streamed from, in this order: the user's own
-// Jellyfin, Emby and Plex servers and the built-in Internet Archive
-// provider (Settings › Providers), the Stremio addons the user installed
-// (in their order), the Nuvio providers and the online streaming
-// extensions. The stream service asks the enabled ones; the
-// Providers page lists them all.
+// Jellyfin, Emby and Plex servers, the built-in Internet Archive provider
+// and the built-in streaming sites of the luffy and FreeFlix apps
+// (Settings › Providers), the Stremio addons the user installed (in their
+// order), the Nuvio providers and the online streaming extensions. The
+// stream service asks the enabled ones; the Providers page lists them all.
 
 // providersUpdated tells the UI the provider list changed.
 const providersUpdated = "providers-updated"
@@ -135,7 +137,8 @@ func (a *App) wireProviders() error {
 	// videos, never put in the links (mediaserver/credentials.go).
 	stream.Credentials = func(u *url.URL) map[string]string { return mediaserver.Credentials(a.mediaServers(), u) }
 	a.Settings.OnChange(func(old, cur config.Settings) {
-		if !reflect.DeepEqual(old.Providers.MediaServers, cur.Providers.MediaServers) {
+		// The sites' addresses too: their streams are found again.
+		if !reflect.DeepEqual(old.Providers.MediaServers, cur.Providers.MediaServers) || old.Providers.Sites != cur.Providers.Sites {
 			a.Stream.Invalidate()
 			a.Hub.Publish(providersUpdated, nil)
 		}
@@ -173,12 +176,37 @@ func (a *App) mediaServerProviders() []providers.Provider {
 	return out
 }
 
+// streamSite is a built-in streaming site, and whether it's on.
+type streamSite struct {
+	providers.Provider
+	enabled bool
+}
+
+// streamSites are the built-in streaming sites, in the order they're
+// asked: luffy's, then FreeFlix's.
+func (a *App) streamSites() []streamSite {
+	cfg := a.Settings.Get().Providers.Sites
+	out := []streamSite{{cinejoy.New(cfg.Cinejoy.URL), cfg.Cinejoy.Enabled}}
+	for _, site := range freeflix.Sites {
+		c, _ := cfg.Site(site.ID)
+		p := freeflix.New(site, c.URL)
+		p.DecryptURL = cfg.DecryptURL
+		out = append(out, streamSite{p, c.Enabled})
+	}
+	return out
+}
+
 // StreamProviders returns the enabled streaming providers, in order: the
 // user's own media servers first.
 func (a *App) StreamProviders() []providers.Provider {
 	out := a.mediaServerProviders()
 	if a.Settings.Get().Providers.Archive {
 		out = append(out, archive.New())
+	}
+	for _, s := range a.streamSites() {
+		if s.enabled {
+			out = append(out, s.Provider)
+		}
 	}
 	if a.Stremio != nil {
 		out = append(out, a.Stremio.Providers()...)
@@ -209,6 +237,9 @@ func (a *App) ProviderInfos() []ProviderInfo {
 		out = append(out, ProviderInfo{Info: providers.Describe(p), Enabled: true})
 	}
 	out = append(out, ProviderInfo{Info: providers.Describe(archive.New()), Enabled: a.Settings.Get().Providers.Archive})
+	for _, s := range a.streamSites() {
+		out = append(out, ProviderInfo{Info: providers.Describe(s.Provider), Enabled: s.enabled})
+	}
 	if a.Stremio != nil {
 		for _, addon := range a.Stremio.List() {
 			p := stremio.NewProvider(a.Stremio.Client(), addon)

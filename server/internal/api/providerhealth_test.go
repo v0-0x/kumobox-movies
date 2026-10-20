@@ -105,8 +105,9 @@ func TestProviderHealthAndTest(t *testing.T) {
 	do(s, "GET", "/api/providers/streams?mediaId="+strconv.Itoa(catalog.ShowID(1396))+"&episode=1002", local, "", nil)
 	var health []app.ProviderHealth
 	decodeBody(t, do(s, "GET", "/api/providers/health", lan, "", nil), &health)
-	if len(health) != 2 || health[0].ID != "archive" || health[0].Successes != 0 || health[1].ID != id ||
-		health[1].Successes != 3 || health[1].Demoted || !health[1].Enabled || len(health[1].Latencies) != 3 {
+	n := 1 + len(streamSites) // the Internet Archive and the streaming sites, off
+	if len(health) != n+1 || health[0].ID != "archive" || health[0].Successes != 0 || health[n].ID != id ||
+		health[n].Successes != 3 || health[n].Demoted || !health[n].Enabled || len(health[n].Latencies) != 3 {
 		t.Fatalf("health: %+v", health)
 	}
 }
