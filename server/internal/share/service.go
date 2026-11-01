@@ -90,6 +90,10 @@ type Service struct {
 	// account says were finished there (each KumoBox keeps its own list:
 	// they move it on).
 	OnWatchedElsewhere func(finished []history.Entry)
+	// Server: this is mediaserver's movies side, which tells the others it
+	// runs on PlatformServer (not its system): they don't ask whether to
+	// share with it, nor to update it.
+	Server bool
 
 	// The library's version for the others (sharedVersion).
 	versionMu sync.Mutex
@@ -413,7 +417,7 @@ func (s *Service) loop(ctx context.Context, r *run) {
 
 func (s *Service) beacon() beacon {
 	cfg := s.settings.Get()
-	return beacon{KumoBox: protocol, ID: s.id.ID, Name: s.Name(), Port: cfg.Server.Port, Key: s.id.PublicKey(), Version: config.AppVersion, Platform: runtime.GOOS}
+	return beacon{KumoBox: protocol, ID: s.id.ID, Name: s.Name(), Port: cfg.Server.Port, Key: s.id.PublicKey(), Version: config.AppVersion, Platform: s.platform()}
 }
 
 func (s *Service) announce(r *run) {
@@ -642,6 +646,17 @@ func remoteIP(r *http.Request) net.IP {
 }
 
 // Hello is the host's answer to a guest asking what it shares.
+// PlatformServer is the platform mediaserver's movies side says it runs on.
+const PlatformServer = "mediaserver"
+
+// platform is what this KumoBox tells the others it runs on.
+func (s *Service) platform() string {
+	if s.Server {
+		return PlatformServer
+	}
+	return runtime.GOOS
+}
+
 type Hello struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -663,7 +678,7 @@ type Hello struct {
 
 // Hello answers a guest (verified, see Verify).
 func (s *Service) Hello(c Caller) Hello {
-	h := Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion, Platform: runtime.GOOS, Shares: c.Allowed}
+	h := Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion, Platform: s.platform(), Shares: c.Allowed}
 	if c.Allowed {
 		h.Files = s.sharedVersion()
 		h.User = s.user()
@@ -676,7 +691,7 @@ func (s *Service) Hello(c Caller) Hello {
 // Whoami is what anyone on the network may ask: who this KumoBox is (what its
 // beacons say).
 func (s *Service) Whoami() Hello {
-	return Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion, Platform: runtime.GOOS}
+	return Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion, Platform: s.platform()}
 }
 
 // SharedFiles are the library's files this KumoBox shares: those matched to a

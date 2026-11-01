@@ -258,3 +258,26 @@ func TestThemeSettings(t *testing.T) {
 		}
 	}
 }
+
+// Pinned settings stay as the pin makes them, whatever is saved.
+func TestPin(t *testing.T) {
+	s, err := NewStore(openTestDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Pin(func(c *Settings) { c.Sharing.Enabled, c.Server.AllowLAN = true, true }); err != nil {
+		t.Fatal(err)
+	}
+	if cur := s.Get(); !cur.Sharing.Enabled || !cur.Server.AllowLAN {
+		t.Fatal("not pinned at once")
+	}
+	next := s.Get()
+	next.Sharing.Enabled, next.Server.AllowLAN, next.Sharing.Name = false, false, "Pi"
+	saved, err := s.Save(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.Sharing.Enabled || !saved.Server.AllowLAN || saved.Sharing.Name != "Pi" {
+		t.Fatalf("saved %+v %+v", saved.Sharing, saved.Server)
+	}
+}

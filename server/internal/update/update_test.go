@@ -788,3 +788,21 @@ func TestCheckLinuxStableRelease(t *testing.T) {
 		t.Fatalf("requests: %q", gh.paths())
 	}
 }
+
+// In mediaserver, the movies side doesn't update itself: it never asks
+// GitHub, and says what updates it.
+func TestManaged(t *testing.T) {
+	gh := newFakeGitHub(t)
+	gh.branch()
+	gh.compare("ahead", "First")
+	c := newTestChecker(t, gh)
+	c.Managed = "mediaserver updates itself"
+	st := check(t, c)
+	if st.CheckedAt != 0 || st.Available || st.CanApply || st.ApplyNote != c.Managed {
+		t.Fatalf("checked: %+v", st)
+	}
+	if err := c.Apply(); err == nil || err.Error() != c.Managed {
+		t.Fatalf("applied: %v", err)
+	}
+	c.Start()
+}

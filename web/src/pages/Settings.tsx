@@ -28,6 +28,7 @@ import {
     Search as SearchIcon,
     Terminal,
     Trash2,
+    Upload,
     Tv,
     Wifi,
     X,
@@ -50,6 +51,7 @@ import { activeHoliday, COLOR_THEMES, HOLIDAYS, themePreviewStore, useClassic } 
 import { setSubStyle, SUB_BACKGROUNDS, SUB_POSITIONS, SUB_SIZES, subStyleStore, subStyleVars, type SubStyle } from "@/lib/subtitles"
 import { systemNotifications } from "@/lib/alerts"
 import { androidApp, setTvWidth, TV_WIDTHS, tv, tvWidth } from "@/lib/tv"
+import { UploadDialog } from "@/components/UploadDialog"
 import type { Settings, SharingPeer, Status } from "@/lib/types"
 import { cn, compareVersions, copyText, formatBytes, HOME_SECTIONS, relativeTime } from "@/lib/utils"
 import { LetterboxdSection } from "./settings/Letterboxd"
@@ -1090,6 +1092,8 @@ function SharingGroup({ draft, set }: SectionProps) {
     const qc = useQueryClient()
     const [address, setAddress] = useState("")
     const [adding, setAdding] = useState(false)
+    // The computer files are being uploaded to (UploadDialog), or none.
+    const [uploadTo, setUploadTo] = useState<string | null>(null)
     const call = async (fn: () => Promise<unknown>) => {
         try {
             await fn()
@@ -1164,6 +1168,11 @@ function SharingGroup({ draft, set }: SectionProps) {
                                 <VersionNote peer={p} mine={status?.version} />
                             </div>
                             <div className="flex shrink-0 items-center gap-3">
+                                {p.shares && p.takesDownloads && trusted && !tv && (
+                                    <Button size="sm" variant="ghost" icon={<Upload className="size-4" />} onClick={() => setUploadTo(p.id)}>
+                                        Upload
+                                    </Button>
+                                )}
                                 {!p.online && p.canWake && (
                                     <Button size="sm" variant="ghost" icon={<Moon className="size-4" />} loading={p.waking} onClick={() => call(() => api.post(`/api/sharing/libraries/${p.id}/wake`))}>
                                         {p.waking ? "Waking…" : "Wake"}
@@ -1188,7 +1197,7 @@ function SharingGroup({ draft, set }: SectionProps) {
                             <div className="mt-3 ml-1 flex flex-col gap-3 border-l border-line pl-4">
                                 <PeerGrant
                                     label="Let it download here"
-                                    help="Its downloads and torrents go to this computer's library, and come back shared. It downloads here by default from then on."
+                                    help="Its downloads and torrents go to this computer's library, and come back shared, and it can upload files and folders into it. It downloads here by default from then on."
                                     checked={p.downloads}
                                     disabled={!trusted}
                                     onChange={v => call(() => api.post(`/api/sharing/peers/${p.id}`, { downloads: v }))}
@@ -1220,6 +1229,7 @@ function SharingGroup({ draft, set }: SectionProps) {
                     )}
                 </>
             )}
+            {uploadTo !== null && <UploadDialog open onOpenChange={v => !v && setUploadTo(null)} target={uploadTo} />}
         </Group>
     )
 }

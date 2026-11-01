@@ -156,6 +156,9 @@ type Checker struct {
 	// time between checks.
 	FirstCheck time.Duration
 	Interval   time.Duration
+	// Managed, when set, says what updates this copy instead (mediaserver's
+	// own updater, for its movies side): it then never checks or installs.
+	Managed string
 
 	mu       sync.Mutex
 	st       Status
@@ -240,6 +243,9 @@ func executable() (string, error) {
 // Start runs the checks in the background until Stop. It also shows why an
 // update failed after KumoBox had quit for it.
 func (c *Checker) Start() {
+	if c.Managed != "" {
+		return
+	}
 	if b, err := os.ReadFile(filepath.Join(c.CacheDir, failureFile)); err == nil {
 		c.mu.Lock()
 		c.st.State, c.st.Message, c.st.Progress = StateFailed, strings.TrimSpace(string(b)), 0
@@ -326,6 +332,9 @@ func (c *Checker) statusLocked() Status {
 	s.Changes = append([]string{}, s.Changes...)
 	s.Log = append([]string{}, s.Log...)
 	s.CanApply, s.ApplyNote = c.applyable()
+	if c.Managed != "" {
+		s.CanApply, s.ApplyNote = false, c.Managed
+	}
 	if s.CanApply && fromReleases(c.GOOS) && s.Available && c.asset == nil {
 		s.CanApply, s.ApplyNote = false, "The newest release has no "+releaseFile(c.GOOS)+": download KumoBox from its page."
 	}
@@ -413,6 +422,9 @@ type asset struct {
 // Check looks for a newer version now and returns the status. When a check
 // is already running, it waits for that one instead.
 func (c *Checker) Check(ctx context.Context) Status {
+	if c.Managed != "" {
+		return c.Status()
+	}
 	c.mu.Lock()
 	if running := c.inflight; running != nil {
 		c.mu.Unlock()
@@ -761,6 +773,9 @@ var (
 // Windows KumoBox quits for the installer, which starts the new version, and on
 // macOS to swap in the new app, which then opens.
 func (c *Checker) Apply() error {
+	if c.Managed != "" {
+		return errors.New(c.Managed)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Installing: on Windows and macOS, KumoBox is quitting for the new

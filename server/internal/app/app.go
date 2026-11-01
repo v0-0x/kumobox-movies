@@ -117,6 +117,19 @@ func (l *LogBuffer) Write(p []byte) (int, error) {
 	return l.out.Write(p)
 }
 
+// Keep records log lines without writing them out again: in mediaserver,
+// both of its engines keep the one log, which the other already wrote out.
+func (l *LogBuffer) Keep(p []byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, line := range bytes.Split(bytes.TrimRight(p, "\n"), []byte("\n")) {
+		l.lines = append(l.lines, string(line))
+	}
+	if len(l.lines) > 1000 {
+		l.lines = l.lines[len(l.lines)-1000:]
+	}
+}
+
 func (l *LogBuffer) Lines() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()

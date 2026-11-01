@@ -23,6 +23,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
+	fileup "github.com/v0-0x/kumobox-movies/server/internal/upload"
 )
 
 type Server struct {
@@ -46,6 +47,28 @@ type Server struct {
 	// AppOnly: on this device other apps reach 127.0.0.1 too (Android), so
 	// only the app's own window (the shell token) is its user there.
 	AppOnly bool
+	// Owner is set when KumoBox runs as mediaserver's movies side: it reports
+	// a browser signed in to the server's dashboard, which may then do here
+	// what this computer may. Any other browser on the network is sent to
+	// the dashboard (on DashboardPort) to sign in.
+	Owner         func(r *http.Request) bool
+	DashboardPort int
+
+	// Files sent into the library (upload.go).
+	uploadOnce sync.Once
+	uploads    *fileup.Receiver
+}
+
+// dashboardURL is mediaserver's dashboard, on the host the request came to.
+func (s *Server) dashboardURL(r *http.Request) string {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return fmt.Sprintf("http://%s:%d/", host, s.DashboardPort)
 }
 
 func New(a *app.App, ui fs.FS) *Server {
@@ -310,6 +333,20 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		if kind == clientLocal && s.AppOnly {
 			http.Error(w, "KumoBox only answers its own app on this device.", http.StatusForbidden)
 			return
+		}
+		// mediaserver's movies side is managed from the server's dashboard:
+		// signed in there, a browser on the network may do what this
+		// computer may; not signed in, it's sent there.
+		if kind == clientLAN && s.Owner != nil {
+			if s.Owner(r) {
+				kind = clientLocal
+			} else if strings.HasPrefix(r.URL.Path, "/api/") {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "sign in to mediaserver's dashboard first", "dashboard": s.dashboardURL(r)})
+				return
+			} else {
+				http.Redirect(w, r, s.dashboardURL(r), http.StatusSeeOther)
+				return
+			}
 		}
 
 		// Other websites may link to the app, but must not load or call the

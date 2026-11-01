@@ -16,6 +16,7 @@ import {
     RefreshCw,
     Rss,
     Search,
+    Server,
     Settings as SettingsIcon,
     Settings2,
     Unplug,
@@ -287,6 +288,7 @@ export function Sidebar() {
             </nav>
 
             <div className={cn("flex flex-col gap-0.5 pt-3", !classic && "border-t border-line", !wide && "items-center")}>
+                {status?.server && <ServerLink port={status.server.dashboardPort} wide={wide} />}
                 <ThemesMenu wide={wide} />
                 <PluginTrays />
                 <div className={cn("flex gap-0.5", wide ? "items-center" : "flex-col-reverse items-center")}>
@@ -385,6 +387,32 @@ function MuteButton({ side }: { side: "top" | "right" }) {
             >
                 {muted ? <BellOff /> : <Bell />}
             </button>
+        </Tooltip>
+    )
+}
+
+// On a mediaserver (its movies side): back to its dashboard, where its anime
+// side is too.
+function ServerLink({ port, wide }: { port: number; wide: boolean }) {
+    const href = `${window.location.protocol}//${window.location.hostname}:${port}/`
+    const el = (
+        <a
+            href={href}
+            aria-label={wide ? undefined : "mediaserver dashboard"}
+            className={cn(
+                "focus-ring flex h-9 shrink-0 items-center rounded-lg text-[13.5px] font-medium text-muted transition-colors hover:bg-white/[0.045] hover:text-fg [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:stroke-[1.75]",
+                wide ? "gap-3 px-2.5" : "w-10 justify-center",
+            )}
+        >
+            <Server />
+            {wide && <span className="truncate">mediaserver</span>}
+        </a>
+    )
+    return wide ? (
+        el
+    ) : (
+        <Tooltip content="mediaserver dashboard" side="right">
+            {el}
         </Tooltip>
     )
 }

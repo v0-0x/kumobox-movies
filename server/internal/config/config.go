@@ -362,6 +362,18 @@ type Store struct {
 	mu       sync.RWMutex
 	current  Settings
 	onChange []func(old, new Settings)
+	pin      func(*Settings)
+}
+
+// Pin keeps settings the way fix makes them, now and at every save (in
+// mediaserver, the movies side always shares with the network).
+func (s *Store) Pin(fix func(*Settings)) error {
+	s.mu.Lock()
+	s.pin = fix
+	cur := s.current.clone()
+	s.mu.Unlock()
+	_, err := s.Save(cur)
+	return err
 }
 
 const settingsKey = "settings"
@@ -425,6 +437,12 @@ func (c Settings) clone() Settings {
 
 func (s *Store) Save(next Settings) (Settings, error) {
 	next = sanitize(next.clone())
+	s.mu.RLock()
+	pin := s.pin
+	s.mu.RUnlock()
+	if pin != nil {
+		pin(&next)
+	}
 	if err := s.db.SetKV(settingsKey, next); err != nil {
 		return s.Get(), err
 	}

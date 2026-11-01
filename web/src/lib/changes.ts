@@ -6,6 +6,22 @@ export type Release = { id: number; title: string; changes: Change[] }
 
 export const RELEASES: Release[] = [
     {
+        id: 3,
+        title: "Upload to your server",
+        changes: [
+            {
+                title: "Send files and folders",
+                text: "Movies, shows (whole folders of them) and their subtitles from this computer into a server's library: Local library › Upload, or Upload next to it in Settings › Other devices. An upload cut short carries on where it stopped. The server lets this device download there first (Let it download here, on it).",
+                to: "/local",
+            },
+            {
+                title: "mediaserver",
+                text: "KumoBox's home server, for a Raspberry Pi or any Linux computer that stays on, shares movies and shows with your KumoBox apps (and anime with your Aniko apps): it shows up in Settings › Other devices.",
+                to: "/settings?tab=devices",
+            },
+        ],
+    },
+    {
         id: 2,
         title: "KumoBox 2.0",
         changes: [

@@ -35,6 +35,11 @@ func (s *Service) Prompts() []Prompt {
 		if !p.online(now) {
 			continue
 		}
+		// A mediaserver: it shares its library with this KumoBox when its
+		// owner says so, and is updated from its dashboard.
+		if p.platform == PlatformServer {
+			continue
+		}
 		pr := Prompt{ID: p.id, Name: s.view(p, now).Name, Platform: p.platform, Version: p.version}
 		// One that shares its library with this KumoBox isn't new here.
 		if !p.allowed && !p.shares && !p.declined {

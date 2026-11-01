@@ -33,6 +33,7 @@ import (
 func (s *Server) routes() {
 	m := s.mux
 	s.peerRoutes()
+	s.uploadRoutes()
 	s.noteRoutes()
 	s.cleanupRoutes()
 	s.backupRoutes()
@@ -404,6 +405,10 @@ func (s *Server) status(r *http.Request) (any, error) {
 		"webUiForced":  s.ForceWebUI,
 		"setupRunning": setupRunning(),
 		"settings":     settingsFor(r, cfg),
+	}
+	// mediaserver's movies side: where its dashboard (the anime side) is.
+	if s.Owner != nil {
+		st["server"] = map[string]any{"dashboardPort": s.DashboardPort}
 	}
 	return st, nil
 }

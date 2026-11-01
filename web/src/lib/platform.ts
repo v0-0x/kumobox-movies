@@ -5,7 +5,7 @@
 export type Tool = "ffmpeg" | "mpv" | "yt-dlp"
 
 export function platformName(platform?: string) {
-    return platform === "windows" ? "Windows" : platform === "darwin" ? "macOS" : platform === "android" ? "Android" : "Linux"
+    return platform === "windows" ? "Windows" : platform === "darwin" ? "macOS" : platform === "android" ? "Android" : platform === "mediaserver" ? "mediaserver" : "Linux"
 }
 
 export function installHint(platform: string | undefined, tool: Tool) {

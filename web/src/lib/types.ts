@@ -549,6 +549,8 @@ export type Status = {
     dataDir: string
     listenAddr: string
     lanUrls?: string[] | null // where devices on the home network open KumoBox
+    // A mediaserver's movies side: where its dashboard is (on the same host).
+    server?: { dashboardPort: number }
     paired?: string[] | null // the KumoBoxes this one is paired with (library sharing): Home's Sync
     // The computers sharing their library with this one that don't answer
     // (asleep or off), and whether they can be woken up from here.
