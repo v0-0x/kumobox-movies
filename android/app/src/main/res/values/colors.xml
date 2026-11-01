@@ -3,5 +3,5 @@
     <!-- The page's black (its frame color). -->
     <color name="frame">#0A0A0B</color>
     <!-- The logo's tile. -->
-    <color name="icon_background">#E2E2E6</color>
+    <color name="icon_background">#141416</color>
 </resources>

@@ -1558,20 +1558,27 @@ func (s *Service) view(p *peer, now time.Time) PeerView {
 	if p.addr != nil {
 		v.Address = net.JoinHostPort(p.addr.String(), strconv.Itoa(p.port))
 	}
-	if v.Name == "" {
-		v.Name = "KumoBox " + p.id[:6]
-	}
-	// Two named alike (two Fire TVs): told apart. Must be called with mu held.
-	for _, o := range s.peers {
-		if o != p && o.name != "" && strings.EqualFold(o.name, p.name) {
-			v.Name += " (" + p.id[:4] + ")"
-			break
-		}
-	}
+	v.Name = s.shownName(p)
 	if p.fails >= maxFails {
 		v.Error = "Not answering"
 	}
 	return v
+}
+
+// shownName is a peer's name as KumoBox shows it, in lists and in what it
+// says: two named alike (two Fire TVs) are told apart. Must be called with
+// mu held.
+func (s *Service) shownName(p *peer) string {
+	name := p.name
+	if name == "" {
+		return "KumoBox " + p.id[:6]
+	}
+	for _, o := range s.peers {
+		if o != p && o.name != "" && strings.EqualFold(o.name, p.name) {
+			return name + " (" + p.id[:4] + ")"
+		}
+	}
+	return name
 }
 
 // Status is sharing as Settings shows it.

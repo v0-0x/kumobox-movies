@@ -455,3 +455,24 @@ func TestForwarding(t *testing.T) {
 		t.Errorf("after sharing stopped: %d, host asked %q", w.Code, got)
 	}
 }
+
+// Two KumoBoxes named alike are told apart the same way everywhere: in the
+// lists and in what KumoBox says about downloads sent to one.
+func TestShownNameTellsTwinsApart(t *testing.T) {
+	s := &Service{peers: map[string]*peer{}}
+	a := &peer{id: "aaaa1111", name: "Living room"}
+	b := &peer{id: "bbbb2222", name: "living room"}
+	c := &peer{id: "cccc3333", name: "Office"}
+	d := &peer{id: "dddd4444"}
+	for _, p := range []*peer{a, b, c, d} {
+		s.peers[p.id] = p
+	}
+	for p, want := range map[*peer]string{a: "Living room (aaaa)", b: "living room (bbbb)", c: "Office", d: "KumoBox dddd44"} {
+		if got := s.shownName(p); got != want {
+			t.Errorf("%s: %q, want %q", p.id, got, want)
+		}
+		if got := s.view(p, time.Now()).Name; got != want {
+			t.Errorf("%s in the list: %q, want %q", p.id, got, want)
+		}
+	}
+}

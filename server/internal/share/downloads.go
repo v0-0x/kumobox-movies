@@ -75,7 +75,7 @@ func (s *Service) DownloadHost() (string, error) {
 	ok := p != nil && p.shares && p.hostDownloads
 	name := ""
 	if p != nil {
-		name = p.name
+		name = s.shownName(p)
 	}
 	s.mu.Unlock()
 	if !ok {
