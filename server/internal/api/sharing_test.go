@@ -460,9 +460,16 @@ func TestDownloadsToHost(t *testing.T) {
 	// A torrent added on the guest goes to the host's torrent client (none
 	// here: its answer says so, from the host).
 	w := do(guest, "POST", "/api/torrent-client/add", local, `{"magnet":"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567","mediaId":0}`, nil)
-	hostName := guest.app.Share.Libraries()[0].Host.Name
-	if w.Code == http.StatusOK || !strings.HasPrefix(errorOf(w), hostName+": ") {
-		t.Fatalf("not sent to the host: %d %s", w.Code, w.Body)
+	// The host's library, by its ID: on a network with multicast, other
+	// test KumoBoxes can be listed too (see peerIn).
+	hostName := ""
+	for _, l := range guest.app.Share.Libraries() {
+		if l.Host.ID == hid {
+			hostName = l.Host.Name
+		}
+	}
+	if w.Code == http.StatusOK || hostName == "" || !strings.HasPrefix(errorOf(w), hostName+": ") {
+		t.Fatalf("not sent to the host %q: %d %s", hostName, w.Code, w.Body)
 	}
 	// Its torrents are the host's: the client, the list, the actions.
 	var st struct {
