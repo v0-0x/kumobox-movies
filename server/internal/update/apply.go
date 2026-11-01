@@ -47,7 +47,7 @@ func (c *Checker) applyLinux(ctx context.Context, g *github, target Version) err
 	// The source of exactly the commit the check found. GitHub redirects
 	// to codeload.github.com, with a token of its own in the address.
 	archive := filepath.Join(dir, "source.tar.gz")
-	err := c.download(ctx, g, "/repos/"+g.repo+"/tarball/"+escapeRef(target.Commit), "application/vnd.github+json", archive, 0, func(done, total int64) {
+	err := c.download(ctx, g, g.root()+"/tarball/"+escapeRef(target.Commit), "application/vnd.github+json", archive, 0, func(done, total int64) {
 		c.progress(StateDownloading, percent(done, total), fmt.Sprintf("Downloading KumoBox %s… %s", display(target), megabytes(done)))
 	})
 	if err != nil {
@@ -172,7 +172,9 @@ func findPackage(dir string) (string, error) {
 // install installs the package with pacman, through pkexec (polkit's
 // password dialog). When that's not possible, the user gets the command.
 func (c *Checker) install(ctx context.Context, pkg string, target Version) error {
-	manual := "sudo pacman -U --noconfirm " + shellQuote(pkg)
+	// --ask=4: yes to removing a conflicting package, the kumobox one an
+	// update from KumoBox (KumoBox's old name) installed (see the PKGBUILD).
+	manual := "sudo pacman -U --noconfirm --ask=4 " + shellQuote(pkg)
 	needsTerminal := func(why string) error {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -186,7 +188,7 @@ func (c *Checker) install(ctx context.Context, pkg string, target Version) error
 		return needsTerminal("KumoBox can't ask for your password (pkexec isn't installed).")
 	}
 	c.step(StateInstalling, -1, "Installing KumoBox "+display(target)+": enter your password…")
-	cmd := exec.CommandContext(ctx, pkexec, "pacman", "-U", "--noconfirm", pkg)
+	cmd := exec.CommandContext(ctx, pkexec, "pacman", "-U", "--noconfirm", "--ask=4", pkg)
 	err := c.run(cmd, func(string) {})
 	var exitErr *exec.ExitError
 	switch {
@@ -276,7 +278,7 @@ func (c *Checker) applyWindows(ctx context.Context, g *github, target Version, i
 		return err
 	}
 	path := filepath.Join(dir, filepath.Base(inst.Name))
-	err := c.download(ctx, g, "/repos/"+g.repo+"/releases/assets/"+strconv.FormatInt(inst.ID, 10), "application/octet-stream", path, inst.Size, func(done, total int64) {
+	err := c.download(ctx, g, g.root()+"/releases/assets/"+strconv.FormatInt(inst.ID, 10), "application/octet-stream", path, inst.Size, func(done, total int64) {
 		c.progress(StateDownloading, percent(done, total), "Downloading KumoBox "+display(target)+"…")
 	})
 	if err != nil {
@@ -302,6 +304,38 @@ func (c *Checker) applyWindows(ctx context.Context, g *github, target Version, i
 	if c.Exits == nil || !c.Exits.Request(exit) {
 		return errors.New("KumoBox is already shutting down")
 	}
+	return nil
+}
+
+// applyAndroid downloads the new APK: the Android app asks Android to
+// install it (Status.InstallFile), which then replaces the app.
+func (c *Checker) applyAndroid(ctx context.Context, g *github, target Version, apk *asset) error {
+	if apk == nil {
+		return errors.New("the newest release has no APK")
+	}
+	dir := c.CacheDir
+	if err := removeAll(dir); err != nil {
+		return fmt.Errorf("couldn't remove the last update's files: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, filepath.Base(apk.Name))
+	err := c.download(ctx, g, g.root()+"/releases/assets/"+strconv.FormatInt(apk.ID, 10), "application/octet-stream", path, apk.Size, func(done, total int64) {
+		c.progress(StateDownloading, percent(done, total), "Downloading KumoBox "+display(target)+"…")
+	})
+	if err != nil {
+		return fmt.Errorf("couldn't download the APK: %w", err)
+	}
+	if err := verifyDigest(path, apk.Digest); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	c.mu.Lock()
+	c.st.State, c.st.Progress, c.st.InstallFile = StateInstalling, -1, path
+	c.st.Message = "Installing KumoBox " + display(target) + ": confirm on the screen Android shows."
+	c.publishLocked()
+	c.mu.Unlock()
 	return nil
 }
 

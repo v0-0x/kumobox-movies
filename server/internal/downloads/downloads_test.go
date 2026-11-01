@@ -245,6 +245,8 @@ type event struct {
 		Status   string  `json:"status"`
 		Progress float64 `json:"progress"`
 		Speed    string  `json:"speed"`
+		ETA      string  `json:"eta"`
+		Done     string  `json:"done"`
 		Removed  bool    `json:"removed"`
 		Cleared  bool    `json:"cleared"`
 	} `json:"payload"`

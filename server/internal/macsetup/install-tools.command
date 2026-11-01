@@ -1,7 +1,7 @@
 #!/bin/bash
 # KumoBox setup for macOS: puts the programs KumoBox uses in KumoBox's own folder,
 # ready-made for this Mac (Apple silicon or Intel), with no Homebrew and no
-# password. KumoBox opens it in Terminal from Settings > App > Programs
+# password. KumoBox opens it in Terminal from Settings > Desktop app & programs
 # (server/internal/macsetup), with KUMOBOX_BIN set to that folder.
 #
 #   ffmpeg, ffprobe  the in-app player (most files), stream downloads and

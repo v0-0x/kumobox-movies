@@ -3,7 +3,7 @@ import { useEffect, useState } from "react"
 import { episodeIndex, formatKey, lastEpisode, latestAired, MOVIE_EPISODE, mediaIsShow, nextEpisode, totalEpisodes } from "@/lib/ids"
 import { useDeleteEntry, useEpisodeMarker, useUpdateEntry } from "@/lib/queries"
 import type { EntryUpdate, FuzzyDate, ListEntry, Media } from "@/lib/types"
-import { cn, formatDate, fuzzyDate, LIST_STATUS, scoreToStars, starsToScore, today } from "@/lib/utils"
+import { cn, formatDate, fuzzyDate, LIST_STATUS, scoreToStars, starsToScore, title, today } from "@/lib/utils"
 import { Button, Dialog, Dropdown, DropdownContent, DropdownItem, DropdownSeparator, DropdownTrigger, Field, Input, Textarea, Tooltip } from "../ui"
 
 type Entry = Pick<ListEntry, "status" | "progress" | "score" | "repeat"> & Partial<Pick<ListEntry, "notes" | "liked" | "startedAt" | "completedAt">>
@@ -66,7 +66,7 @@ export function ListStatusButton({ media, entry }: { media: Media; entry: Entry 
                                 Mark as unwatched
                             </DropdownItem>
                         )}
-                        <DropdownItem danger icon={<Trash2 />} onSelect={() => del.mutate()}>
+                        <DropdownItem danger icon={<Trash2 />} onSelect={() => confirm(`Remove ${title(media)} from your list? Its progress, rating and notes go with it.`) && del.mutate()}>
                             Remove from list
                         </DropdownItem>
                     </>

@@ -12,6 +12,7 @@ import (
 
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
+	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/torrent"
 	"github.com/v0-0x/kumobox-movies/server/internal/util"
 )
@@ -24,10 +25,32 @@ func (s *Server) torrentRoutes() {
 	m.HandleFunc("POST /api/torrents/search", h(s.torrentSearch))
 	m.HandleFunc("POST /api/torrents/download", h(s.torrentDownload))
 
-	m.HandleFunc("GET /api/torrent-client/status", h(func(r *http.Request) (any, error) { return s.app.Torrents.Status(r.Context()), nil }))
-	m.HandleFunc("GET /api/torrent-client/list", h(s.torrentList))
-	m.HandleFunc("POST /api/torrent-client/action", h(s.torrentAction))
-	m.HandleFunc("POST /api/torrent-client/start", h(func(r *http.Request) (any, error) { return nil, s.app.Torrents.StartClient(r.Context()) }))
+	// When this KumoBox's downloads go to another (a TV's to its computer), its
+	// torrents are that one's (hostTorrents).
+	m.HandleFunc("GET /api/torrent-client/status", h(func(r *http.Request) (any, error) {
+		if st, ok := s.hostTorrentStatus(r); ok {
+			return st, nil
+		}
+		return s.app.Torrents.Status(r.Context()), nil
+	}))
+	m.HandleFunc("GET /api/torrent-client/list", h(func(r *http.Request) (any, error) {
+		if raw, ok, err := s.hostTorrents(r, "list"); ok {
+			return raw, err
+		}
+		return s.torrentList(r)
+	}))
+	m.HandleFunc("POST /api/torrent-client/action", h(func(r *http.Request) (any, error) {
+		if raw, ok, err := s.hostTorrents(r, "action"); ok {
+			return raw, err
+		}
+		return s.torrentAction(r)
+	}))
+	m.HandleFunc("POST /api/torrent-client/start", h(func(r *http.Request) (any, error) {
+		if raw, ok, err := s.hostTorrents(r, "start"); ok {
+			return raw, err
+		}
+		return nil, s.app.Torrents.StartClient(r.Context())
+	}))
 	m.HandleFunc("POST /api/torrent-client/add", h(s.torrentAdd))
 
 	m.HandleFunc("GET /api/autodownloader/rules", h(func(r *http.Request) (any, error) { return s.app.AutoDL.Rules() }))
@@ -177,6 +200,7 @@ func (s *Server) torrentDownload(r *http.Request) (any, error) {
 	// Torrents going to the same folder are sent together.
 	var paths []string
 	byPath := map[string][]string{}
+	var all []string
 	for _, res := range body.Results {
 		if res == nil {
 			continue
@@ -185,6 +209,7 @@ func (s *Server) torrentDownload(r *http.Request) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", res.Name, err)
 		}
+		all = append(all, m)
 		season := -1
 		if media.IsShow() {
 			season = torrent.ResultSeason(res, def)
@@ -194,6 +219,9 @@ func (s *Server) torrentDownload(r *http.Request) (any, error) {
 			paths = append(paths, p)
 		}
 		byPath[p] = append(byPath[p], m)
+	}
+	if out, sent, err := s.sendDownload(r.Context(), share.DownloadTorrent, share.TorrentDownload{MediaID: body.MediaID, URIs: all}); sent {
+		return out, err
 	}
 	n := 0
 	for _, p := range paths {
@@ -296,13 +324,11 @@ func (s *Server) torrentAdd(r *http.Request) (any, error) {
 	if !strings.HasPrefix(body.Magnet, "magnet:") && !strings.HasPrefix(body.Magnet, "http") {
 		return nil, badRequest("enter a magnet link or a .torrent URL")
 	}
-	var media *catalog.Media
-	if body.MediaID > 0 {
-		if m, err := s.app.Platform.MediaLite(r.Context(), body.MediaID); err == nil {
-			media = m
-		}
+	if out, sent, err := s.sendDownload(r.Context(), share.DownloadTorrent, share.TorrentDownload{MediaID: body.MediaID, URIs: []string{body.Magnet}}); sent {
+		return out, err
 	}
-	return nil, s.app.Torrents.Add(r.Context(), []string{body.Magnet}, s.app.Torrents.SavePath(media, -1, s.mediaFiles(body.MediaID)))
+	_, err := s.addTorrents(r.Context(), body.MediaID, []string{body.Magnet})
+	return nil, err
 }
 
 // ---------------------------------------------------------------------------

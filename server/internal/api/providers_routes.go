@@ -14,12 +14,12 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
-	"github.com/v0-0x/kumobox-movies/server/internal/downloads"
 	"github.com/v0-0x/kumobox-movies/server/internal/extensions"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/mediaserver"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/stremio"
+	"github.com/v0-0x/kumobox-movies/server/internal/share"
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
 
@@ -599,45 +599,22 @@ func (s *Server) providerDownload(r *http.Request) (any, error) {
 	if err := decode(r, &body); err != nil {
 		return nil, err
 	}
-	if body.MediaID <= 0 {
-		return nil, badRequest("missing mediaId")
+	sd := share.StreamDownload{MediaID: body.MediaID, Provider: body.Provider, Quality: body.Quality}
+	for _, k := range body.Episodes {
+		sd.Episodes = append(sd.Episodes, float64(k))
 	}
-	media, err := s.app.Platform.MediaLite(r.Context(), body.MediaID)
+	// Downloads go to another KumoBox (a TV's, say: to the computer's).
+	if out, sent, err := s.sendDownload(r.Context(), share.DownloadStream, sd); sent {
+		return out, err
+	}
+	items, err := s.queueStreamDownload(r.Context(), sd)
 	if err != nil {
 		return nil, err
 	}
-	keys := body.Episodes
-	if !media.IsShow() {
-		keys = []int{catalog.MovieEpisode}
-	}
-	if len(keys) == 0 {
-		return nil, badRequest("no episode to download")
-	}
-	if body.Provider != "" {
-		found := false
-		for _, p := range s.app.StreamProviders() {
-			found = found || p.ID() == body.Provider
-		}
-		if !found {
-			return nil, badRequest(fmt.Sprintf("streaming provider %q is not installed or is disabled", body.Provider))
-		}
-	}
-	items := []*downloads.Item{}
-	for _, key := range keys {
-		if _, e := catalog.SplitKey(key); key <= 0 || e <= 0 {
-			return nil, badRequest(fmt.Sprintf("invalid episode %d", key))
-		}
-		it, err := s.app.Downloads.Enqueue(downloads.Item{
-			MediaID: media.ID, Episode: key, Title: app.DownloadTitle(media), Image: media.CoverImage.Large,
-			Source: "stream", Provider: body.Provider, Quality: body.Quality,
-		})
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, it)
-	}
 	if len(items) == 1 {
-		s.app.Hub.Info("Queued " + app.EpisodeTitle(media, items[0].Episode))
+		if media, err := s.app.Platform.MediaLite(r.Context(), body.MediaID); err == nil {
+			s.app.Hub.Info("Queued " + app.EpisodeTitle(media, items[0].Episode))
+		}
 	} else {
 		s.app.Hub.Info(fmt.Sprintf("Queued %d downloads", len(items)))
 	}

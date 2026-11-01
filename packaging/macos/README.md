@@ -37,7 +37,7 @@ Letterboxd username.
 | mpv | The external player (optional: KumoBox has its own) |
 | qBittorrent or Transmission | Torrents (optional) |
 
-**Settings › App › Programs › Install missing programs** downloads ready-made
+**Settings › Desktop app & programs › Install missing programs** downloads ready-made
 ffmpeg, ffprobe and yt-dlp for your Mac (Apple silicon or Intel) into KumoBox's
 own folder, `~/Library/Application Support/KumoBox/bin`, in a Terminal window:
 no Homebrew, no password. ffmpeg comes from
@@ -57,8 +57,8 @@ doesn't give apps those folders.
 
 For torrents, KumoBox talks to [qBittorrent](https://www.qbittorrent.org)'s Web
 UI or to [Transmission](https://transmissionbt.com)'s remote access: turn it on
-in the torrent client, and set the address and login in **Settings › Torrent
-Client**.
+in the torrent client, and set the address and login in **Settings ›
+Torrents**.
 
 ## Where KumoBox keeps its files
 
@@ -68,7 +68,7 @@ Client**.
 | The window's own data (browser cache, local storage) | `~/Library/Application Support/KumoBox/electron` |
 | Programs the setup downloaded | `~/Library/Application Support/KumoBox/bin` |
 | Updates being downloaded | `~/Library/Caches/kumobox/update` |
-| The local library, until you pick yours in **Settings › Local Library** | `~/Movies` |
+| The local library, until you pick yours in **Settings › Local library** | `~/Movies` |
 
 ## Updates
 
@@ -104,5 +104,8 @@ the zip as an update unpacks it, and that it starts and its server answers)
 and keeps the disk image and the zip as downloadable workflow artifacts, so a
 branch can be tried before it's merged. Only pushes to the default branch (or
 a run from the **Actions** tab with **publish** ticked) publish the release
-`macos-v<version>`. The version is `1.0.<number of commits>`, like the Windows
-release's. The newest 10 macOS releases are kept.
+`macos-v<version>`. The version is `2.0.<commits since 2.0.0's>`
+(`1.0.<number of commits>` before), like the Windows release's. Each published
+build is a beta (a pre-release) unless its commit's message says `[stable]` or
+it's run by hand as stable (see packaging/windows/README.md). The newest 10
+stable macOS releases and the newest 10 betas are kept.

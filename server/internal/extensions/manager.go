@@ -216,7 +216,9 @@ type Manager struct {
 	db       *db.DB
 	settings *config.Store
 	hub      *events.Hub
-	fetcher  *Fetcher
+	// fetcher makes the requests of the extensions, each with its own
+	// cookies (Isolated), and downloads Nuvio repositories.
+	fetcher *Fetcher
 
 	mu     sync.RWMutex
 	exts   map[string]*Loaded
@@ -375,7 +377,7 @@ func (m *Manager) start(ctx context.Context, man *Manifest, payload string, pref
 		Prefs:           prefs,
 		Store:           m.store(man.ID),
 		Storage:         NewStorage(m.db, man.ID),
-		Fetcher:         m.fetcher.Isolated(), // own cookie jar, not shared across extensions
+		Fetcher:         NewFetcher(), // its own cookies, not shared across extensions
 		OnTooMuchMemory: onTooMuchMemory,
 	})
 }
@@ -460,6 +462,15 @@ func (m *Manager) Install(ctx context.Context, manifestURI string) (Info, error)
 		return Info{}, fmt.Errorf("the extension code doesn't compile: %w", err)
 	}
 	old, exists := m.get(man.ID)
+	// One with the same ID from elsewhere would get the installed one's
+	// settings (API keys) and storage: it must be removed first.
+	if exists && strings.TrimSpace(manifestURI) != old.Manifest.ManifestURI {
+		from := ""
+		if old.Manifest.ManifestURI != "" {
+			from = ", from " + old.Manifest.ManifestURI
+		}
+		return Info{}, fmt.Errorf("%s (%s) is already installed%s: remove it first to install this one", old.Manifest.Name, man.ID, from)
+	}
 	l := &Loaded{mgr: m, Manifest: man, payload: payload, Enabled: man.Type != TypePlugin}
 	if exists {
 		old.mu.Lock()

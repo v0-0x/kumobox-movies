@@ -1,7 +1,7 @@
 // The building blocks of the Settings pages.
 import { useQuery } from "@tanstack/react-query"
 import { Check, ChevronDown, Eye, EyeOff, Folder, FolderOpen, HardDrive, Plus, X } from "lucide-react"
-import { useEffect, useState } from "react"
+import { createContext, isValidElement, useContext, useEffect, useState } from "react"
 import { Badge, Button, Dialog, Input, Textarea } from "@/components/ui"
 import { api } from "@/lib/api"
 import { useStatus } from "@/lib/queries"
@@ -11,40 +11,97 @@ import { cn } from "@/lib/utils"
 export type SectionProps = { draft: Settings; set: <K extends keyof Settings>(k: K, v: Partial<Settings[K]>) => void }
 
 // ---------------------------------------------------------------------------
+// Search (Settings' search box): every section at once, each setting shown
+// only when it matches. A section or group whose own name matches shows all
+// of its settings (all).
+
+export type SearchState = { words: string[]; all: boolean }
+export const SearchContext = createContext<SearchState | null>(null)
+
+// The words of a node's text (labels can be elements).
+function textOf(n: React.ReactNode): string {
+    if (n == null || typeof n === "boolean") return ""
+    if (typeof n === "string" || typeof n === "number") return String(n)
+    if (Array.isArray(n)) return n.map(textOf).join(" ")
+    if (isValidElement(n)) return textOf((n.props as { children?: React.ReactNode }).children)
+    return ""
+}
+
+export const fold = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+// Each word starts a word of the texts ("port" finds Port, not import).
+export const matches = (words: string[], ...texts: React.ReactNode[]) => {
+    const found = fold(texts.map(textOf).join(" ")).split(/[^\p{L}\p{N}]+/u)
+    return words.every(w => found.some(t => t.startsWith(w)))
+}
+
+// Whether a setting shows: always, unless searching and it doesn't match.
+export function useShown(...texts: React.ReactNode[]) {
+    const search = useContext(SearchContext)
+    return !search || search.all || matches(search.words, ...texts)
+}
+
+// ---------------------------------------------------------------------------
 // Layout helpers
 
 export function Group({ title, children, description }: { title?: string; description?: string; children: React.ReactNode }) {
-    return (
-        <div>
+    const search = useContext(SearchContext)
+    // The group's own name or words found: all of it.
+    const all = !!search && (search.all || (!!title && matches(search.words, title, description)))
+    const body = (
+        <div data-group data-all={all || undefined}>
             {title && <h3 className="mb-1 text-[15px] font-semibold">{title}</h3>}
             {description && <p className="mb-3 text-[13px] text-muted">{description}</p>}
             {!description && title && <div className="mb-3" />}
-            <div className="card divide-y divide-line">{children}</div>
+            <div data-group-body className="card divide-y divide-line">
+                {children}
+            </div>
         </div>
     )
+    return search ? <SearchContext.Provider value={{ ...search, all }}>{body}</SearchContext.Provider> : body
 }
 
 // wide: the value (e.g. a long path) takes the remaining space and wraps
-// instead of pushing out of the card.
-export function Row({ label, help, children, wide }: { label: React.ReactNode; help?: React.ReactNode; children: React.ReactNode; wide?: boolean }) {
+// instead of pushing out of the card. keywords: other words it's found by.
+export function Row({ label, help, children, wide, keywords }: { label: React.ReactNode; help?: React.ReactNode; children: React.ReactNode; wide?: boolean; keywords?: string }) {
+    if (!useShown(label, help, keywords)) return null
     return (
-        <div className="flex items-center justify-between gap-6 px-4 py-3.5">
-            <div className="min-w-0">
+        // On a phone, a control that doesn't fit beside its label goes under it.
+        <div data-setting className="flex items-center justify-between gap-x-6 gap-y-2.5 px-4 py-3.5 max-sm:flex-wrap">
+            <div className="min-w-0 max-sm:flex-1 max-sm:basis-48">
                 <p className="text-sm font-medium">{label}</p>
-                {help && <p className="mt-0.5 text-xs text-subtle">{help}</p>}
+                {help && <p className="mt-0.5 text-[12.5px] leading-snug text-muted">{help}</p>}
             </div>
             <div className={wide ? "flex min-w-0 flex-1 justify-end" : "shrink-0"}>{children}</div>
         </div>
     )
 }
 
-export function Stack({ label, help, children }: { label: React.ReactNode; help?: React.ReactNode; children: React.ReactNode }) {
+export function Stack({ label, help, children, keywords }: { label: React.ReactNode; help?: React.ReactNode; children: React.ReactNode; keywords?: string }) {
+    if (!useShown(label, help, keywords)) return null
     return (
-        <div className="flex flex-col gap-2 px-4 py-3.5">
+        <div data-setting className="flex flex-col gap-2 px-4 py-3.5">
             <p className="text-sm font-medium">{label}</p>
             {children}
-            {help && <p className="text-xs text-subtle">{help}</p>}
+            {help && <p className="text-[12.5px] leading-snug text-muted">{help}</p>}
         </div>
+    )
+}
+
+// Something other than a Row or a Stack that searching should find by text.
+export function Shown({ text, children }: { text: string; children: React.ReactNode }) {
+    if (!useShown(text)) return null
+    return <div data-setting>{children}</div>
+}
+
+// Settings only the computer KumoBox runs on may change (from a device on the
+// network the server keeps them as they are): shown, not editable there.
+export function Locked({ children }: { children: React.ReactNode }) {
+    const { data: status } = useStatus()
+    if (status?.client !== "lan") return <>{children}</>
+    return (
+        <fieldset disabled title="Only the computer KumoBox runs on can change this" className="m-0 min-w-0 border-0 p-0 opacity-55">
+            {children}
+        </fieldset>
     )
 }
 
@@ -81,15 +138,24 @@ export function LanOnly() {
 
 export function Collapsible({ title, children }: { title: string; children: React.ReactNode }) {
     const [open, setOpen] = useState(false)
-    return (
-        <div className="card">
+    // Searching: open, so what's found in it shows.
+    const search = useContext(SearchContext)
+    const all = !!search && (search.all || matches(search.words, title))
+    const shown = open || !!search
+    const body = (
+        <div data-group data-all={all || undefined} className="card">
             <button onClick={() => setOpen(o => !o)} className="flex w-full items-center justify-between px-4 py-3.5 text-[15px] font-medium">
                 {title}
-                <ChevronDown className={cn("size-4 text-muted transition-transform duration-200", open && "rotate-180")} />
+                <ChevronDown className={cn("size-4 text-muted transition-transform duration-200", shown && "rotate-180")} />
             </button>
-            {open && <div className="divide-y divide-line border-t border-line">{children}</div>}
+            {shown && (
+                <div data-group-body className="divide-y divide-line border-t border-line">
+                    {children}
+                </div>
+            )}
         </div>
     )
+    return search ? <SearchContext.Provider value={{ ...search, all }}>{body}</SearchContext.Provider> : body
 }
 
 export function DirPicker({ open, onOpenChange, onPick, start }: { open: boolean; onOpenChange: (v: boolean) => void; onPick: (p: string) => void; start?: string }) {

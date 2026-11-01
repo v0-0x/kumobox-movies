@@ -133,7 +133,7 @@ func TestApplyLinux(t *testing.T) {
 		t.Fatalf("makepkg ran as\n%q\nwant\n%q", mk, want)
 	}
 	pk := readLines(t, filepath.Join(out, "pkexec"))
-	if want := []string{"pacman", "-U", "--noconfirm", filepath.Join(pkgdest, "kumobox-1.0.0-1-x86_64.pkg.tar.zst")}; strings.Join(pk, "\n") != strings.Join(want, "\n") {
+	if want := []string{"pacman", "-U", "--noconfirm", "--ask=4", filepath.Join(pkgdest, "kumobox-1.0.0-1-x86_64.pkg.tar.zst")}; strings.Join(pk, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("pkexec ran with %q, want %q", pk, want)
 	}
 	// The source is gone once built; the package stays until KumoBox restarts.
@@ -192,7 +192,7 @@ func TestApplyLinuxInstallByHand(t *testing.T) {
 			}
 			st := waitState(t, c)
 			pkg := filepath.Join(c.CacheDir, "pkg", "kumobox-1.0.0-1-x86_64.pkg.tar.zst")
-			if st.State != StateReady || st.ManualCommand != "sudo pacman -U --noconfirm '"+pkg+"'" || !strings.Contains(st.Message, "terminal") {
+			if st.State != StateReady || st.ManualCommand != "sudo pacman -U --noconfirm --ask=4 '"+pkg+"'" || !strings.Contains(st.Message, "terminal") {
 				t.Fatalf("state %q: %q / %q", st.State, st.Message, st.ManualCommand)
 			}
 		})

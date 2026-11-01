@@ -2,8 +2,9 @@
 //
 // KumoBox ships three ways, and updates each its own way:
 //   - Arch Linux builds it from source with packaging/arch/PKGBUILD, so the
-//     newest version is the head of the repository's default branch. The
-//     update downloads that source, builds it with makepkg and installs the
+//     newest version is a commit: the newest stable release's, or on the
+//     beta channel the head of the repository's default branch. The update
+//     downloads that source, builds it with makepkg and installs the
 //     package with pacman (through pkexec, which asks for the password).
 //   - Windows installs the GitHub Release "KumoBox <v> for Windows" (tag
 //     windows-v<v>). The update downloads the newest one's installer and
@@ -13,9 +14,12 @@
 //     unpacks it next to the app and, once KumoBox has quit, puts it in the
 //     app's place and opens it (apply_mac.go).
 //
+// Each change is published as a beta first (a GitHub pre-release), and the
+// ones meant for everyone as a stable release. Channel says which a copy
+// gets: stable releases only (the default), or betas too.
+//
 // The requests carry the user's GitHub token when one can be found without
-// asking (see githubToken): a private repository needs one, and it raises
-// GitHub's limit on requests.
+// asking (see githubToken); it raises GitHub's limit on requests.
 package update
 
 import (
@@ -45,6 +49,8 @@ type Version struct {
 	Commit  string `json:"commit"`
 	Date    string `json:"date,omitempty"` // when it was made (RFC 3339)
 	URL     string `json:"url,omitempty"`  // its page on GitHub
+	// Beta: a pre-release, or the default branch's head.
+	Beta bool `json:"beta,omitempty"`
 }
 
 // States of an update being installed.
@@ -84,29 +90,36 @@ type Status struct {
 	// ManualCommand is a command to run in a terminal: to install the
 	// update when KumoBox can't ask for the password, or what the build needs.
 	ManualCommand string `json:"manualCommand,omitempty"`
+	// InstallFile: on Android, the downloaded APK the app asks Android to
+	// install (it's the app that can).
+	InstallFile string `json:"installFile,omitempty"`
 }
 
 const (
 	defaultAPI = "https://api.github.com"
 	// packagedExe is where packaging/arch/PKGBUILD installs the server.
 	packagedExe = "/usr/lib/kumobox/kumobox"
-	// versionPrefix + the number of commits is a build's version, as the
-	// PKGBUILD and the Windows release workflow make it.
-	versionPrefix = "1.0."
-	maxChanges    = 30
-	maxLogLines   = 20
+	// VersionBase is the number of commits of the commit that's 2.0.0
+	// (desktop/package.json's kumoboxVersionBase): a build's version is
+	// 2.0.<commits since then>, as the PKGBUILD and the release workflows
+	// make it, and was 1.0.<commits> before.
+	VersionBase = 161
+	maxChanges  = 30
+	maxLogLines = 20
 	// failureFile keeps why an update failed after KumoBox had quit for it
 	// (in CacheDir), for the next run to show.
 	failureFile = "last-failure.txt"
 )
 
-// Checker looks for updates (30 seconds after Start, then every 6 hours, and
-// when asked) and installs them.
+// Checker looks for updates (just after Start, then every 6 hours, and when
+// asked: the app asks each time it's opened) and installs them.
 type Checker struct {
 	// API is GitHub's REST API (tests use a fake one) and Repo the
-	// repository, "owner/name".
+	// repository, "owner/name"; RepoID its number, which the API is asked
+	// by when set (a renamed repository's old name can be taken).
 	API    string
 	Repo   string
+	RepoID string
 	Client *http.Client
 	Hub    *events.Hub
 	// Exits ends KumoBox when an update needs it to restart or to quit.
@@ -115,8 +128,12 @@ type Checker struct {
 	Version string
 	Commit  string
 	// GOOS decides how KumoBox updates: "windows" and "darwin" from
-	// releases, otherwise from the default branch.
+	// releases, otherwise from source (a stable release's, or the default
+	// branch's head).
 	GOOS string
+	// Channel returns "beta" for betas too, anything else (or nil) for
+	// stable releases only.
+	Channel func() string
 	// Executable is KumoBox's server program, symlinks resolved.
 	Executable func() (string, error)
 	// PackagedExe is where the Arch package installs the server: only that
@@ -155,9 +172,9 @@ type Checker struct {
 // New makes the checker for this copy of KumoBox. It does nothing until Start
 // or a call.
 func New(hub *events.Hub, exits *lifecycle.Exits) *Checker {
-	repo := config.UpdateRepo
-	if r := strings.TrimSpace(os.Getenv("KUMOBOX_UPDATE_REPO")); r != "" {
-		repo = r
+	repo, id := config.UpdateRepo, config.UpdateRepoID
+	if r := strings.TrimSpace(config.Getenv("UPDATE_REPO")); r != "" {
+		repo, id = r, ""
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
@@ -166,6 +183,7 @@ func New(hub *events.Hub, exits *lifecycle.Exits) *Checker {
 	c := &Checker{
 		API:            defaultAPI,
 		Repo:           repo,
+		RepoID:         id,
 		Client:         defaultClient,
 		Hub:            hub,
 		Exits:          exits,
@@ -180,7 +198,7 @@ func New(hub *events.Hub, exits *lifecycle.Exits) *Checker {
 		StartHelper:    util.Detach,
 		ParentPID:      os.Getppid,
 		Writable:       writable,
-		FirstCheck:     30 * time.Second,
+		FirstCheck:     5 * time.Second,
 		Interval:       6 * time.Hour,
 	}
 	c.st.State = StateIdle
@@ -193,7 +211,7 @@ func New(hub *events.Hub, exits *lifecycle.Exits) *Checker {
 // which a download could need more than. Contexts bound every request.
 var defaultClient = &http.Client{
 	Transport: &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 util.PublicProxy,
 		DialContext:           util.PublicDialContext(15 * time.Second),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          10,
@@ -337,6 +355,8 @@ func (c *Checker) applyable() (bool, string) {
 		return true, "KumoBox downloads the installer and runs it: KumoBox closes, the new version installs and KumoBox opens again."
 	case "darwin":
 		return c.macApplyable(exe, err)
+	case "android":
+		return true, "KumoBox downloads the new version and Android asks you to install it."
 	}
 	return false, "KumoBox can't update itself on this system."
 }
@@ -442,7 +462,7 @@ func (c *Checker) describe(err error) (string, string) {
 	case errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusUnauthorized):
 		hint := "If the repository is private, sign in with the GitHub CLI (gh auth login) and check again."
 		if c.GOOS == "windows" {
-			hint = "If the repository is private, sign in to GitHub: Settings › App › Programs › Install missing programs signs you in, or run gh auth login."
+			hint = "If the repository is private, sign in to GitHub: Settings › Desktop app & programs › Install missing programs signs you in, or run gh auth login."
 		}
 		return fmt.Sprintf("KumoBox can't read github.com/%s (HTTP %d).", c.Repo, ae.status), hint
 	case errors.As(err, &ae) && ae.rateLimited:
@@ -454,24 +474,60 @@ func (c *Checker) describe(err error) (string, string) {
 	if errors.As(err, &dnsErr) {
 		return "KumoBox can't reach GitHub: is this computer online?", ""
 	}
-	return "The update check failed: " + err.Error(), ""
+	// Anything else: said plainly, what happened under it as a detail.
+	return "KumoBox couldn't check for updates just now. It tries again later.", "Details: " + err.Error()
 }
 
 func (c *Checker) check(ctx context.Context) (result, error) {
-	g := &github{api: strings.TrimRight(c.API, "/"), repo: c.Repo, client: c.Client, token: c.Token(ctx), userAgent: "KumoBox/" + c.Version}
+	g := &github{api: strings.TrimRight(c.API, "/"), repo: c.Repo, repoID: c.RepoID, client: c.Client, token: c.Token(ctx), userAgent: "KumoBox/" + c.Version}
 	if fromReleases(c.GOOS) {
 		return c.checkReleases(ctx, g)
 	}
-	return c.checkBranch(ctx, g)
+	if c.beta() {
+		return c.checkBranch(ctx, g)
+	}
+	return c.checkStable(ctx, g)
 }
 
-// checkBranch: on Linux the newest version is the head of the default
-// branch, which the PKGBUILD builds.
+// beta: this copy gets betas too.
+func (c *Checker) beta() bool {
+	return c.Channel != nil && c.Channel() == "beta"
+}
+
+// checkStable: on Linux, stable copies build the newest stable release's
+// commit (that of any system's: they're made from the same commits).
+func (c *Checker) checkStable(ctx context.Context, g *github) (result, error) {
+	var releases []release
+	if _, err := g.getJSON(ctx, g.root()+"/releases?per_page=100", &releases); err != nil {
+		return result{}, err
+	}
+	var best *release
+	var version string
+	for _, prefix := range []string{"windows-v", "macos-v", "android-v"} {
+		if r := pickRelease(releases, prefix, false); r != nil {
+			if v := strings.TrimPrefix(r.TagName, prefix); best == nil || compareVersions(v, version) > 0 {
+				best, version = r, v
+			}
+		}
+	}
+	if best == nil {
+		return result{note: "There's no stable release of KumoBox yet."}, nil
+	}
+	commit, err := g.commit(ctx, best.TagName)
+	if err != nil {
+		return result{}, err
+	}
+	latest := &Version{Version: version, Commit: commit.SHA, Date: commit.Commit.Committer.Date, URL: best.HTMLURL}
+	return c.against(ctx, g, latest, "the newest stable release")
+}
+
+// checkBranch: on Linux, beta copies build the head of the default branch,
+// where each change lands first.
 func (c *Checker) checkBranch(ctx context.Context, g *github) (result, error) {
 	var repo struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	if _, err := g.getJSON(ctx, "/repos/"+g.repo, &repo); err != nil {
+	if _, err := g.getJSON(ctx, g.root(), &repo); err != nil {
 		return result{}, err
 	}
 	if repo.DefaultBranch == "" {
@@ -481,11 +537,18 @@ func (c *Checker) checkBranch(ctx context.Context, g *github) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	latest := &Version{Commit: head.SHA, Date: head.Commit.Committer.Date, URL: head.HTMLURL}
+	latest := &Version{Commit: head.SHA, Date: head.Commit.Committer.Date, URL: head.HTMLURL, Beta: true}
 	// The version is only for showing, so a failure here doesn't matter.
 	if n := g.commitCount(ctx, head.SHA); n > 0 {
-		latest.Version = fmt.Sprintf("%s%d", versionPrefix, n)
+		latest.Version = VersionOf(n)
 	}
+	return c.against(ctx, g, latest, "GitHub's "+repo.DefaultBranch)
+}
+
+// against compares this build with latest (a commit), named what for the
+// notes: whether it's newer, and what changed.
+func (c *Checker) against(ctx context.Context, g *github, latest *Version, what string) (result, error) {
+	head := latest.Commit
 	res := result{latest: latest}
 	if c.Commit == "" {
 		res.available = true
@@ -495,7 +558,7 @@ func (c *Checker) checkBranch(ctx context.Context, g *github) (result, error) {
 	// Against the head's commit, not the branch: the version, the changes
 	// and the source an update builds then all match, even if the branch
 	// moves meanwhile.
-	cmp, err := g.compare(ctx, c.Commit, head.SHA)
+	cmp, err := g.compare(ctx, c.Commit, head)
 	var ae *apiError
 	if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusUnprocessableEntity) {
 		res.available = true
@@ -510,16 +573,19 @@ func (c *Checker) checkBranch(ctx context.Context, g *github) (result, error) {
 		res.available = cmp.AheadBy > 0
 	case "diverged":
 		res.available = cmp.AheadBy > 0
-		res.note = "This copy has changes that aren't on GitHub: updating replaces them with GitHub's " + repo.DefaultBranch + "."
+		res.note = "This copy has changes that aren't on GitHub: updating replaces them with " + what + "."
 	case "behind":
-		res.note = "This copy is newer than GitHub's " + repo.DefaultBranch + "."
+		res.note = "This copy is newer than " + what + "."
+		if !c.beta() {
+			res.note += " It stays until a newer stable release comes out."
+		}
 	}
 	if res.available {
 		res.changes, res.changesTotal = cmp.changes(), cmp.AheadBy
 		if len(cmp.Commits) < cmp.AheadBy {
 			// GitHub lists the first 250 commits of a comparison: the newest
 			// ones come from the branch's history instead.
-			if recent, err := g.recentSubjects(ctx, head.SHA); err == nil {
+			if recent, err := g.recentSubjects(ctx, head); err == nil {
 				res.changes = recent
 			}
 		}
@@ -527,56 +593,71 @@ func (c *Checker) checkBranch(ctx context.Context, g *github) (result, error) {
 	return res, nil
 }
 
-// fromReleases: Windows and macOS update from GitHub Releases, Linux from
-// the default branch.
-func fromReleases(goos string) bool { return goos == "windows" || goos == "darwin" }
+// fromReleases: Windows, macOS and Android update from GitHub Releases,
+// Linux from the default branch.
+func fromReleases(goos string) bool {
+	return goos == "windows" || goos == "darwin" || goos == "android"
+}
 
 // releasePrefix starts the tags of a system's releases: <prefix><version>.
 func releasePrefix(goos string) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return "macos-v"
+	case "android":
+		return "android-v"
 	}
 	return "windows-v"
 }
 
 // releaseAsset names the release file an update installs.
 func releaseAsset(goos, version string) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return "KumoBox-" + version + "-macos-universal.zip"
+	case "android":
+		return "KumoBox-" + version + "-android.apk"
 	}
 	return "KumoBox-Setup-" + version + "-windows-x64.exe"
 }
 
 // releaseFile says what that file is, for messages.
 func releaseFile(goos string) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return "zip of the app"
+	case "android":
+		return "APK"
 	}
 	return "installer"
 }
 
 // checkReleases: on Windows the newest version is the newest release tagged
-// windows-v<version>, on macOS macos-v<version>.
+// windows-v<version>, on macOS macos-v<version> (betas only on the beta
+// channel). 100 at a time: each system's newest betas and stable releases.
 func (c *Checker) checkReleases(ctx context.Context, g *github) (result, error) {
 	var releases []release
-	if _, err := g.getJSON(ctx, "/repos/"+g.repo+"/releases?per_page=50", &releases); err != nil {
+	if _, err := g.getJSON(ctx, g.root()+"/releases?per_page=100", &releases); err != nil {
 		return result{}, err
 	}
 	prefix := releasePrefix(c.GOOS)
-	best := pickRelease(releases, prefix)
+	best := pickRelease(releases, prefix, c.beta())
 	if best == nil {
-		system := "Windows"
-		if c.GOOS == "darwin" {
-			system = "macOS"
+		system := map[string]string{"darwin": "macOS", "android": "Android"}[c.GOOS]
+		if system == "" {
+			system = "Windows"
 		}
 		return result{note: "There's no KumoBox release for " + system + " yet."}, nil
 	}
 	version := strings.TrimPrefix(best.TagName, prefix)
-	latest := &Version{Version: version, Date: best.PublishedAt, URL: best.HTMLURL}
+	latest := &Version{Version: version, Date: best.PublishedAt, URL: best.HTMLURL, Beta: best.Prerelease}
 	if isSHA(best.TargetCommitish) {
 		latest.Commit = best.TargetCommitish
 	}
 	res := result{latest: latest, available: compareVersions(version, c.Version) > 0}
+	if !c.beta() && compareVersions(version, c.Version) < 0 {
+		res.note = "This copy is a beta, newer than the newest stable release (" + version + "). It stays until a newer stable release comes out."
+	}
 	file := releaseAsset(c.GOOS, version)
 	for _, a := range best.Assets {
 		if a.Name == file {
@@ -593,14 +674,23 @@ func (c *Checker) checkReleases(ctx context.Context, g *github) (result, error) 
 	return res, nil
 }
 
+// VersionOf is the version of the build with n commits.
+func VersionOf(n int) string {
+	if n >= VersionBase {
+		return fmt.Sprintf("2.0.%d", n-VersionBase)
+	}
+	return fmt.Sprintf("1.0.%d", n)
+}
+
 // pickRelease returns the published release with the highest version
-// tagged <prefix><version> (windows-v1.0.9), or nil.
-func pickRelease(releases []release, prefix string) *release {
+// tagged <prefix><version> (windows-v1.0.9), or nil; pre-releases (betas)
+// only with beta.
+func pickRelease(releases []release, prefix string, beta bool) *release {
 	var best *release
 	for i := range releases {
 		r := &releases[i]
 		v, ok := strings.CutPrefix(r.TagName, prefix)
-		if r.Draft || r.Prerelease || !ok || !releaseVersion.MatchString(v) {
+		if r.Draft || (r.Prerelease && !beta) || !ok || !releaseVersion.MatchString(v) {
 			continue
 		}
 		if best == nil || compareVersions(v, strings.TrimPrefix(best.TagName, prefix)) > 0 {
@@ -675,6 +765,12 @@ func (c *Checker) Apply() error {
 	defer c.mu.Unlock()
 	// Installing: on Windows and macOS, KumoBox is quitting for the new
 	// version.
+	// Android: the APK is there, Android asks again (the last time was
+	// cancelled).
+	if c.GOOS == "android" && c.st.State == StateInstalling && c.st.InstallFile != "" && !c.applying {
+		c.publishLocked()
+		return nil
+	}
 	if c.applying || c.st.State == StateInstalling {
 		return ErrRunning
 	}
@@ -693,18 +789,20 @@ func (c *Checker) Apply() error {
 	}
 	c.applying = true
 	c.st.State, c.st.Progress, c.st.Message = StateDownloading, -1, "Downloading KumoBox "+display(target)+"…"
-	c.st.Log, c.st.ManualCommand = nil, ""
+	c.st.Log, c.st.ManualCommand, c.st.InstallFile = nil, "", ""
 	c.publishLocked()
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		g := &github{api: strings.TrimRight(c.API, "/"), repo: c.Repo, client: c.Client, token: c.Token(c.ctx), userAgent: "KumoBox/" + c.Version}
+		g := &github{api: strings.TrimRight(c.API, "/"), repo: c.Repo, repoID: c.RepoID, client: c.Client, token: c.Token(c.ctx), userAgent: "KumoBox/" + c.Version}
 		var err error
 		switch c.GOOS {
 		case "windows":
 			err = c.applyWindows(c.ctx, g, target, inst)
 		case "darwin":
 			err = c.applyMac(c.ctx, g, target, inst)
+		case "android":
+			err = c.applyAndroid(c.ctx, g, target, inst)
 		default:
 			err = c.applyLinux(c.ctx, g, target)
 		}

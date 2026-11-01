@@ -89,7 +89,7 @@ func (c *Checker) applyMac(ctx context.Context, g *github, target Version, zipAs
 		return err
 	}
 	path := filepath.Join(dir, filepath.Base(zipAsset.Name))
-	err = c.download(ctx, g, "/repos/"+g.repo+"/releases/assets/"+strconv.FormatInt(zipAsset.ID, 10), "application/octet-stream", path, zipAsset.Size, func(done, total int64) {
+	err = c.download(ctx, g, g.root()+"/releases/assets/"+strconv.FormatInt(zipAsset.ID, 10), "application/octet-stream", path, zipAsset.Size, func(done, total int64) {
 		c.progress(StateDownloading, percent(done, total), "Downloading KumoBox "+display(target)+"…")
 	})
 	if err != nil {
@@ -144,12 +144,13 @@ open "$2"`
 // fails, KumoBox restarts as it was and says why (see lifecycle.Exit).
 func (c *Checker) swapApp(app, newApp, staging string, target Version) error {
 	old := filepath.Join(staging, "old.app")
+	dest := app
 	if err := os.Rename(app, old); err != nil {
 		_ = removeAll(staging)
 		c.saveFailure(swapFailure(err, target))
 		return fmt.Errorf("moving the old app: %w", err)
 	}
-	if err := os.Rename(newApp, app); err != nil {
+	if err := os.Rename(newApp, dest); err != nil {
 		if back := os.Rename(old, app); back != nil {
 			log.Printf("update: couldn't put the old app back in %s: %v", app, back)
 		}
@@ -157,7 +158,7 @@ func (c *Checker) swapApp(app, newApp, staging string, target Version) error {
 		c.saveFailure(swapFailure(err, target))
 		return fmt.Errorf("moving the new app: %w", err)
 	}
-	if err := c.StartHelper("/bin/sh", "-c", reopen, "kumobox-update", strconv.Itoa(c.ParentPID()), app, staging); err != nil {
+	if err := c.StartHelper("/bin/sh", "-c", reopen, "kumobox-update", strconv.Itoa(c.ParentPID()), dest, staging); err != nil {
 		// The new version is in place: KumoBox restarts into it instead, and
 		// its next update removes the old app.
 		return fmt.Errorf("starting the helper that opens the new version: %w", err)
@@ -172,6 +173,27 @@ func swapFailure(err error, target Version) string {
 		msg += " If macOS said KumoBox was prevented from modifying apps, allow it in System Settings › Privacy & Security › App Management and update again;"
 	}
 	return msg + " or download the new version from its release page."
+}
+
+// noLinkOnTheWay fails when rel in dir, or a folder on the way to it, is
+// a link an earlier entry made: what's written through links could land
+// out of dir, though each link points inside the app.
+func noLinkOnTheWay(dir, rel string) error {
+	p := dir
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		p = filepath.Join(p, part)
+		fi, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("unsafe path in the archive: %q goes through a link", rel)
+		}
+	}
+	return nil
 }
 
 // unzipApp unpacks a zip of an app into dir, which must not exist yet, and
@@ -201,6 +223,9 @@ func unzipApp(archive, dir string) (string, error) {
 		}
 		tops[top] = true
 		target := filepath.Join(dir, rel)
+		if err := noLinkOnTheWay(dir, rel); err != nil {
+			return "", err
+		}
 		mode := f.Mode()
 		switch {
 		case mode.IsDir():

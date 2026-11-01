@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/catalog"
@@ -31,10 +33,22 @@ import (
 func (s *Server) routes() {
 	m := s.mux
 	s.peerRoutes()
+	s.noteRoutes()
+	s.cleanupRoutes()
+	s.backupRoutes()
 
 	// --- core
 	m.HandleFunc("GET /api/status", h(s.status))
 	m.HandleFunc("GET /api/settings", h(func(r *http.Request) (any, error) { return settingsFor(r, s.app.Settings.Get()), nil }))
+	// The Stats page: what was watched in KumoBox, month by month.
+	m.HandleFunc("GET /api/stats/monthly", h(func(r *http.Request) (any, error) {
+		n := queryInt(r, "months")
+		if n <= 0 {
+			n = 12
+		}
+		n = min(n, 36)
+		return s.app.History.Monthly(n, s.app.Settings.Get().Playback.CompletionThreshold, time.Now(), time.Local)
+	}))
 	m.HandleFunc("PUT /api/settings", h(s.saveSettings))
 	m.HandleFunc("GET /api/events", s.events)
 	m.HandleFunc("POST /api/auth/server-login", s.serverLogin)
@@ -149,6 +163,7 @@ func (s *Server) routes() {
 			s.app.Share.ForwardHLS(w, r, id, r.PathValue("name"))
 			return
 		}
+		defer s.awakeFor(r)()
 		s.app.HLS.Serve(w, r, r.PathValue("id"), r.PathValue("name"))
 	})
 	m.HandleFunc("DELETE /api/local/hls/{id}", h(func(r *http.Request) (any, error) {
@@ -164,6 +179,12 @@ func (s *Server) routes() {
 			s.localSubtitle(w, r)
 		}
 	})
+	// The seek bar's preview at ?t= (stream.ServeThumb).
+	m.HandleFunc("GET /api/local/thumb", func(w http.ResponseWriter, r *http.Request) {
+		if !s.forwardShared(w, r, "thumb") {
+			s.localThumb(w, r)
+		}
+	})
 	m.HandleFunc("GET /api/proxy", stream.ServeProxy)
 	m.Handle("GET /api/img", s.app.Images)
 	m.HandleFunc("GET /api/images/stats", h(func(r *http.Request) (any, error) { return s.app.Images.Stats(), nil }))
@@ -174,6 +195,32 @@ func (s *Server) routes() {
 
 	// --- downloads
 	m.HandleFunc("GET /api/downloads", h(func(r *http.Request) (any, error) { return s.app.Downloads.List(), nil }))
+	// The downloads of the KumoBox this one's go to (a TV's computer): its list,
+	// and cancel or retry there.
+	m.HandleFunc("GET /api/downloads/host", h(func(r *http.Request) (any, error) {
+		raw, host, ok, err := s.app.Share.DownloadsHost(r.Context(), "list", nil)
+		out := map[string]any{"host": host, "items": raw}
+		if !ok {
+			out["items"] = nil
+		} else if err != nil {
+			out["items"], out["error"] = nil, err.Error()
+		}
+		return out, nil
+	}))
+	m.HandleFunc("POST /api/downloads/host/{id}/{op}", h(func(r *http.Request) (any, error) {
+		op := r.PathValue("op")
+		if op != "cancel" && op != "retry" {
+			return nil, notFound("no such thing to do")
+		}
+		raw, _, ok, err := s.app.Share.DownloadsHost(r.Context(), url.PathEscape(r.PathValue("id"))+"/"+op, map[string]any{})
+		if !ok {
+			return nil, badRequest("downloads are saved on this device")
+		}
+		if err != nil {
+			return nil, badRequest(err.Error())
+		}
+		return raw, nil
+	}))
 	m.HandleFunc("POST /api/downloads/{id}/cancel", h(func(r *http.Request) (any, error) { s.app.Downloads.Cancel(r.PathValue("id")); return nil, nil }))
 	m.HandleFunc("POST /api/downloads/{id}/retry", h(func(r *http.Request) (any, error) { return nil, s.app.Downloads.Retry(r.PathValue("id")) }))
 	m.HandleFunc("DELETE /api/downloads/{id}", h(func(r *http.Request) (any, error) { s.app.Downloads.Remove(r.PathValue("id")); return nil, nil }))
@@ -325,7 +372,13 @@ func (s *Server) status(r *http.Request) (any, error) {
 		lan = lanURLs(cfg.Server.Port)
 	}
 	viewer := s.app.Platform.Viewer() // the connected Letterboxd member
-	return map[string]any{
+	// Home's questions about the other KumoBoxes: for this computer, which
+	// decides about sharing.
+	var prompts []share.Prompt
+	if isTrusted(r) {
+		prompts = s.app.Share.Prompts()
+	}
+	st := map[string]any{
 		"version":        config.AppVersion,
 		"appName":        config.AppName,
 		"user":           viewer,
@@ -333,17 +386,26 @@ func (s *Server) status(r *http.Request) (any, error) {
 		"letterboxd":     viewer,
 		"tmdbConfigured": s.app.Platform.Configured(),
 		"features":       feat,
-		"client":         kind,
-		"hostname":       host,
-		"platform":       runtime.GOOS,
-		"scanning":       s.app.Scanner.Running(),
-		"dataDir":        s.app.DataDir,
-		"listenAddr":     s.Addr(),
-		"lanUrls":        lan,
-		"webUiForced":    s.ForceWebUI,
-		"setupRunning":   setupRunning(),
-		"settings":       settingsFor(r, cfg),
-	}, nil
+		// The KumoBoxes this one is paired with (Home's Sync).
+		"paired": s.app.Share.Paired(),
+		// The computers sharing with this one that don't answer (asleep).
+		"asleep": s.app.Share.Asleep(),
+		// Share with a new one, update one (Home).
+		"devicePrompts": prompts,
+		// Kept awake now: another device is playing this computer's files.
+		"keptAwake":    s.app.Awake.Active(),
+		"client":       kind,
+		"hostname":     host,
+		"platform":     runtime.GOOS,
+		"scanning":     s.app.Scanner.Running(),
+		"dataDir":      s.app.DataDir,
+		"listenAddr":   s.Addr(),
+		"lanUrls":      lan,
+		"webUiForced":  s.ForceWebUI,
+		"setupRunning": setupRunning(),
+		"settings":     settingsFor(r, cfg),
+	}
+	return st, nil
 }
 
 func (s *Server) saveSettings(r *http.Request) (any, error) {
@@ -378,9 +440,14 @@ func (s *Server) saveSettings(r *http.Request) (any, error) {
 		// Nor the extension settings: the marketplace is where they're
 		// installed and updated from on this computer.
 		next.Extensions = cur.Extensions
-		next.Library.Dir, next.Library.ExtraDirs = cur.Library.Dir, cur.Library.ExtraDirs
+		next.Library.Off, next.Library.Dir, next.Library.ExtraDirs = cur.Library.Off, cur.Library.Dir, cur.Library.ExtraDirs
 		// Who this computer's library is shared with is its own business.
 		next.Sharing = cur.Sharing
+		// Where extensions come from, and the app Discord's presence goes to.
+		next.Extensions.MarketplaceURL = cur.Extensions.MarketplaceURL
+		next.Discord.ClientID = cur.Discord.ClientID
+		// Which builds this computer installs.
+		next.Updates = cur.Updates
 	}
 	// Turning off the web UI from a browser would lock the browser out.
 	if kindOf(r) != clientShell && !next.Server.WebUI && cur.Server.WebUI && !s.ForceWebUI {
@@ -446,6 +513,12 @@ func (s *Server) serverLogin(w http.ResponseWriter, r *http.Request) {
 	// One attempt at a time, each wrong one holding the next for a second:
 	// guesses sent side by side wait their turn instead of all being
 	// answered at once. Asked again meanwhile, the device is told to wait.
+	// An address with too many wrong ones waits longer each time.
+	ip := clientIP(r).String()
+	if wait := s.logins.wait(ip, time.Now()); wait > 0 {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": fmt.Sprintf("too many wrong passwords: try again in %d minute(s)", int(wait.Minutes())+1)})
+		return
+	}
 	if !s.loginMu.TryLock() {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts: try again in a moment"})
 		return
@@ -453,11 +526,13 @@ func (s *Server) serverLogin(w http.ResponseWriter, r *http.Request) {
 	defer s.loginMu.Unlock()
 	cfg := s.app.Settings.Get()
 	if cfg.Server.Password == "" || passwordEq(body.Password, cfg.Server.Password) {
+		s.logins.passed(ip)
 		http.SetCookie(w, &http.Cookie{Name: "kumobox_session", Value: s.sessionToken(), Path: "/", HttpOnly: true,
 			SameSite: http.SameSiteStrictMode, Expires: time.Now().Add(365 * 24 * time.Hour)})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
+	s.logins.failed(ip, time.Now())
 	time.Sleep(time.Second) // slow down guessing
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "wrong password"})
 }
@@ -467,6 +542,67 @@ func (s *Server) serverLogin(w http.ResponseWriter, r *http.Request) {
 func passwordEq(a, b string) bool {
 	ha, hb := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
 	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
+}
+
+// trusted wraps a handler only this computer may use (not the LAN).
+func trusted(fn func(r *http.Request) (any, error)) func(r *http.Request) (any, error) {
+	return func(r *http.Request) (any, error) {
+		if !isTrusted(r) {
+			return nil, forbidden("only available on this computer")
+		}
+		return fn(r)
+	}
+}
+
+// loginGuard counts wrong server passwords by address: after maxWrong in a
+// row, that address waits (longer each time) before it may try again.
+type loginGuard struct {
+	mu    sync.Mutex
+	tries map[string]*loginTries
+}
+
+type loginTries struct {
+	wrong int
+	until time.Time
+}
+
+const maxWrong = 5
+
+func (g *loginGuard) wait(ip string, now time.Time) time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if t := g.tries[ip]; t != nil && now.Before(t.until) {
+		return t.until.Sub(now)
+	}
+	return 0
+}
+
+func (g *loginGuard) failed(ip string, now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.tries == nil {
+		g.tries = map[string]*loginTries{}
+	}
+	if len(g.tries) > 10000 {
+		clear(g.tries)
+	}
+	t := g.tries[ip]
+	if t == nil {
+		t = &loginTries{}
+		g.tries[ip] = t
+	}
+	t.wrong++
+	if t.wrong >= maxWrong {
+		// 1 minute, then 2, 4… up to an hour.
+		d := time.Minute << min(t.wrong-maxWrong, 6)
+		t.until = now.Add(min(d, time.Hour))
+	}
+}
+
+func (g *loginGuard) passed(ip string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.tries, ip)
 }
 
 func startDetached(name string, args ...string) error {

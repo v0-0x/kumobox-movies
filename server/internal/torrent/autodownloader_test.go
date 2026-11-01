@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"io"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -543,5 +544,48 @@ func TestRules(t *testing.T) {
 	}
 	if rules, _ := at.Rules(); len(rules) != 0 {
 		t.Fatalf("rules %+v", rules)
+	}
+}
+
+// Where this KumoBox's downloads go elsewhere (a TV's computer), the releases
+// go there, not to a torrent client here (there's none), and are recorded;
+// when that KumoBox can't take them, nothing is.
+func TestAutoDownloaderSendsElsewhere(t *testing.T) {
+	show := severance()
+	run := func(send func(context.Context, int, []string) (bool, error)) (*autoTest, *RunReport) {
+		at := newAutoTest(t, severanceSource())
+		at.cat.media[show.ID] = show
+		at.cat.progress[show.ID] = 1009
+		at.client.down = true // no torrent client here
+		at.Send = send
+		at.saveRule(t, Rule{MediaID: show.ID, Enabled: true, Resolution: "1080", ReleaseGroups: []string{"NTb"}})
+		rep, err := at.Run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return at, rep
+	}
+	var sent []string
+	at, rep := run(func(_ context.Context, mediaID int, uris []string) (bool, error) {
+		if mediaID != show.ID {
+			t.Errorf("sent for %d", mediaID)
+		}
+		sent = append(sent, uris...)
+		return true, nil
+	})
+	if rep.Added == 0 || len(sent) != rep.Added || len(rep.Errors) != 0 {
+		t.Fatalf("sent %v: %+v", sent, rep)
+	}
+	if got := at.itemKeys(); len(got) != rep.Added {
+		t.Errorf("recorded %v", got)
+	}
+	at, rep = run(func(context.Context, int, []string) (bool, error) { return true, io.ErrUnexpectedEOF })
+	if rep.Added != 0 || len(rep.Errors) == 0 || len(at.itemKeys()) != 0 {
+		t.Fatalf("refused: %+v %v", rep, at.itemKeys())
+	}
+	// Downloads here again: the client here (down) is used.
+	_, rep = run(func(context.Context, int, []string) (bool, error) { return false, nil })
+	if rep.Added != 0 || len(rep.Errors) != 1 || !strings.Contains(rep.Errors[0], "torrent client") {
+		t.Fatalf("here: %+v", rep)
 	}
 }

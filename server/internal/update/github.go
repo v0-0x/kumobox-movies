@@ -22,9 +22,19 @@ import (
 type github struct {
 	api       string // https://api.github.com
 	repo      string // owner/name
+	repoID    string // its number, which stays when it's renamed (or "")
 	client    *http.Client
 	token     string // "" for anonymous requests
 	userAgent string
+}
+
+// root is the repository's address in the API: by its number when known,
+// as the name of a renamed one may be taken by someone else.
+func (g *github) root() string {
+	if g.repoID != "" {
+		return "/repositories/" + g.repoID
+	}
+	return "/repos/" + g.repo
 }
 
 // apiError is an error answer from GitHub.
@@ -124,7 +134,7 @@ type commitInfo struct {
 // commit looks up a branch's (or tag's) commit.
 func (g *github) commit(ctx context.Context, ref string) (*commitInfo, error) {
 	var c commitInfo
-	if _, err := g.getJSON(ctx, "/repos/"+g.repo+"/commits/"+escapeRef(ref), &c); err != nil {
+	if _, err := g.getJSON(ctx, g.root()+"/commits/"+escapeRef(ref), &c); err != nil {
 		return nil, err
 	}
 	if c.SHA == "" {
@@ -137,7 +147,7 @@ func (g *github) commit(ctx context.Context, ref string) (*commitInfo, error) {
 // commit per page, the number of the last page. 0 when unknown.
 func (g *github) commitCount(ctx context.Context, sha string) int {
 	var commits []json.RawMessage
-	h, err := g.getJSON(ctx, "/repos/"+g.repo+"/commits?sha="+url.QueryEscape(sha)+"&per_page=1", &commits)
+	h, err := g.getJSON(ctx, g.root()+"/commits?sha="+url.QueryEscape(sha)+"&per_page=1", &commits)
 	if err != nil {
 		return 0
 	}
@@ -167,7 +177,7 @@ func lastPage(link string) int {
 // recentSubjects lists the subjects of the newest commits up to sha.
 func (g *github) recentSubjects(ctx context.Context, sha string) ([]string, error) {
 	var commits []commitInfo
-	if _, err := g.getJSON(ctx, fmt.Sprintf("/repos/%s/commits?sha=%s&per_page=%d", g.repo, url.QueryEscape(sha), maxChanges), &commits); err != nil {
+	if _, err := g.getJSON(ctx, fmt.Sprintf("%s/commits?sha=%s&per_page=%d", g.root(), url.QueryEscape(sha), maxChanges), &commits); err != nil {
 		return nil, err
 	}
 	out := []string{}
@@ -187,7 +197,7 @@ type comparison struct {
 
 func (g *github) compare(ctx context.Context, base, head string) (*comparison, error) {
 	var cmp comparison
-	if _, err := g.getJSON(ctx, "/repos/"+g.repo+"/compare/"+escapeRef(base)+"..."+escapeRef(head), &cmp); err != nil {
+	if _, err := g.getJSON(ctx, g.root()+"/compare/"+escapeRef(base)+"..."+escapeRef(head), &cmp); err != nil {
 		return nil, err
 	}
 	return &cmp, nil
@@ -232,19 +242,20 @@ var releaseVersion = regexp.MustCompile(`^\d+(\.\d+)*$`)
 // Token
 
 // githubToken finds the user's GitHub token without ever asking for one:
-// from the environment, then the GitHub CLI, then git's credential store.
-// "" when there's none; requests are then anonymous, which works once the
-// repository is public. The token is never logged, stored or shown.
+// from the environment, then the GitHub CLI. "" when there's none; requests
+// are then anonymous, which is all a public repository needs. The token is
+// never logged, stored or shown.
+//
+// git's credential helpers aren't asked: on Windows that can open Git
+// Credential Manager's "CredentialHelperSelector" window, and with updates
+// looked for each time KumoBox opens it kept coming back.
 func githubToken(ctx context.Context) string {
-	for _, name := range []string{"KUMOBOX_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+	for _, name := range []string{"KUMOBOX_GITHUB_TOKEN", "KUMOBOX_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
 		if tok := strings.TrimSpace(os.Getenv(name)); tok != "" {
 			return tok
 		}
 	}
-	if tok := ghToken(ctx); tok != "" {
-		return tok
-	}
-	return gitCredential(ctx)
+	return ghToken(ctx)
 }
 
 // ghToken asks the GitHub CLI (gh auth login) for its token.
@@ -263,29 +274,4 @@ func ghToken(ctx context.Context) string {
 	}
 	tok, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	return strings.TrimSpace(tok)
-}
-
-// gitCredential asks git's credential helpers (Git Credential Manager, the
-// keyring, a credentials file) for github.com. Nothing may prompt: no
-// terminal prompt, no askpass program, no Credential Manager window.
-func gitCredential(ctx context.Context) string {
-	git, ok := util.LookPath("git")
-	if !ok {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, git, "credential", "fill")
-	cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_ASKPASS=")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if tok, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "password="); ok && tok != "" {
-			return tok
-		}
-	}
-	return ""
 }

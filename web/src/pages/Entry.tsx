@@ -227,7 +227,7 @@ function EntryHero({ entry, onTab }: { entry: EntryView; onTab: (t: Tab) => void
                     )}
                     <div className="mt-1 flex flex-wrap items-center gap-2.5">
                         {available && (
-                            <Button variant="white" size="lg" icon={<Play className="size-4 fill-current" />} onClick={() => watch(media.id, key, file?.path)}>
+                            <Button variant="white" size="lg" icon={<Play className="size-4 fill-current" />} onClick={() => watch(media.id, key, file?.path)} data-tv-autofocus>
                                 {playLabel}
                             </Button>
                         )}

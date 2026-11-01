@@ -8,7 +8,7 @@
 # electron-builder merges them into the app's one program
 # (desktop/electron-builder.yml).
 #
-# The version is 1.0.<number of commits>, like the Windows release's (see
+# The version is 2.0.<commits since 2.0.0's>, like the Windows release's (see
 # windows.yml): installed copies look for the macos-v release with the
 # highest version and offer it on the Home page (server/internal/update),
 # which downloads the zip.
@@ -17,9 +17,12 @@
 # for pull requests (except changes to docs or to the other systems'
 # packaging only), and keeps the disk image and the zip as workflow
 # artifacts: a branch can be tried on a Mac before it's merged. Only pushes
-# to the repository's default branch publish the release (and delete old
-# ones); run by hand from the Actions tab, "publish" decides. Only the newest
-# 10 macOS releases are kept: older ones are deleted, tags included.
+# to the repository's default branch publish a release (and delete old
+# ones); run by hand from the Actions tab, "publish" decides. Each release
+# is a beta (a pre-release, "KumoBox <version> beta for macOS") unless the
+# pushed commit's message says [stable] or it's run by hand as stable (see
+# windows.yml). The newest 10 stable releases and the newest 10 betas are
+# kept: older ones are deleted, tags included.
 #
 # The app isn't signed with an Apple Developer ID nor notarized: it's signed
 # ad hoc, and the release notes say how to open it the first time.
@@ -34,6 +37,8 @@ on:
       - "**.md"
       - "packaging/arch/**"
       - "packaging/windows/**"
+      - "android/**"
+      - "packaging/android/**"
   # Pull requests from forks: a branch of this repository is built by its
   # pushes already (see the jobs' condition).
   pull_request:
@@ -41,12 +46,19 @@ on:
       - "**.md"
       - "packaging/arch/**"
       - "packaging/windows/**"
+      - "android/**"
+      - "packaging/android/**"
   workflow_dispatch:
     inputs:
       publish:
         description: Publish the build as the GitHub Release macos-v<version> (otherwise it's only kept as workflow artifacts)
         type: boolean
         default: true
+      channel:
+        description: "beta: a pre-release, offered to copies with Beta updates on; stable: a release for everyone"
+        type: choice
+        options: [beta, stable]
+        default: beta
 
 permissions:
   contents: write
@@ -74,6 +86,26 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # The token stays out of .git/config, where the build's
+          # dependencies (npm scripts…) could read it: only the release
+          # steps get it.
+          persist-credentials: false
+
+      # Each push is a beta (a GitHub pre-release, which only copies with
+      # Beta updates on are offered) unless its newest commit's message has
+      # [stable] in it, or the workflow is run by hand as stable.
+      - name: Pick the channel
+        id: channel
+        env:
+          INPUT: ${{ inputs.channel }}
+        run: |
+          if [ "$INPUT" = stable ] || git log -1 --format=%B | grep -qF '[stable]'; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "A stable release"
+          else
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+            echo "A beta (pre-release)"
+          fi
 
       - name: Read the version
         id: version
@@ -83,7 +115,14 @@ jobs:
             echo "::error::desktop/package.json has no version like 1.0.0 (it says '$base')"
             exit 1
           fi
-          version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$(git rev-list --count HEAD)"
+          # The commits since the one kumoboxVersionBase counts (2.0.0's).
+          from=$(node -p 'require("./desktop/package.json").kumoboxVersionBase || 0')
+          patch=$(( $(git rev-list --count HEAD) - from ))
+          if (( patch < 0 )); then
+            echo "::error::This commit is before kumoboxVersionBase ($from) in desktop/package.json"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$patch"
           {
             echo "version=$version"
             echo "tag=macos-v$version"
@@ -299,6 +338,7 @@ jobs:
       - name: Publish the GitHub Release
         if: env.PUBLISH == 'true'
         env:
+          CHANNEL: ${{ steps.channel.outputs.channel }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -326,26 +366,36 @@ jobs:
 
           Built from $GITHUB_SHA by [workflow run $GITHUB_RUN_NUMBER]($repo/actions/runs/$GITHUB_RUN_ID).
           EOF
+          if [ "$CHANNEL" = beta ]; then
+            pre=true title="KumoBox $VERSION beta for macOS"
+            { printf '%s\n\n' "> **Beta.** This version is a pre-release: KumoBox offers it only to copies with **Settings › Updates & about › Beta updates** on. It may have rough edges; the stable releases are the ones without this note."; cat "$notes"; } > "$notes.new" && mv "$notes.new" "$notes"
+          else
+            pre=false title="KumoBox $VERSION for macOS"
+          fi
           files=("dist/macos/release/$DMG" "dist/macos/release/$ZIP")
           if gh release view "$TAG" --json tagName > /dev/null 2>&1; then
             echo "Updating the release $TAG"
-            gh release edit "$TAG" --title "KumoBox $VERSION for macOS" --notes-file "$notes" --latest=false
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$pre" --latest=false
             gh release upload "$TAG" "${files[@]}" --clobber
           else
             echo "Creating the release $TAG"
-            gh release create "$TAG" "${files[@]}" --target "$GITHUB_SHA" --title "KumoBox $VERSION for macOS" --notes-file "$notes" --latest=false
+            gh release create "$TAG" "${files[@]}" --target "$GITHUB_SHA" --title "$title" --notes-file "$notes" --prerelease="$pre" --latest=false
           fi
 
-      # Keep the newest 10 macOS releases, by version (numbers compared as
-      # numbers), and delete the older ones with their tags.
+      # Keep the newest 10 stable macOS releases and the newest 10 betas,
+      # by version (numbers compared as numbers), and delete the older ones
+      # with their tags: betas never push out the stable releases.
       - name: Delete old releases
         if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          old=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' |
-            { grep -E '^macos-v[0-9]+(\.[0-9]+)*$' || true; } | sort -V -r | tail -n +11)
+          list=$(gh release list --limit 1000 --json tagName,isPrerelease --jq '.[] | "\(.isPrerelease) \(.tagName)"')
+          old=$(for pre in true false; do
+            printf '%s\n' "$list" | awk -v pre="$pre" '$1 == pre { print $2 }' |
+              { grep -E '^macos-v[0-9]+(\.[0-9]+)*$' || true; } | sort -V -r | tail -n +11
+          done)
           if [ -z "$old" ]; then
             echo "No old releases to delete"
             exit 0
@@ -362,9 +412,14 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: macos-15-intel
     timeout-minutes: 20
+    # It releases nothing.
+    permissions:
+      contents: read
     steps:
       - name: Check out
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Check the programs setup script
         run: /bin/bash -n server/internal/macsetup/install-tools.command

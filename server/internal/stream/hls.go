@@ -52,6 +52,8 @@ type hlsSession struct {
 	lastUse   time.Time
 	requested int // the furthest segment the player asked for
 	paused    bool
+	// release gives back the conversion it takes (Local.TranscodeSlot).
+	release func()
 }
 
 const (
@@ -101,7 +103,13 @@ func (h *HLS) Start(ctx context.Context, req HLSRequest) (*HLSSession, error) {
 		return nil, err
 	}
 	pl := h.local.plan(p, req.Method, req.Audio, CapsOf(req.Caps), true)
-	start := h.local.startFor(ctx, file, p.Start, pl, req.Start)
+	start, known := h.local.startFor(ctx, file, p.Start, pl, req.Start)
+	if !known {
+		// Converted from there, not copied from an unknown frame (see
+		// Local.Seek).
+		pl = h.local.plan(p, "transcode", req.Audio, CapsOf(req.Caps), true)
+		start = req.Start
+	}
 	owner := req.Client + "\x00"
 	key := fmt.Sprintf("%s%s\x00%.3f\x00%+v", owner, file, start, pl)
 
@@ -121,6 +129,13 @@ func (h *HLS) Start(ctx context.Context, req HLSRequest) (*HLSSession, error) {
 		}
 	}
 	if s == nil {
+		// The player's old sessions end: their conversions are free for
+		// this one (a hub converts one at a time, and seeking starts anew).
+		for _, x := range old {
+			if x.release != nil {
+				x.release()
+			}
+		}
 		if s, err = h.spawn(key, file, p, pl, start); err != nil {
 			h.mu.Unlock()
 			return nil, err
@@ -148,6 +163,13 @@ func (h *HLS) spawn(key, file string, p *Probe, pl plan, start float64) (*hlsSes
 		return nil, err
 	}
 	cfg := h.local.settings.Get()
+	release := func() {}
+	if pl.method == "transcode" {
+		var ok bool
+		if release, ok = h.local.TranscodeSlot(); !ok {
+			return nil, errors.New("this computer is converting as many videos as it can already: try again when one stops")
+		}
+	}
 	args := pl.args(cfg, p, file, start)
 	if !pl.videoCopy {
 		// A keyframe where each segment starts, so segments play on their own.
@@ -167,8 +189,10 @@ func (h *HLS) spawn(key, file string, p *Probe, pl plan, start float64) (*hlsSes
 	s := &hlsSession{id: id, key: key, dir: dir, cancel: cancel, cmd: cmd, stderr: &headWriter{max: 8 << 10}, done: make(chan struct{}), lastUse: time.Now(), requested: -1}
 	cmd.Stderr = s.stderr
 	cmd.WaitDelay = 5 * time.Second
+	s.release = release
 	if err := cmd.Start(); err != nil {
 		cancel()
+		release()
 		_ = os.RemoveAll(dir)
 		return nil, fmt.Errorf("ffmpeg is not installed: %w", err)
 	}
@@ -299,6 +323,9 @@ func (h *HLS) remove(s *hlsSession) {
 	h.mu.Unlock()
 	s.cancel() // kills ffmpeg, also when it's paused
 	<-s.done
+	if s.release != nil {
+		s.release()
+	}
 	_ = os.RemoveAll(s.dir)
 }
 

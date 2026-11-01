@@ -1,7 +1,10 @@
 import { keepPreviousData, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useEffect } from "react"
 import { toast } from "@/lib/toast"
 import { api, download, qs } from "./api"
 import { formatKey, mediaIsShow } from "./ids"
+import { setUpdateLater } from "./store"
+import { installIfWanted, wantInstall } from "./tv"
 import type {
     AutoItem,
     AutoRule,
@@ -66,6 +69,31 @@ export function useSaveSettings() {
     })
 }
 
+// Changes UI settings at once, without a toast: the sidebar's Themes
+// menu, where colors are tried one after another. The page changes before
+// the server answers; an error puts the saved ones back.
+// Saves one after another quickly (themes tried in a row): only the last
+// one's answer is put in (an earlier one's, coming later, would show a theme
+// tried before).
+let uiSaves = 0
+export function useSaveUI() {
+    const qc = useQueryClient()
+    return (ui: Partial<Settings["ui"]>) => {
+        const s = qc.getQueryData<Status>(["status"])?.settings
+        if (!s) return
+        const next = { ...s, ui: { ...s.ui, ...ui } }
+        qc.setQueryData<Status>(["status"], old => (old ? { ...old, settings: next } : old))
+        const n = ++uiSaves
+        api.put<Settings>("/api/settings", next).then(
+            saved => n === uiSaves && qc.setQueryData<Status>(["status"], old => (old ? { ...old, settings: saved } : old)),
+            (e: Error) => {
+                toast.error(e.message)
+                qc.invalidateQueries({ queryKey: ["status"] })
+            },
+        )
+    }
+}
+
 // What changed when the list did: the library views (the Local library's
 // titles carry their list entry and what's unwatched), the raw list, the
 // calendar (the shows on the list) and the Letterboxd diary and status
@@ -98,6 +126,9 @@ export function useCollection() {
         },
         staleTime: 60_000,
         refetchOnWindowFocus: true,
+        // Movies and shows in the library left out for now (TMDB didn't say
+        // what they are, the app just opened): asked again until they're in.
+        refetchInterval: q => (q.state.data?.incomplete ? 10_000 : false),
     })
 }
 
@@ -587,11 +618,44 @@ export function useUpdateStatus() {
     return useQuery({ queryKey: ["update"], queryFn: () => api.get<UpdateStatus>("/api/update"), staleTime: 5 * 60_000 })
 }
 
+// KumoBox opened (started, its window opened again, back in front, the TV app
+// reopened): a check for updates, unless one ran in the last 10 minutes.
+// Unlike Check for updates, an update put off with Later stays put off.
+export function useCheckOnOpen(enabled: boolean) {
+    const qc = useQueryClient()
+    useEffect(() => {
+        if (!enabled) return
+        let running = false
+        const check = async () => {
+            if (running || document.hidden) return
+            running = true
+            try {
+                const u = await api.get<UpdateStatus>("/api/update")
+                // Never checked yet: KumoBox has just started and checks by
+                // itself in a moment.
+                if (u.checking || !u.checkedAt || Date.now() / 1000 - u.checkedAt < 600) return
+                qc.setQueryData(["update"], await api.post<UpdateStatus>("/api/update/check"))
+            } catch {
+                /* the next opening tries again */
+            } finally {
+                running = false
+            }
+        }
+        check()
+        document.addEventListener("visibilitychange", check)
+        return () => document.removeEventListener("visibilitychange", check)
+    }, [enabled, qc])
+}
+
 export function useCheckUpdate() {
     const qc = useQueryClient()
     return useMutation({
         mutationFn: () => api.post<UpdateStatus>("/api/update/check"),
-        onSuccess: s => qc.setQueryData(["update"], s),
+        onSuccess: s => {
+            qc.setQueryData(["update"], s)
+            // Asked for: an update put off with Later shows again.
+            setUpdateLater("")
+        },
         onError: (e: Error) => toast.error(e.message),
     })
 }
@@ -599,8 +663,14 @@ export function useCheckUpdate() {
 export function useApplyUpdate() {
     const qc = useQueryClient()
     return useMutation({
-        mutationFn: () => api.post<UpdateStatus>("/api/update/apply"),
-        onSuccess: s => qc.setQueryData(["update"], s),
+        mutationFn: () => {
+            wantInstall()
+            return api.post<UpdateStatus>("/api/update/apply")
+        },
+        onSuccess: s => {
+            qc.setQueryData(["update"], s)
+            installIfWanted(s)
+        },
         onError: (e: Error) => toast.error(e.message),
     })
 }

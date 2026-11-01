@@ -530,8 +530,23 @@ func (r *Runtime) CallProvider(ctx context.Context, method string, args ...any) 
 	ch := make(chan result, 1)
 	var once sync.Once
 	send := func(raw json.RawMessage, err error) { once.Do(func() { ch <- result{raw, err} }) }
+	// While the call runs on the loop (not waiting on a Promise): a caller
+	// giving up stops it, or it would keep the loop (and a CPU) busy.
+	var (
+		mu               sync.Mutex
+		running, stopped bool
+	)
 	ok := r.RunOnLoop(func(vm *goja.Runtime) {
+		mu.Lock()
+		running = true
+		mu.Unlock()
 		defer func() {
+			mu.Lock()
+			running = false
+			if stopped {
+				vm.ClearInterrupt()
+			}
+			mu.Unlock()
 			if p := recover(); p != nil {
 				send(nil, fmt.Errorf("panic: %v", p))
 			}
@@ -571,6 +586,14 @@ func (r *Runtime) CallProvider(ctx context.Context, method string, args ...any) 
 	}
 	timeout := time.NewTimer(90 * time.Second)
 	defer timeout.Stop()
+	giveUp := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if vm := r.vm.Load(); vm != nil && running {
+			stopped = true
+			vm.Interrupt(fmt.Errorf("%s() took too long", method))
+		}
+	}
 	select {
 	case res := <-ch:
 		if err := r.callError(res.err); err != nil {
@@ -579,14 +602,14 @@ func (r *Runtime) CallProvider(ctx context.Context, method string, args ...any) 
 		}
 		return res.raw, nil
 	case <-ctx.Done():
-		r.unstick()
+		giveUp()
 		return nil, ctx.Err()
 	case <-r.ctx.Done():
 		return nil, r.callError(errStopped)
 	case <-watch.tripped:
 		return nil, ErrTooMuchMemory
 	case <-timeout.C:
-		r.unstick()
+		giveUp()
 		return nil, fmt.Errorf("%s() timed out", method)
 	}
 }

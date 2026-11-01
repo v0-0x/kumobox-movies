@@ -22,7 +22,9 @@ export function PluginTree({ pluginId, node }: { pluginId: string; node: UINode 
     if (!node) return null
     return (
         <PluginCtx.Provider value={pluginId}>
-            <div className="kumobox-plugin text-sm">
+            {/* A plugin draws in its own box: its styles and classes (fixed,
+                z-index…) can't put anything over the rest of the app. */}
+            <div className="kumobox-plugin text-sm" style={{ position: "relative", isolation: "isolate", contain: "paint" }}>
                 <Node node={node} />
             </div>
         </PluginCtx.Provider>

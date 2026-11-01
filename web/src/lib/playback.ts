@@ -53,10 +53,102 @@ export function videoCaps(via: "mse" | "element"): string[] {
         ["vp9", "vp09.00.40.08"],
         ["vp9-10", "vp09.02.40.10"],
     ]
-    for (const [cap, codecs] of tests) if (can(codecs)) caps.push(cap)
-    // Chromium plays Matroska (.mkv) files as they are; Safari doesn't.
-    if (chromium && via === "element") caps.push("mkv")
+    const none = noPicture()
+    for (const [cap, codecs] of tests) {
+        // Android's WebView says yes to 10-bit H.264 and plays only its
+        // sound: the TVs' decoders don't have it.
+        if (cap === "h264-10" && /Android/.test(ua)) continue
+        if (none.includes(cap)) continue
+        if (can(codecs)) caps.push(cap)
+    }
+    // Chromium plays Matroska (.mkv) files as they are; Safari doesn't, nor
+    // Android's (a TV's WebView): those get them repackaged into MP4.
+    if (chromium && via === "element" && !/Android/.test(ua)) caps.push("mkv")
     return caps
+}
+
+// A video's format as the server names it (stream.videoFormat): "hevc-10".
+export function videoFormat(v: { codec: string; profile?: string; pixFmt?: string }) {
+    const deep = /p10|p12/.test(v.pixFmt ?? "") || /10/.test(v.profile ?? "")
+    return deep ? `${v.codec}-10` : v.codec
+}
+
+// The formats this device said it plays and then showed no picture of (the
+// player's picture watchdog): converted for it from then on. Plain H.264
+// isn't put here, as everything is converted to it.
+const NO_PICTURE = "kumobox-no-picture"
+
+export function noPicture(): string[] {
+    try {
+        const v = JSON.parse(localStorage.getItem(NO_PICTURE) ?? "[]")
+        return Array.isArray(v) ? v.filter(x => typeof x === "string") : []
+    } catch {
+        return []
+    }
+}
+
+export function markNoPicture(format: string) {
+    if (format === "h264") return
+    try {
+        const all = noPicture()
+        if (!all.includes(format)) localStorage.setItem(NO_PICTURE, JSON.stringify([...all, format]))
+    } catch {
+        /* not kept: asked again next time */
+    }
+}
+
+// This device's video converted in software (libx264) rather than by the
+// computer's encoder, whatever it could play as is: chosen in
+// the player (Grey picture?), or by the picture watchdog when the encoder's
+// video showed only a flat grey here.
+const SOFTWARE_VIDEO = "kumobox-software-video"
+
+export function softwareVideo(): boolean {
+    try {
+        return localStorage.getItem(SOFTWARE_VIDEO) === "1"
+    } catch {
+        return false
+    }
+}
+
+export function setSoftwareVideo(on: boolean) {
+    try {
+        if (on) localStorage.setItem(SOFTWARE_VIDEO, "1")
+        else localStorage.removeItem(SOFTWARE_VIDEO)
+    } catch {
+        /* not kept: asked again next time */
+    }
+}
+
+// What the video shows, from a small copy of the frame: "grey" when it's one
+// flat grey (what a decoder shows when it has no picture to start from),
+// "picture" otherwise, "unknown" when it can't be read (drawn outside the
+// page, or from another site).
+export function pictureState(v: HTMLVideoElement, canvas: HTMLCanvasElement): "picture" | "grey" | "unknown" {
+    try {
+        const ctx = canvas.getContext("2d", { willReadFrequently: true })
+        if (!ctx || !v.videoWidth) return "unknown"
+        ctx.drawImage(v, 0, 0, canvas.width, canvas.height)
+        const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+        let n = 0
+        let sum = 0
+        let sq = 0
+        let chroma = 0
+        for (let i = 0; i < d.length; i += 4) {
+            if (d[i + 3] < 250) continue
+            const y = (d[i] + d[i + 1] + d[i + 2]) / 3
+            sum += y
+            sq += y * y
+            chroma = Math.max(chroma, Math.abs(d[i] - d[i + 1]), Math.abs(d[i + 1] - d[i + 2]), Math.abs(d[i] - d[i + 2]))
+            n++
+        }
+        if (n < (d.length / 4) * 0.9) return "unknown"
+        const mean = sum / n
+        const sd = Math.sqrt(Math.max(0, sq / n - mean * mean))
+        return sd < 6 && chroma < 16 && mean > 60 && mean < 200 ? "grey" : "picture"
+    } catch {
+        return "unknown"
+    }
 }
 
 // A random id; crypto.randomUUID only exists on https and localhost, and

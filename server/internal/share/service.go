@@ -3,6 +3,7 @@ package share
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,12 +14,15 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
@@ -30,10 +34,20 @@ import (
 
 const (
 	beaconEvery = 5 * time.Second
-	// A KumoBox not heard from for this long is offline.
+	// An KumoBox not heard from for this long is offline.
 	onlineFor = 16 * time.Second
 	// How often a guest asks a host whether its library changed.
 	askEvery = 30 * time.Second
+	// An KumoBox that proved who it is this lately keeps its address: beacons
+	// don't move it (see heard).
+	verifiedFor = time.Minute
+	// How often Settings (open) has the others asked again (they answer
+	// from their library's version, read at most every few seconds).
+	refreshEvery = 3 * time.Second
+	// How many KumoBoxes only heard of (not paired, not added by hand) are kept.
+	maxStrangers = 64
+	// The largest request body read from an KumoBox that isn't paired.
+	maxUnpairedBody = 1 << 20
 	// Failed requests in a row after which a host's library is gone.
 	maxFails = 3
 )
@@ -41,6 +55,7 @@ const (
 // Library is what a host shares: its library's files.
 type Library interface {
 	All() ([]*library.LocalFile, error)
+	Get(path string) (*library.LocalFile, error)
 }
 
 // History is the watch history (where each episode was stopped), which
@@ -48,7 +63,9 @@ type Library interface {
 type History interface {
 	Since(t int64, limit int) []*history.Entry
 	Get(mediaID, episode int) *history.Entry
-	Merge(e history.Entry) (bool, error)
+	After(seq int64, limit int) []*history.Entry
+	Latest(limit int) []*history.Entry
+	MergeAll(entries []history.Entry) ([]history.Entry, error)
 }
 
 type Service struct {
@@ -59,6 +76,7 @@ type Service struct {
 	hub      *events.Hub
 	api      *http.Client // short requests to the others
 	media    *http.Client // forwarded video: no time limit
+	slow     *http.Client // requests a host takes long to answer (ani-cli)
 
 	// OnFiles runs when the files shared with this KumoBox change (in the
 	// background).
@@ -72,6 +90,11 @@ type Service struct {
 	// account says were finished there (each KumoBox keeps its own list:
 	// they move it on).
 	OnWatchedElsewhere func(finished []history.Entry)
+
+	// The library's version for the others (sharedVersion).
+	versionMu sync.Mutex
+	version   string
+	versionAt time.Time
 
 	pushMu    sync.Mutex
 	pending   map[[2]int]history.Entry
@@ -96,6 +119,7 @@ type run struct {
 
 type peer struct {
 	id, name, version string
+	platform          string // what it runs on ("android": a TV), as it says
 	pub               []byte
 	addr              net.IP
 	port              int
@@ -103,6 +127,8 @@ type peer struct {
 	lastSeen          time.Time // before this run: when it was last around
 	manual            string    // the address it was added with by hand
 	allowed           bool      // this KumoBox shares its library with it
+	// And with it (allowed), downloading onto this KumoBox.
+	downloads bool
 
 	// As a host: whether it shares its library with this KumoBox, and its files.
 	shares   bool
@@ -111,14 +137,51 @@ type peer struct {
 	asked    time.Time
 	asking   bool
 	fails    int
-	// historySince: the newest of its history entries this KumoBox has.
-	historySince int64
-	// user: the Letterboxd account it's connected to, as it told (it
-	// shares with this KumoBox).
+	// historySeq: the last of its history entries (in the order it stored
+	// them) this KumoBox has; pushedSeq: the last of this KumoBox's it sent it.
+	historySeq, pushedSeq int64
+	// user: the Letterboxd account it's connected to, as it told (it shares
+	// with this KumoBox).
 	user int
+	// hostDownloads: this KumoBox may download onto it.
+	hostDownloads bool
+	// verified: when it last proved who it is (a request or an answer
+	// signed); offset: how far its clock is ahead of this one's.
+	verified time.Time
+	offset   time.Duration
+	// callerUser: the Letterboxd account it said it's on, asking this KumoBox.
+	callerUser int
+	// wakeMACs: its network cards (it shares), what wakes it (wake.go);
+	// wakeUntil: it's being woken up until then.
+	wakeMACs  []string
+	wakeUntil time.Time
+	// autoSynced: when the watch history was last synced with it by itself.
+	autoSynced time.Time
+	// declined: asked whether to share this KumoBox's library with it, the
+	// answer was "not now" (Home doesn't ask again).
+	declined bool
 }
 
-func (p *peer) online(now time.Time) bool { return now.Sub(p.seen) < onlineFor }
+// paired: this KumoBox shares its library with it, or it with this one.
+func (p *peer) paired() bool { return p.allowed || p.shares }
+
+// displayName is its name, or what it is when it has none.
+func (p *peer) displayName() string {
+	if p.name != "" {
+		return p.name
+	}
+	return "Another KumoBox"
+}
+
+// online: heard from lately. A host that shares with this KumoBox is asked
+// every askEvery, and its answer counts until the next one is due: also when
+// its beacons don't come through (the Wi-Fi of some TVs drops them), it
+// doesn't look gone half of the time. The same the other way: a device this
+// KumoBox shares with asks it as often (a hub's devices, which it never asks).
+func (p *peer) online(now time.Time) bool {
+	d := now.Sub(p.seen)
+	return d < onlineFor || ((p.shares && p.fails == 0) || p.allowed) && d < askEvery+onlineFor
+}
 
 func (p *peer) lastAround() time.Time {
 	if p.seen.After(p.lastSeen) {
@@ -146,6 +209,7 @@ func New(d *db.DB, settings *config.Store, lib Library, hub *events.Hub) (*Servi
 		id: id, db: d, settings: settings, library: lib, hub: hub,
 		api:   &http.Client{Timeout: 15 * time.Second, Transport: transport()},
 		media: &http.Client{Transport: transport()},
+		slow:  &http.Client{Timeout: 3 * time.Minute, Transport: &http.Transport{Proxy: nil, DialContext: dialer.DialContext, MaxIdleConnsPerHost: 2}},
 		peers: map[string]*peer{},
 	}
 	s.load()
@@ -160,11 +224,16 @@ func (s *Service) Name() string {
 	if n := cleanName(s.settings.Get().Sharing.Name); n != "" {
 		return n
 	}
-	return Hostname()
+	// As the others see it (cleanName keeps names short).
+	return cleanName(Hostname())
 }
 
-// Hostname is the computer's name, without its domain.
+// Hostname is the computer's name, without its domain (the device's, as
+// the Android app gives it).
 func Hostname() string {
+	if n := cleanName(config.Getenv("DEVICE_NAME")); n != "" {
+		return n
+	}
 	h, _ := os.Hostname()
 	h, _, _ = strings.Cut(h, ".")
 	if h == "" {
@@ -187,6 +256,19 @@ type savedPeer struct {
 	Allowed bool   `json:"allowed,omitempty"`
 	Shares  bool   `json:"shares,omitempty"`
 	Seen    int64  `json:"seen"`
+	// Granted to it (allowed): downloading here.
+	Downloads bool `json:"downloads,omitempty"`
+	// It takes this KumoBox's downloads (it shares, see downloads.go).
+	TakesDownloads bool `json:"takesDownloads,omitempty"`
+	// Its Letterboxd account, as it told; where the watch histories are at.
+	User       int   `json:"user,omitempty"`
+	CallerUser int   `json:"callerUser,omitempty"`
+	HistorySeq int64 `json:"historySeq,omitempty"`
+	PushedSeq  int64 `json:"pushedSeq,omitempty"`
+	// Its network cards, to wake it (wake.go).
+	Wake     []string `json:"wake,omitempty"`
+	Platform string   `json:"platform,omitempty"`
+	Declined bool     `json:"declined,omitempty"`
 }
 
 func (s *Service) load() {
@@ -202,6 +284,9 @@ func (s *Service) load() {
 		s.peers[id] = &peer{
 			id: id, name: sp.Name, pub: pub, addr: net.ParseIP(sp.Addr), port: sp.Port,
 			manual: sp.Manual, allowed: sp.Allowed, shares: sp.Shares, lastSeen: time.Unix(sp.Seen, 0),
+			downloads: sp.Downloads, hostDownloads: sp.TakesDownloads,
+			user: sp.User, callerUser: sp.CallerUser, historySeq: sp.HistorySeq, pushedSeq: sp.PushedSeq,
+			wakeMACs: cleanMACs(sp.Wake), platform: cleanPlatform(sp.Platform), declined: sp.Declined,
 		}
 	}
 }
@@ -212,10 +297,15 @@ func (s *Service) load() {
 func (s *Service) save() {
 	out := map[string]savedPeer{}
 	for id, p := range s.peers {
-		if !p.allowed && !p.shares && p.manual == "" {
+		if !p.allowed && !p.shares && p.manual == "" && !p.declined {
 			continue
 		}
-		sp := savedPeer{Name: p.name, Key: base64.StdEncoding.EncodeToString(p.pub), Port: p.port, Manual: p.manual, Allowed: p.allowed, Shares: p.shares, Seen: p.lastAround().Unix()}
+		sp := savedPeer{
+			Name: p.name, Key: base64.StdEncoding.EncodeToString(p.pub), Port: p.port, Manual: p.manual, Allowed: p.allowed, Shares: p.shares, Seen: p.lastAround().Unix(),
+			Downloads: p.downloads, TakesDownloads: p.hostDownloads,
+			User: p.user, CallerUser: p.callerUser, HistorySeq: p.historySeq, PushedSeq: p.pushedSeq,
+			Wake: p.wakeMACs, Platform: p.platform, Declined: p.declined,
+		}
 		if p.addr != nil {
 			sp.Addr = p.addr.String()
 		}
@@ -233,14 +323,19 @@ func (s *Service) save() {
 func (s *Service) Start() {
 	s.apply(s.settings.Get())
 	s.settings.OnChange(func(old, cur config.Settings) {
-		if old.Sharing != cur.Sharing || old.Server.Port != cur.Server.Port {
-			s.apply(cur)
+		if old.Sharing.Enabled != cur.Sharing.Enabled || old.Sharing.Name != cur.Sharing.Name || old.Server.Port != cur.Server.Port {
+			// The settings now, not these: listeners run apart, and two
+			// saves close together may arrive in either order.
+			s.apply(s.settings.Get())
 		}
 	})
 }
 
 // Stop ends sharing (KumoBox is quitting).
-func (s *Service) Stop() { s.apply(config.Settings{}) }
+func (s *Service) Stop() {
+	s.flushPush()
+	s.apply(config.Settings{})
+}
 
 func (s *Service) apply(cfg config.Settings) {
 	s.applyMu.Lock()
@@ -318,7 +413,7 @@ func (s *Service) loop(ctx context.Context, r *run) {
 
 func (s *Service) beacon() beacon {
 	cfg := s.settings.Get()
-	return beacon{KumoBox: protocol, ID: s.id.ID, Name: s.Name(), Port: cfg.Server.Port, Key: s.id.PublicKey(), Version: config.AppVersion}
+	return beacon{KumoBox: protocol, ID: s.id.ID, Name: s.Name(), Port: cfg.Server.Port, Key: s.id.PublicKey(), Version: config.AppVersion, Platform: runtime.GOOS}
 }
 
 func (s *Service) announce(r *run) {
@@ -352,21 +447,30 @@ func (s *Service) heard(b beacon, from net.IP) {
 	r := s.running
 	p, known := s.peers[b.ID]
 	if !known {
+		s.makeRoom()
 		p = &peer{id: b.ID, pub: pub}
 		s.peers[b.ID] = p
 	}
 	now := time.Now()
 	wasOnline := p.online(now)
 	p.name, p.version, p.seen = cleanName(b.Name), b.Version, now
-	// One added by hand keeps its address.
-	if p.manual == "" && (!p.addr.Equal(from) || p.port != b.Port) {
+	if pl := cleanPlatform(b.Platform); pl != "" {
+		p.platform = pl
+	}
+	// One added by hand keeps its address, and one that proved who it is
+	// lately too: anyone can repeat its beacons from elsewhere. Unless it
+	// doesn't answer there (its address changed, say): then where it says.
+	moved := !p.addr.Equal(from) || p.port != b.Port
+	failing := p.fails > 0
+	if moved && (failing || p.manual == "" && now.Sub(p.verified) > verifiedFor) {
 		p.addr, p.port = from, b.Port
 		if p.allowed || p.shares {
 			s.save()
 		}
 	}
-	// Anyone can repeat a beacon: at most every 2 seconds.
-	ask := b.Ask && now.Sub(p.asked) > 2*time.Second
+	// Anyone can repeat a beacon: at most every 2 seconds. One that didn't
+	// answer is asked again at once when it's heard from.
+	ask := (b.Ask || failing && moved) && now.Sub(p.asked) > 2*time.Second
 	if ask {
 		p.asked = time.Time{}
 	}
@@ -392,14 +496,22 @@ func (s *Service) heard(b beacon, from net.IP) {
 
 // Caller is another KumoBox that made a request, checked.
 type Caller struct {
+	ID, Name string
 	// Allowed: this KumoBox shares its library with it.
 	Allowed bool
 	// SameUser: it's connected to the same Letterboxd account as this one.
 	SameUser bool
+	// Downloads: it may download onto this KumoBox (only with Allowed).
+	Downloads bool
+	// Paired: Allowed, or it shares its library with this KumoBox.
+	Paired bool
+	// User: the Letterboxd account it says it's on (0: none).
+	User int
 }
 
-// Verify checks a request from another KumoBox, and notes it as seen.
-func (s *Service) Verify(r *http.Request) (Caller, error) {
+// Verify checks a request from another KumoBox, and notes it as seen. The
+// answer (w) gets what proves it comes from this KumoBox.
+func (s *Service) Verify(w http.ResponseWriter, r *http.Request) (Caller, error) {
 	if !s.settings.Get().Sharing.Enabled {
 		return Caller{}, errors.New("library sharing is off")
 	}
@@ -407,13 +519,33 @@ func (s *Service) Verify(r *http.Request) (Caller, error) {
 	if !isLocalNetwork(ip) {
 		return Caller{}, errors.New("not from the local network")
 	}
-	c, err := s.id.verify(r)
+	// A large body is read (to check it) only from an KumoBox paired with this
+	// one: anyone else could have it read megabytes for nothing.
+	if r.ContentLength > maxUnpairedBody || r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody {
+		s.mu.Lock()
+		p := s.peers[r.Header.Get(headerID)]
+		paired := p != nil && p.paired()
+		s.mu.Unlock()
+		if !paired {
+			return Caller{}, errors.New("too large")
+		}
+	}
+	now := time.Now()
+	c, sig, err := s.id.verify(r, now)
+	if sig != nil {
+		date := now.UTC().Format(http.TimeFormat)
+		if reply, err := sig.reply(date); err == nil {
+			w.Header().Set("Date", date)
+			w.Header().Set(HeaderReply, reply)
+		}
+	}
 	if err != nil {
 		return Caller{}, err
 	}
 	s.mu.Lock()
 	p, known := s.peers[c.id]
 	if !known {
+		s.makeRoom()
 		p = &peer{id: c.id, pub: c.pub}
 		s.peers[c.id] = p
 	}
@@ -421,18 +553,34 @@ func (s *Service) Verify(r *http.Request) (Caller, error) {
 	if c.name != "" {
 		p.name = c.name
 	}
-	// Where it answers, unless it was added by hand.
-	if c.port > 0 && c.port <= 65535 && p.manual == "" {
-		p.addr, p.port = ip, c.port
+	// Where it answers, unless it was added by hand, or the request is a
+	// ticket (mpv's, repeated for hours, maybe from another address).
+	if !c.ticket {
+		if c.port > 0 && c.port <= 65535 && p.manual == "" {
+			p.addr, p.port = ip, c.port
+		}
+		p.verified = now
 	}
-	p.seen = time.Now()
-	allowed := p.allowed
+	p.seen = now
+	if p.callerUser != c.user {
+		p.callerUser = c.user
+		if p.paired() {
+			s.save()
+		}
+	}
+	caller := Caller{ID: p.id, Name: p.name, Allowed: p.allowed, Downloads: p.allowed && p.downloads, Paired: p.paired()}
 	s.mu.Unlock()
 	if !wasOnline {
 		s.hub.Publish("sharing-updated", nil)
+		// Back (or just started): where each left off, in step.
+		if caller.Paired && !c.ticket {
+			s.autoSync(p)
+		}
 	}
 	me := s.user()
-	return Caller{Allowed: allowed, SameUser: me > 0 && c.user == me}, nil
+	caller.User = c.user
+	caller.SameUser = me > 0 && c.user == me
+	return caller, nil
 }
 
 func (s *Service) user() int {
@@ -444,11 +592,39 @@ func (s *Service) user() int {
 
 // HistorySince is this KumoBox's watch history after t, for another KumoBox on
 // the same account (checked by the caller).
-func (s *Service) HistorySince(t int64) []*history.Entry {
-	if s.History == nil {
+func (s *Service) HistorySince(c Caller, t int64) []*history.Entry {
+	h := s.History
+	if h == nil {
 		return []*history.Entry{}
 	}
-	out := s.History.Since(t, historyBatch)
+	out := h.Since(t, historyBatch)
+	if out == nil {
+		out = []*history.Entry{}
+	}
+	return out
+}
+
+// HistoryAfter is this KumoBox's watch history stored after seq (see
+// history.Store.After), for another KumoBox on the same account.
+func (s *Service) HistoryAfter(c Caller, seq int64) []*history.Entry {
+	h := s.History
+	if h == nil {
+		return []*history.Entry{}
+	}
+	out := h.After(seq, historyBatch)
+	if out == nil {
+		out = []*history.Entry{}
+	}
+	return out
+}
+
+// HistoryLatest is the latest of this KumoBox's watch history (Sync).
+func (s *Service) HistoryLatest(c Caller) []*history.Entry {
+	h := s.History
+	if h == nil {
+		return []*history.Entry{}
+	}
+	out := h.Latest(historyBatch)
 	if out == nil {
 		out = []*history.Entry{}
 	}
@@ -471,21 +647,28 @@ type Hello struct {
 	Name    string `json:"name"`
 	Key     string `json:"key"`
 	Version string `json:"version"` // KumoBox's
-	Shares  bool   `json:"shares"`
+	// Platform: what it runs on (runtime.GOOS: "android" on a TV).
+	Platform string `json:"platform,omitempty"`
+	Shares   bool   `json:"shares"`
 	// Files changes when the shared files do.
 	Files string `json:"files,omitempty"`
 	// User: the Letterboxd account it's connected to, told to those it shares
 	// with (their watch histories are kept in step on the same account).
 	User int `json:"user,omitempty"`
+	// Downloads: the guest may download onto it (downloads.go).
+	Downloads bool `json:"downloads,omitempty"`
+	// Wake: its network cards, to wake it when it's asleep (wake.go).
+	Wake []string `json:"wake,omitempty"`
 }
 
 // Hello answers a guest (verified, see Verify).
-func (s *Service) Hello(allowed bool) Hello {
-	h := Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion, Shares: allowed}
-	if allowed {
-		files, _ := s.SharedFiles()
-		h.Files = filesVersion(files)
+func (s *Service) Hello(c Caller) Hello {
+	h := Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion, Platform: runtime.GOOS, Shares: c.Allowed}
+	if c.Allowed {
+		h.Files = s.sharedVersion()
 		h.User = s.user()
+		h.Downloads = c.Downloads
+		h.Wake = macs()
 	}
 	return h
 }
@@ -493,7 +676,7 @@ func (s *Service) Hello(allowed bool) Hello {
 // Whoami is what anyone on the network may ask: who this KumoBox is (what its
 // beacons say).
 func (s *Service) Whoami() Hello {
-	return Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion}
+	return Hello{ID: s.id.ID, Name: s.Name(), Key: s.id.PublicKey(), Version: config.AppVersion, Platform: runtime.GOOS}
 }
 
 // SharedFiles are the library's files this KumoBox shares: those matched to a
@@ -510,6 +693,28 @@ func (s *Service) SharedFiles() ([]*library.LocalFile, error) {
 		}
 	}
 	return out, nil
+}
+
+// sharedVersion is filesVersion of SharedFiles, read again at most every
+// few seconds: each KumoBox it shares with asks for it.
+func (s *Service) sharedVersion() string {
+	s.versionMu.Lock()
+	defer s.versionMu.Unlock()
+	if time.Since(s.versionAt) < 5*time.Second && s.version != "" {
+		return s.version
+	}
+	files, _ := s.SharedFiles()
+	s.version, s.versionAt = filesVersion(files), time.Now()
+	return s.version
+}
+
+// Shares reports a file this KumoBox shares (see SharedFiles).
+func (s *Service) Shares(path string) bool {
+	if path == "" || IsRemote(path) {
+		return false
+	}
+	f, err := s.library.Get(path)
+	return err == nil && f != nil && f.MediaID != 0 && !f.Ignored
 }
 
 func filesVersion(files []*library.LocalFile) string {
@@ -536,7 +741,10 @@ func (s *Service) askHosts(ctx context.Context) {
 			continue
 		}
 		wait := askEvery
-		if p.fails > 0 {
+		switch {
+		case p.waking(now):
+			wait = 3 * time.Second
+		case p.fails > 0:
 			wait = 10 * time.Second
 		}
 		if now.Sub(p.asked) >= wait {
@@ -566,12 +774,19 @@ func (s *Service) ask(ctx context.Context, p *peer) {
 	s.mu.Lock()
 	p.asking = false
 	if ctx.Err() != nil {
+		// Sharing stopped or started over meanwhile (its settings
+		// changed): the next run asks again at once, not 30s later.
+		p.asked = time.Time{}
 		s.mu.Unlock()
 		return
 	}
 	changed, visible := false, false
 	if err != nil {
 		p.fails++
+		// Added by name: maybe at another address now (a new DHCP lease).
+		if p.manual != "" && p.fails%2 == 0 {
+			go s.resolveManual(p)
+		}
 		if p.fails == maxFails {
 			visible = true
 			if p.files != nil {
@@ -589,12 +804,22 @@ func (s *Service) ask(ctx context.Context, p *peer) {
 		}
 		return
 	}
-	visible = p.fails > 0 || p.shares != h.Shares || (p.name != h.Name && h.Name != "") || !p.online(time.Now())
-	p.fails, p.seen = 0, time.Now()
+	// It answered again after it didn't (or for the first time this run).
+	back := p.fails > 0 || !p.online(time.Now())
+	visible = back || p.shares != h.Shares || (p.name != h.Name && h.Name != "") || p.waking(time.Now())
+	p.fails, p.seen, p.wakeUntil = 0, time.Now(), time.Time{}
+	// Its cards, to wake it later (an older KumoBox doesn't say).
+	if cards := cleanMACs(h.Wake); h.Shares && len(cards) > 0 && strings.Join(cards, ",") != strings.Join(p.wakeMACs, ",") {
+		p.wakeMACs = cards
+		s.save()
+	}
 	if h.Name != "" {
 		p.name = cleanName(h.Name)
 	}
 	p.version = h.Version
+	if pl := cleanPlatform(h.Platform); pl != "" {
+		p.platform = pl
+	}
 	if p.shares != h.Shares {
 		p.shares = h.Shares
 		s.save()
@@ -611,13 +836,35 @@ func (s *Service) ask(ctx context.Context, p *peer) {
 		s.hub.Publish("sharing-updated", nil)
 	}
 	s.mu.Lock()
+	was := p.user
 	p.user = 0
+	takes := false
 	if h.Shares {
 		p.user = h.User
+		takes = h.Downloads
+	}
+	// Another account there now: its history is asked for from the start
+	// (where this KumoBox was is the other account's).
+	if p.user != was && p.user > 0 && was > 0 {
+		p.historySeq, p.pushedSeq = 0, 0
+		s.save()
+	}
+	took := p.hostDownloads
+	p.hostDownloads = takes
+	if took != takes {
+		s.save()
 	}
 	s.mu.Unlock()
+	if took != takes {
+		s.downloadsGranted(p, takes)
+		s.hub.Publish("sharing-updated", nil)
+	}
 	if h.Shares && h.User > 0 && h.User == s.user() {
 		s.syncHistory(ctx, p)
+		s.pushMissed(ctx, p)
+	}
+	if back {
+		s.autoSync(p)
 	}
 }
 
@@ -670,39 +917,321 @@ func (s *Service) pushHistory() {
 	}
 	s.mu.Unlock()
 	body, _ := json.Marshal(entries)
+	var wg sync.WaitGroup
 	for _, p := range to {
+		wg.Add(1)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			req, err := s.request(ctx, p, http.MethodPost, "/api/peer/history", bytes.NewReader(body))
-			if err != nil {
-				return
-			}
-			req.Header.Set("Content-Type", "application/json")
-			if resp, err := s.api.Do(req); err == nil {
-				resp.Body.Close()
-			}
+			_ = s.sendHistory(ctx, p, body)
 		}()
 	}
+	wg.Wait()
+}
+
+// flushPush sends the positions waiting to go (pushHistory) now: KumoBox is
+// closing, and the last one saved would be lost otherwise.
+func (s *Service) flushPush() {
+	s.pushMu.Lock()
+	if s.pushTimer != nil {
+		s.pushTimer.Stop()
+	}
+	waiting := len(s.pending) > 0
+	s.pushMu.Unlock()
+	if waiting {
+		s.pushHistory()
+	}
+}
+
+// pushMissed sends a host on the same account what this KumoBox stored since
+// the last it sent it: what didn't reach it as it was saved (it was away),
+// or came from another KumoBox.
+func (s *Service) pushMissed(ctx context.Context, p *peer) {
+	if s.History == nil {
+		return
+	}
+	s.mu.Lock()
+	after := p.pushedSeq
+	s.mu.Unlock()
+	entries := s.History.After(after, historyBatch)
+	if len(entries) == 0 {
+		return
+	}
+	body, err := json.Marshal(entries)
+	if err != nil || s.sendHistory(ctx, p, body) != nil {
+		return
+	}
+	s.mu.Lock()
+	p.pushedSeq = max(p.pushedSeq, entries[len(entries)-1].Seq)
+	s.save()
+	s.mu.Unlock()
+}
+
+// sendHistory sends positions (JSON) to an KumoBox on the same account.
+func (s *Service) sendHistory(ctx context.Context, p *peer, body []byte) error {
+	req, err := s.request(ctx, p, http.MethodPost, "/api/peer/history", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.do(s.api, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return answerError(resp)
+}
+
+// answerError is what an KumoBox's answer (not OK) says went wrong, in words.
+func answerError(resp *http.Response) error {
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if json.Unmarshal(raw, &e) != nil || e.Error == "" {
+		e.Error = resp.Status
+	}
+	return errors.New(e.Error)
+}
+
+// Paired names the KumoBoxes this one is paired with (it shares its library
+// with them, or they with it), with sharing on.
+func (s *Service) Paired() []string {
+	if !s.settings.Get().Sharing.Enabled {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, p := range s.peers {
+		if p.paired() {
+			out = append(out, p.displayName())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SyncResult is what SyncNow did.
+type SyncResult struct {
+	// Devices: the KumoBoxes synced with. Unreachable: those that couldn't be
+	// (why, after the name). Skipped: paired KumoBoxes not synced with (why).
+	Devices     []string `json:"devices"`
+	Unreachable []string `json:"unreachable"`
+	Skipped     []string `json:"skipped"`
+	// Updated: the positions that changed here.
+	Updated int `json:"updated"`
+}
+
+// SyncNow brings this KumoBox's watch history in step with the KumoBoxes it's
+// paired with on the same Letterboxd account, both ways, now: each takes what
+// the other has newer (the latest stored on each), and Continue watching
+// goes on from where an episode was stopped on any of them. As it goes, a
+// guest takes its hosts' positions every askEvery and sends them its own,
+// which this does at once.
+func (s *Service) SyncNow(ctx context.Context) (SyncResult, error) {
+	res := SyncResult{Devices: []string{}, Unreachable: []string{}, Skipped: []string{}}
+	me := s.user()
+	if s.History == nil || !s.settings.Get().Sharing.Enabled {
+		return res, nil
+	}
+	s.mu.Lock()
+	var with []*peer
+	for _, p := range s.peers {
+		if !p.paired() || me == 0 {
+			continue
+		}
+		switch skip, away := syncable(p, me); {
+		case skip != "":
+			res.Skipped = append(res.Skipped, p.displayName()+" ("+skip+")")
+		case away != "":
+			res.Unreachable = append(res.Unreachable, p.displayName()+" ("+away+")")
+		default:
+			with = append(with, p)
+		}
+	}
+	s.mu.Unlock()
+	if me == 0 {
+		if len(s.Paired()) > 0 {
+			return res, errors.New("connect Letterboxd: watch history is kept in step between devices on the same Letterboxd account")
+		}
+		return res, nil
+	}
+	body, err := json.Marshal(s.History.Latest(historyBatch))
+	if err != nil {
+		return res, err
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, p := range with {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.mu.Lock()
+			name := p.displayName()
+			s.mu.Unlock()
+			merged, err := s.syncWith(ctx, p, body)
+			if err != nil {
+				log.Printf("sharing: sync with %s: %v", name, err)
+				mu.Lock()
+				res.Unreachable = append(res.Unreachable, name+" ("+plainError(err)+")")
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			res.Devices = append(res.Devices, name)
+			res.Updated += merged
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	sort.Strings(res.Devices)
+	sort.Strings(res.Unreachable)
+	sort.Strings(res.Skipped)
+	if res.Updated > 0 {
+		s.hub.Publish("history-updated", nil)
+	}
+	return res, nil
+}
+
+// syncable: whether this KumoBox's watch history can be synced with a paired
+// one (this one on Letterboxd account me): why not (skip), or why it can't be
+// reached. Must be called with mu held.
+func syncable(p *peer, me int) (skip, away string) {
+	user := p.user
+	if user == 0 {
+		user = p.callerUser
+	}
+	switch {
+	case user == 0:
+		return "it hasn't said its Letterboxd account yet: open KumoBox there", ""
+	case user != me:
+		return "another Letterboxd account", ""
+	case p.addr == nil || p.port <= 0:
+		return "", "its address isn't known yet"
+	}
+	return "", ""
+}
+
+// syncWith takes a paired KumoBox's latest positions and sends it this one's
+// (body), and returns how many changed here.
+func (s *Service) syncWith(ctx context.Context, p *peer, body []byte) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var theirs []*history.Entry
+	if err := s.getJSON(ctx, p, "/api/peer/history?latest=1", &theirs); err != nil {
+		return 0, err
+	}
+	if err := s.sendHistory(ctx, p, body); err != nil {
+		return 0, err
+	}
+	return s.merge(theirs), nil
+}
+
+// How often at most a paired KumoBox is synced with by itself (autoSync).
+const autoSyncEvery = 2 * time.Minute
+
+// autoSync syncs the watch history with a paired KumoBox that came back (it
+// answered again, or asked), as Sync would, unless that's turned off or it
+// was done a moment ago: Continue watching goes on from where it was left on
+// it, without pressing Sync.
+func (s *Service) autoSync(p *peer) {
+	me := s.user()
+	if s.History == nil || me == 0 || !s.settings.Get().Sharing.AutoSync {
+		return
+	}
+	s.mu.Lock()
+	skip, away := syncable(p, me)
+	due := p.paired() && skip == "" && away == "" && time.Since(p.autoSynced) >= autoSyncEvery && s.running != nil
+	if due {
+		p.autoSynced = time.Now()
+	}
+	name := p.displayName()
+	s.mu.Unlock()
+	if !due {
+		return
+	}
+	go func() {
+		body, err := json.Marshal(s.History.Latest(historyBatch))
+		if err != nil {
+			return
+		}
+		merged, err := s.syncWith(context.Background(), p, body)
+		if err != nil {
+			log.Printf("sharing: syncing with %s: %v", name, plainError(err))
+			return
+		}
+		if merged > 0 {
+			log.Printf("sharing: synced %d position(s) with %s", merged, name)
+			s.hub.Publish("history-updated", nil)
+		}
+	}()
+}
+
+// Gone marks another KumoBox as not heard from for a while (tests: as if it
+// had been away).
+func (s *Service) Gone(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.peers[id]; p != nil {
+		p.seen, p.lastSeen = time.Time{}, time.Time{}
+	}
+}
+
+// AutoSyncAll syncs with every paired KumoBox by itself (autoSync), as when
+// the app is opened again.
+func (s *Service) AutoSyncAll() {
+	s.mu.Lock()
+	var all []*peer
+	for _, p := range s.peers {
+		if p.paired() {
+			all = append(all, p)
+		}
+	}
+	s.mu.Unlock()
+	for _, p := range all {
+		s.autoSync(p)
+	}
+}
+
+// plainError says what went wrong talking to another KumoBox, in a few words.
+func plainError(err error) string {
+	var ne net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()):
+		return "it didn't answer in time"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "KumoBox isn't running there"
+	case errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH):
+		return "it isn't on the network"
+	}
+	var oe *net.OpError
+	if errors.As(err, &oe) {
+		return "it isn't reachable"
+	}
+	// Not the request's address (a file's path on that computer, say).
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if errors.Is(ue.Err, io.EOF) || errors.Is(ue.Err, io.ErrUnexpectedEOF) {
+			return "the connection closed"
+		}
+		return ue.Err.Error()
+	}
+	return err.Error()
 }
 
 // TakeHistory merges positions another KumoBox on the same account sent
 // (checked by the caller), the newer ones.
-func (s *Service) TakeHistory(entries []history.Entry) {
+func (s *Service) TakeHistory(c Caller, entries []history.Entry) {
 	if s.History == nil {
 		return
 	}
-	merged := 0
-	var finished []history.Entry
-	for _, e := range entries {
-		if ok, done := s.merge(e); ok {
-			merged++
-			if done {
-				finished = append(finished, e)
-			}
-		}
-	}
-	if merged > 0 {
+	merged, finished := s.mergeAll(entries)
+	if len(merged) > 0 {
 		s.hub.Publish("history-updated", nil)
 	}
 	s.watchedElsewhere(finished)
@@ -710,27 +1239,6 @@ func (s *Service) TakeHistory(entries []history.Entry) {
 
 // finishedAt is how far into an episode it counts as finished.
 const finishedAt = 0.85
-
-// merge takes an entry from another KumoBox when it's newer than this one's,
-// and reports whether it did, and whether it finished a viewing: the
-// episode wasn't finished here yet, or was by an earlier viewing (finished
-// longer ago than the episode lasts). The positions sent while the end
-// credits play are the same viewing: the list moves on once for it.
-func (s *Service) merge(e history.Entry) (merged, finished bool) {
-	s.mergeMu.Lock()
-	defer s.mergeMu.Unlock()
-	before := s.History.Get(e.MediaID, e.Episode)
-	if ok, err := s.History.Merge(e); err != nil || !ok {
-		return false, false
-	}
-	if e.Percent() < finishedAt {
-		return true, false
-	}
-	if before == nil || before.Percent() < finishedAt {
-		return true, true
-	}
-	return true, float64(e.UpdatedAt-before.UpdatedAt) > max(e.Duration, before.Duration)
-}
 
 // watchedElsewhere tells the app about episodes finished on another
 // KumoBox, if any.
@@ -740,43 +1248,85 @@ func (s *Service) watchedElsewhere(finished []history.Entry) {
 	}
 }
 
+// merge takes positions from another KumoBox, the newer ones, and says how
+// many changed here. The episodes finished there move the list on here
+// (watchedElsewhere).
+func (s *Service) merge(entries []*history.Entry) int {
+	in := make([]history.Entry, 0, len(entries))
+	for _, e := range entries {
+		if e != nil {
+			in = append(in, *e)
+		}
+	}
+	merged, finished := s.mergeAll(in)
+	s.watchedElsewhere(finished)
+	return len(merged)
+}
+
+// mergeAll takes the entries newer than this KumoBox's, and reports the
+// ones taken and, of those, the ones that finished a viewing: the episode
+// wasn't finished here yet, or was by an earlier viewing (finished longer
+// ago than the episode lasts). The positions sent while the end credits play
+// are the same viewing: the list moves on once for it.
+func (s *Service) mergeAll(entries []history.Entry) (merged, finished []history.Entry) {
+	s.mergeMu.Lock()
+	defer s.mergeMu.Unlock()
+	before := make(map[[2]int]*history.Entry, len(entries))
+	for _, e := range entries {
+		k := [2]int{e.MediaID, e.Episode}
+		if _, ok := before[k]; !ok {
+			before[k] = s.History.Get(e.MediaID, e.Episode)
+		}
+	}
+	merged, err := s.History.MergeAll(entries)
+	if err != nil {
+		log.Printf("sharing: history: %v", err)
+	}
+	for _, e := range merged {
+		if e.Percent() < finishedAt {
+			continue
+		}
+		b := before[[2]int{e.MediaID, e.Episode}]
+		if b == nil || b.Percent() < finishedAt || float64(e.UpdatedAt-b.UpdatedAt) > max(e.Duration, b.Duration) {
+			finished = append(finished, e)
+		}
+	}
+	return merged, finished
+}
+
 // syncHistory takes what's newer in a host's watch history, both being
-// connected to the same Letterboxd account: where each episode was
-// stopped, and when it was watched. Continue watching then goes on from
-// there, to the second, and the episodes finished there move the list on.
+// connected to the same Letterboxd account: where each episode was stopped,
+// and when it was watched. Continue watching then goes on from there, to the
+// second, and the episodes finished there move the list on. It asks for
+// what the host stored after the last it took, whatever their times (one
+// from another KumoBox comes late with an older time).
 func (s *Service) syncHistory(ctx context.Context, p *peer) {
 	if s.History == nil {
 		return
 	}
 	s.mu.Lock()
-	since := p.historySince
+	after := p.historySeq
 	s.mu.Unlock()
 	var entries []*history.Entry
-	if err := s.getJSON(ctx, p, "/api/peer/history?since="+strconv.FormatInt(since, 10), &entries); err != nil {
+	if err := s.getJSON(ctx, p, "/api/peer/history?after="+strconv.FormatInt(after, 10), &entries); err != nil {
 		return
 	}
-	merged := 0
-	newest := since
-	var finished []history.Entry
+	merged := s.merge(entries)
+	last := after
 	for _, e := range entries {
-		if e == nil {
-			continue
+		if e != nil {
+			last = max(last, e.Seq)
 		}
-		if ok, done := s.merge(*e); ok {
-			merged++
-			if done {
-				finished = append(finished, *e)
-			}
-		}
-		newest = max(newest, e.UpdatedAt)
 	}
 	s.mu.Lock()
-	p.historySince = max(p.historySince, newest)
+	if last > p.historySeq {
+		p.historySeq = last
+		s.save()
+	}
 	s.mu.Unlock()
 	if merged > 0 {
 		s.hub.Publish("history-updated", nil)
 	}
-	s.watchedElsewhere(finished)
 }
 
 // publish tells the app the shared files changed.
@@ -789,19 +1339,86 @@ func (s *Service) publish(changed bool) {
 	}
 }
 
-// request makes a signed request to a host.
+// request makes a signed request to a host (sent with do).
 func (s *Service) request(ctx context.Context, p *peer, method, path string, body io.Reader) (*http.Request, error) {
 	s.mu.Lock()
-	base, host, pub := p.baseURL(), p.id, p.pub
+	base := p.baseURL()
 	s.mu.Unlock()
 	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.id.sign(req.Header, host, pub, s.Name(), s.settings.Get().Server.Port, s.user()); err != nil {
+	return s.sign(req, p)
+}
+
+type signedKey struct{}
+
+// signed is a request signed for a host: what checks its answer.
+type signed struct {
+	p      *peer
+	sig    *signature
+	offset time.Duration
+}
+
+// sign signs a request for a host, by its clock as far as this KumoBox knows it.
+func (s *Service) sign(req *http.Request, p *peer) (*http.Request, error) {
+	s.mu.Lock()
+	host, pub, off := p.id, p.pub, p.offset
+	user := s.user()
+	s.mu.Unlock()
+	sig, err := s.id.sign(req, host, pub, s.Name(), s.settings.Get().Server.Port, user, time.Now().Add(off), false)
+	if err != nil {
 		return nil, err
 	}
-	return req, nil
+	return req.WithContext(context.WithValue(req.Context(), signedKey{}, &signed{p: p, sig: sig, offset: off})), nil
+}
+
+// do sends a request made by request, and checks its answer comes from the
+// host: a computer that took its address can't answer for it. A host whose
+// clock is far from this one's refuses the request, with its time (proven):
+// it's sent once more, by that time.
+func (s *Service) do(c *http.Client, req *http.Request) (*http.Response, error) {
+	for try := 0; ; try++ {
+		sr, _ := req.Context().Value(signedKey{}).(*signed)
+		if sr == nil {
+			return nil, errors.New("unsigned request")
+		}
+		sent := time.Now()
+		resp, err := c.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		date := resp.Header.Get("Date")
+		want, err := sr.sig.reply(date)
+		if err != nil || resp.Header.Get(HeaderReply) == "" || !hmac.Equal([]byte(want), []byte(resp.Header.Get(HeaderReply))) {
+			resp.Body.Close()
+			return nil, fmt.Errorf("the answer can't be checked as %s's (is the latest KumoBox running there, with library sharing on?)", s.nameOf(sr.p))
+		}
+		// The host dates its answer as it gets the request (Verify), however
+		// long the answer then takes (a file read from a sleeping disk):
+		// against when it was sent, not when the answer came.
+		off := sr.offset
+		if t, err := http.ParseTime(date); err == nil {
+			off = t.Sub(sent).Round(time.Second)
+		}
+		s.mu.Lock()
+		sr.p.verified, sr.p.offset = time.Now(), off
+		s.mu.Unlock()
+		moved := off-sr.offset > clockSkew/2 || sr.offset-off > clockSkew/2
+		if resp.StatusCode != http.StatusUnauthorized || !moved || try > 0 {
+			return resp, nil
+		}
+		resp.Body.Close()
+		again := req.Clone(req.Context())
+		if req.GetBody != nil {
+			if again.Body, err = req.GetBody(); err != nil {
+				return nil, err
+			}
+		}
+		if req, err = s.sign(again, sr.p); err != nil {
+			return nil, err
+		}
+	}
 }
 
 // Sign signs a request to the KumoBox with that ID and public key (as its
@@ -811,15 +1428,20 @@ func (s *Service) Sign(req *http.Request, hostID, hostKey string) error {
 	if err != nil {
 		return err
 	}
-	return s.id.sign(req.Header, hostID, pub, s.Name(), s.settings.Get().Server.Port, s.user())
+	_, err = s.id.sign(req, hostID, pub, s.Name(), s.settings.Get().Server.Port, s.user(), time.Now(), false)
+	return err
 }
 
 func (s *Service) getJSON(ctx context.Context, p *peer, path string, out any) error {
+	return s.getJSONWith(ctx, s.api, p, path, out)
+}
+
+func (s *Service) getJSONWith(ctx context.Context, c *http.Client, p *peer, path string, out any) error {
 	req, err := s.request(ctx, p, http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := s.api.Do(req)
+	resp, err := s.do(c, req)
 	if err != nil {
 		return err
 	}
@@ -905,6 +1527,8 @@ type PeerView struct {
 	Online   bool   `json:"online"`
 	LastSeen int64  `json:"lastSeen"`
 	Version  string `json:"version"`
+	// Platform: what it runs on ("android": a TV; "" when it didn't say).
+	Platform string `json:"platform,omitempty"`
 	// Allowed: this KumoBox shares its library with it.
 	Allowed bool `json:"allowed"`
 	// Shares: it shares its library with this KumoBox (Files of them).
@@ -912,18 +1536,37 @@ type PeerView struct {
 	Files  int    `json:"files"`
 	Manual bool   `json:"manual"`
 	Error  string `json:"error,omitempty"`
+	// Granted to it (with Allowed): downloading onto this KumoBox.
+	Downloads bool `json:"downloads"`
+	// Granted by it (it shares): downloading onto it.
+	TakesDownloads bool `json:"takesDownloads"`
+	// It shares and can be woken up (wake.go); it's being woken.
+	CanWake bool `json:"canWake"`
+	Waking  bool `json:"waking"`
+	// Declined: asked whether to share with it, the answer was "not now".
+	Declined bool `json:"declined"`
 }
 
 func (s *Service) view(p *peer, now time.Time) PeerView {
 	v := PeerView{
 		ID: p.id, Name: p.name, Online: p.online(now), LastSeen: p.lastAround().Unix(), Version: p.version,
 		Allowed: p.allowed, Shares: p.shares, Files: len(p.files), Manual: p.manual != "",
+		Downloads: p.downloads, TakesDownloads: p.shares && p.hostDownloads,
+		CanWake: p.shares && len(p.wakeMACs) > 0, Waking: p.waking(now),
+		Platform: p.platform, Declined: p.declined,
 	}
 	if p.addr != nil {
 		v.Address = net.JoinHostPort(p.addr.String(), strconv.Itoa(p.port))
 	}
 	if v.Name == "" {
 		v.Name = "KumoBox " + p.id[:6]
+	}
+	// Two named alike (two Fire TVs): told apart. Must be called with mu held.
+	for _, o := range s.peers {
+		if o != p && o.name != "" && strings.EqualFold(o.name, p.name) {
+			v.Name += " (" + p.id[:4] + ")"
+			break
+		}
 	}
 	if p.fails >= maxFails {
 		v.Error = "Not answering"
@@ -980,12 +1623,43 @@ func addresses(port int) []string {
 	return out
 }
 
+// Grants is what this KumoBox shares with another one: its library, and with
+// it downloading onto this KumoBox. Nil: unchanged.
+type Grants struct {
+	Allowed   *bool `json:"allowed"`
+	Downloads *bool `json:"downloads"`
+	// Declined: "not now", asked whether to share with it (Home).
+	Declined *bool `json:"declined"`
+}
+
 // SetAllowed shares this KumoBox's library with another one, or stops.
 func (s *Service) SetAllowed(id string, allowed bool) error {
+	return s.SetGrants(id, Grants{Allowed: &allowed})
+}
+
+// SetGrants changes what this KumoBox shares with another one.
+func (s *Service) SetGrants(id string, g Grants) error {
 	s.mu.Lock()
 	p, ok := s.peers[id]
 	if ok {
-		p.allowed = allowed
+		if g.Allowed != nil {
+			p.allowed = *g.Allowed
+			// Not shared with any more: nor what came with it, which
+			// sharing again mustn't give back unasked.
+			if !p.allowed {
+				p.downloads = false
+			}
+		}
+		if g.Downloads != nil {
+			p.downloads = *g.Downloads
+		}
+		if g.Declined != nil {
+			p.declined = *g.Declined
+		}
+		// Shared with after all: the "not now" is over.
+		if p.allowed {
+			p.declined = false
+		}
 		s.save()
 	}
 	s.mu.Unlock()
@@ -1011,7 +1685,7 @@ func (s *Service) Refresh() {
 	now := time.Now()
 	s.mu.Lock()
 	for _, p := range s.peers {
-		if now.Sub(p.asked) > 3*time.Second {
+		if now.Sub(p.asked) > refreshEvery {
 			p.asked = time.Time{}
 		}
 	}
@@ -1019,7 +1693,54 @@ func (s *Service) Refresh() {
 	s.wake()
 }
 
-// Forget removes a KumoBox from the list (one added by hand, or gone).
+// resolveManual finds an KumoBox added by name (not an address) again.
+func (s *Service) resolveManual(p *peer) {
+	s.mu.Lock()
+	manual := p.manual
+	s.mu.Unlock()
+	host, portStr, err := net.SplitHostPort(manual)
+	if err != nil || net.ParseIP(host) != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", host)
+	if err != nil || len(ips) == 0 || !isLocalNetwork(ips[0]) {
+		return
+	}
+	port, _ := strconv.Atoi(portStr)
+	s.mu.Lock()
+	if p.manual == manual && !p.addr.Equal(ips[0]) {
+		p.addr, p.port, p.asked = ips[0], port, time.Time{}
+		s.save()
+		log.Printf("sharing: %s is at %s now", manual, ips[0])
+	}
+	s.mu.Unlock()
+	s.wake()
+}
+
+// makeRoom keeps the KumoBoxes this one only heard of to a few: anyone on the
+// network can make up new ones. Must be called with mu held.
+func (s *Service) makeRoom() {
+	var strangers []*peer
+	for _, p := range s.peers {
+		if !p.paired() && p.manual == "" {
+			strangers = append(strangers, p)
+		}
+	}
+	if len(strangers) < maxStrangers {
+		return
+	}
+	oldest := strangers[0]
+	for _, p := range strangers[1:] {
+		if p.lastAround().Before(oldest.lastAround()) {
+			oldest = p
+		}
+	}
+	delete(s.peers, oldest.id)
+}
+
+// Forget removes an KumoBox from the list (one added by hand, or gone).
 func (s *Service) Forget(id string) {
 	s.mu.Lock()
 	p, ok := s.peers[id]
@@ -1028,13 +1749,21 @@ func (s *Service) Forget(id string) {
 		s.save()
 	}
 	s.mu.Unlock()
-	if ok {
-		s.publish(p.files != nil)
-		s.hub.Publish("sharing-updated", nil)
+	if !ok {
+		return
 	}
+	// Nothing of it stays: where downloads went.
+	if cfg := s.settings.Get(); cfg.Sharing.DownloadTo == id {
+		cfg.Sharing.DownloadTo = ""
+		if _, err := s.settings.Save(cfg); err != nil {
+			log.Printf("sharing: %v", err)
+		}
+	}
+	s.publish(p.files != nil)
+	s.hub.Publish("sharing-updated", nil)
 }
 
-// Connect adds a KumoBox by its address, for networks where they can't find
+// Connect adds an KumoBox by its address, for networks where they can't find
 // each other by themselves (it needs sharing on too).
 func (s *Service) Connect(ctx context.Context, address string) (PeerView, error) {
 	address = strings.TrimSpace(address)
@@ -1068,7 +1797,7 @@ func (s *Service) Connect(ctx context.Context, address string) (PeerView, error)
 	defer resp.Body.Close()
 	var h Hello
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&h) != nil {
-		return PeerView{}, fmt.Errorf("%s isn't a KumoBox app with library sharing on", address)
+		return PeerView{}, fmt.Errorf("%s isn't an KumoBox app with library sharing on", address)
 	}
 	if h.ID == s.id.ID {
 		return PeerView{}, errors.New("that's this KumoBox")
@@ -1084,6 +1813,9 @@ func (s *Service) Connect(ctx context.Context, address string) (PeerView, error)
 		s.peers[h.ID] = p
 	}
 	p.name, p.version, p.addr, p.port, p.seen = cleanName(h.Name), h.Version, ip, port, time.Now()
+	if pl := cleanPlatform(h.Platform); pl != "" {
+		p.platform = pl
+	}
 	p.manual = net.JoinHostPort(host, strconv.Itoa(port))
 	p.asked, p.fails = time.Time{}, 0
 	s.save()

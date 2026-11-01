@@ -49,7 +49,7 @@ func New(dir string) *Cache {
 			Timeout: 30 * time.Second,
 			// Connections (and their TLS buffers) are let go once the
 			// artwork is in: no need to keep them while nothing loads.
-			Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: util.PublicDialContext(10 * time.Second), MaxIdleConnsPerHost: 8, IdleConnTimeout: 90 * time.Second},
+			Transport: &http.Transport{Proxy: util.PublicProxy, DialContext: util.PublicDialContext(10 * time.Second), MaxIdleConnsPerHost: 8, IdleConnTimeout: 90 * time.Second},
 		},
 		inflight: map[string]chan struct{}{},
 		queue:    make(chan string, 4096),

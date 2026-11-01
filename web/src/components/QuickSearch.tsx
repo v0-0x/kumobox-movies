@@ -1,9 +1,10 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { ArrowRight, Search } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useSearch } from "@/lib/queries"
 import { searchOpenStore, useStore } from "@/lib/store"
+import { focusEl, tv } from "@/lib/tv"
 import { cn, entryUrl, mediaSummary, poster, title } from "@/lib/utils"
 import { ErrorState, Spinner } from "./ui"
 
@@ -26,6 +27,7 @@ export function QuickSearch() {
     const searching = dq.trim().length > 1
     const { data, isFetching, error, refetch } = useSearch({ search: dq, type, perPage: 8 }, open && searching)
     const results = searching ? data?.media ?? [] : []
+    const list = useRef<HTMLDivElement>(null)
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -74,7 +76,14 @@ export function QuickSearch() {
                                     e.preventDefault()
                                     setSel(s => Math.max(0, s - 1))
                                 } else if (e.key === "Enter") {
-                                    if (results[sel]) go(entryUrl(results[sel]))
+                                    // TV: the keyboard's Done closes it, and the
+                                    // remote then picks a result.
+                                    const first = tv ? list.current?.querySelector<HTMLElement>("button") : null
+                                    if (first) {
+                                        e.preventDefault()
+                                        focusEl(first)
+                                    } else if (tv && searching && isFetching) e.preventDefault()
+                                    else if (results[sel]) go(entryUrl(results[sel]))
                                     else if (q.trim()) go(advanced())
                                 }
                             }}
@@ -90,7 +99,7 @@ export function QuickSearch() {
                             ))}
                         </div>
                     </div>
-                    <div className="max-h-[60vh] overflow-y-auto p-2">
+                    <div ref={list} className="max-h-[60vh] overflow-y-auto p-2">
                         {results.map((m, i) => (
                             <button
                                 key={m.id}
@@ -112,7 +121,13 @@ export function QuickSearch() {
                         {searching && !isFetching && !error && results.length === 0 && <p className="p-6 text-center text-sm text-muted">No results</p>}
                         {!searching && (
                             <p className="p-6 text-center text-sm text-subtle">
-                                Type to search TMDB · <kbd className="rounded bg-white/10 px-1.5 py-0.5 text-xs">Ctrl K</kbd> to toggle
+                                Type to search TMDB
+                                {!tv && (
+                                    <>
+                                        {" "}
+                                        · <kbd className="rounded bg-white/10 px-1.5 py-0.5 text-xs">Ctrl K</kbd> to toggle
+                                    </>
+                                )}
                             </p>
                         )}
                     </div>

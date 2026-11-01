@@ -17,6 +17,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/imroc/req/v3 v3.61.0
 	github.com/tetratelabs/wazero v1.12.0
+	github.com/mattn/go-sqlite3 v1.14.52
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.60.1

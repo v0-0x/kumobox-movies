@@ -4,9 +4,12 @@ import { Link } from "react-router-dom"
 import { ListCardMenu } from "@/components/ListCardMenu"
 import { Carousel, MediaCard, MediaCardSkeleton } from "@/components/MediaCard"
 import { PluginSlot } from "@/components/plugins/PluginSlot"
-import { Button, EmptyState, ErrorState, SectionHeader, Skeleton, Tabs } from "@/components/ui"
+import { Button, ChipRow, EmptyState, ErrorState, SectionHeader, Skeleton, Tabs } from "@/components/ui"
+import { HolidayIcon } from "@/components/HolidayBadge"
 import { usePersisted } from "@/lib/hooks"
-import { useDiscover, useGenres, useStatus } from "@/lib/queries"
+import { useDiscover, useGenres, useSearch, useStatus } from "@/lib/queries"
+import { useStore } from "@/lib/store"
+import { holidayStore } from "@/lib/themes"
 import type { Discover, Media } from "@/lib/types"
 import { banner, cleanDescription, cn, formatLabel, title, year } from "@/lib/utils"
 
@@ -34,13 +37,20 @@ export default function DiscoverPage() {
     const featured = items("trending")
         .filter(m => m.bannerImage)
         .slice(0, 6)
+    // The holiday theme's row (Halloween's horror...), when it has one.
+    const holiday = useStore(holidayStore)
+    const picks = holiday?.picks
+    const { data: pickData } = useSearch({ ...picks?.params, perPage: 20 }, !!picks && tmdb)
+    const pickMedia = picks ? (pickData?.media ?? []).filter(m => !kind || m.type === kind) : []
     const [i, setI] = useState(0)
+    // Not while the focus is on it (a TV remote's): its buttons would go.
+    const [hold, setHold] = useState(false)
+    useEffect(() => setI(0), [kind])
     useEffect(() => {
-        setI(0)
-        if (featured.length < 2) return
+        if (featured.length < 2 || hold) return
         const t = setInterval(() => setI(x => (x + 1) % featured.length), 9000)
         return () => clearInterval(t)
-    }, [featured.length, kind])
+    }, [featured.length, hold, kind])
 
     if (!tmdb)
         return (
@@ -66,7 +76,7 @@ export default function DiscoverPage() {
 
     return (
         <div className="min-h-full pb-24">
-            {isLoading ? <Skeleton className="h-[440px] rounded-none" /> : current && <Featured media={current} index={i} count={featured.length} onIndex={setI} />}
+            {isLoading ? <Skeleton className="h-[440px] rounded-none" /> : current && <Featured media={current} index={i} count={featured.length} onIndex={setI} onHold={setHold} />}
             {/* Without a hero banner there is nothing to overlap. */}
             <div className={cn("relative z-10 flex flex-col gap-10 px-6 md:px-8 xl:px-10", hero ? "-mt-14" : "pt-8")}>
                 <PluginSlot slot="after-discover-screen-header" />
@@ -80,7 +90,7 @@ export default function DiscoverPage() {
                             { value: "TV", label: "Shows" },
                         ]}
                     />
-                    <div className="no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto">
+                    <ChipRow label="More genres" className="min-w-0 flex-1">
                         {(genres ?? []).map(g => (
                             <Link
                                 key={g}
@@ -90,7 +100,7 @@ export default function DiscoverPage() {
                                 {g}
                             </Link>
                         ))}
-                    </div>
+                    </ChipRow>
                 </div>
                 {shown.length === 0 && (
                     <EmptyState
@@ -104,6 +114,26 @@ export default function DiscoverPage() {
                     >
                         TMDB didn't return anything. Check your internet connection and your API key, then try again.
                     </EmptyState>
+                )}
+                {holiday && picks && pickMedia.length > 0 && (
+                    <section>
+                        <SectionHeader
+                            title={
+                                <span className="flex items-center gap-2.5">
+                                    <HolidayIcon id={holiday.id} className="size-6" />
+                                    {picks.title}
+                                </span>
+                            }
+                            action={
+                                picks.more && (
+                                    <Link to={picks.more} className="text-[13px] font-medium text-muted transition-colors hover:text-fg">
+                                        See more
+                                    </Link>
+                                )
+                            }
+                        />
+                        <Carousel>{pickMedia.map(m => <MediaCard key={m.id} media={m} listEntry={m.mediaListEntry} menu={<ListCardMenu media={m} />} />)}</Carousel>
+                    </section>
                 )}
                 {shown.map(r => (
                     <section key={r.key}>
@@ -138,13 +168,17 @@ export default function DiscoverPage() {
     )
 }
 
-function Featured({ media, index, count, onIndex }: { media: Media; index: number; count: number; onIndex: (i: number) => void }) {
+function Featured({ media, index, count, onIndex, onHold }: { media: Media; index: number; count: number; onIndex: (i: number) => void; onHold: (on: boolean) => void }) {
     const desc = cleanDescription(media.description)
     const score = media.averageScore ?? media.meanScore
     const facts = [formatLabel(media.format), year(media) || "", media.genres?.slice(0, 3).join(", ") ?? ""].filter(Boolean)
     return (
-        <div className="relative h-[440px] overflow-hidden">
-            <img key={media.id} src={banner(media)} alt="" className="absolute inset-0 size-full object-cover fade-in" />
+        <div
+            className="relative h-[440px] overflow-hidden"
+            onFocus={() => onHold(true)}
+            onBlur={e => !e.currentTarget.contains(e.relatedTarget as Node | null) && onHold(false)}
+        >
+            <img key={media.id} src={banner(media)} alt="" className="absolute inset-0 size-full object-cover fade-in [mask-image:linear-gradient(to_bottom,#000_80%,transparent)]" />
             <div className="absolute inset-0 bg-gradient-to-t from-bg via-bg/50 to-bg/5" />
             <div className="absolute inset-0 bg-gradient-to-r from-bg/90 via-bg/40 to-transparent" />
             <div key={media.id + "t"} className="absolute bottom-24 left-6 max-w-2xl rise-in md:left-8 xl:left-10">
@@ -181,8 +215,9 @@ function Featured({ media, index, count, onIndex }: { media: Media; index: numbe
                 </div>
             </div>
             {count > 1 && (
-                <div className="absolute right-6 bottom-24 flex items-center gap-3 md:right-8 xl:right-10">
-                    <div className="flex gap-1.5">
+                // On a phone, up in the corner: clear of the buttons below.
+                <div className="absolute right-6 bottom-24 flex items-center gap-3 max-sm:top-4 max-sm:right-4 max-sm:bottom-auto md:right-8 xl:right-10">
+                    <div className="flex gap-1.5 max-sm:hidden">
                         {Array.from({ length: count }).map((_, k) => (
                             <button
                                 key={k}

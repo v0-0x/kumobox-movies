@@ -23,7 +23,7 @@ import {
     Tv,
 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
-import { useSearchParams } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { toast } from "@/lib/toast"
 import { Badge, Button, Dialog, EmptyState, Field, IconButton, Input, Select, Switch, Tabs } from "@/components/ui"
 import { api } from "@/lib/api"
@@ -60,6 +60,9 @@ export default function ExtensionsPage() {
     const { data: addons } = useStremioAddons()
     const { data: status } = useStatus()
     const [manualOpen, setManualOpen] = useState(false)
+    // From another device on the network: what's installed is shown, but only
+    // the computer KumoBox runs on installs and sets up extensions.
+    const lan = status?.client === "lan"
     const exts = (installed ?? []).filter(e => e.manifest.type !== "nuvio-provider")
     const nuvio = (installed ?? []).filter(e => e.manifest.type === "nuvio-provider")
     const go = (t: PageTab, v?: string) => setParams(v ? { tab: t, view: v } : { tab: t }, { replace: true })
@@ -76,6 +79,7 @@ export default function ExtensionsPage() {
                     </Button>
                 )}
             </div>
+            {lan && <p className="mb-6 rounded-lg bg-white/[0.04] px-3 py-2 text-sm text-muted">Extensions are installed and set up on the computer KumoBox runs on; from here you can see them.</p>}
             <Tabs
                 variant="underline"
                 className="mb-8"
@@ -137,8 +141,16 @@ function Installed() {
     const list = (data ?? []).filter(e => e.manifest.type !== "nuvio-provider") // in their own tab
     if (!list.length)
         return (
-            <EmptyState icon={<Puzzle className="size-6" />} title="No extensions installed">
-                Browse the marketplace to add providers and plugins.
+            <EmptyState
+                icon={<Puzzle className="size-6" />}
+                title="No extensions installed"
+                action={
+                    <Link to="/extensions?tab=extensions&view=marketplace" replace>
+                        <Button variant="primary">Browse the marketplace</Button>
+                    </Link>
+                }
+            >
+                Streaming and torrent providers and plugins come from the marketplace.
             </EmptyState>
         )
     const groups = Object.keys(TYPES)

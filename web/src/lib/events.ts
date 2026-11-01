@@ -1,6 +1,9 @@
 import type { QueryClient } from "@tanstack/react-query"
+import { api } from "@/lib/api"
 import { toast } from "@/lib/toast"
+import { showAlert, type Alert } from "./alerts"
 import { playbackStore, pluginStore, scanStore, torrentCountStore, trayOpenStore } from "./store"
+import { installIfWanted } from "./tv"
 import type { DownloadItem, LetterboxdStatus, PluginState, Status, UpdateStatus } from "./types"
 import { safeUrl } from "./utils"
 
@@ -43,6 +46,8 @@ export function connectEvents(qc: QueryClient) {
                 break
             case "sharing-updated":
                 qc.invalidateQueries({ queryKey: ["sharing"] })
+                // Home's asleep computers and questions (status).
+                qc.invalidateQueries({ queryKey: ["status"] })
                 break
             case "history-updated":
                 // Watched on another KumoBox sharing its library: Continue
@@ -125,11 +130,15 @@ export function connectEvents(qc: QueryClient) {
             case "plugin-ui":
                 handlePluginEvent(p)
                 break
+            case "notify":
+                showAlert(qc, p as Alert, navigateFn)
+                break
             case "update-status": {
                 // Only this computer installs updates (GET /api/update says
                 // so to devices on the network too).
                 const lan = qc.getQueryData<Status>(["status"])?.client === "lan"
                 qc.setQueryData<UpdateStatus>(["update"], lan ? { ...p, canApply: false, applyNote: "", manualCommand: "" } : p)
+                if (!lan) installIfWanted(p)
                 break
             }
         }
@@ -148,6 +157,12 @@ export function connectEvents(qc: QueryClient) {
         // the update's.
         es.onopen = () => {
             qc.invalidateQueries({ queryKey: ["update"] })
+            // The library too: the files other devices share can come in
+            // before this page listens, and their "library-updated" is lost;
+            // it then showed only part of the shared library.
+            qc.invalidateQueries({ queryKey: ["collection"] })
+            qc.invalidateQueries({ queryKey: ["library"] })
+            qc.invalidateQueries({ queryKey: ["sharing", "libraries"] })
             fetch("/api/status", { credentials: "same-origin" })
                 .then(r => (r.ok ? r.json() : null))
                 .then(st => {
@@ -170,10 +185,23 @@ export function connectEvents(qc: QueryClient) {
         }
     }
     connect()
+
+    // The app shown again (a TV's, back from its home screen; a tab): watch
+    // history synced with the paired KumoBoxes, if that's on (the server skips
+    // those synced a moment ago). Only this computer's app asks.
+    const resumed = () => {
+        if (qc.getQueryData<Status>(["status"])?.client === "lan") return
+        api.post("/api/sharing/autosync").catch(() => {})
+    }
+    const onVisible = () => document.visibilityState === "visible" && resumed()
+    document.addEventListener("visibilitychange", onVisible)
+    window.kumoboxResumed = resumed // the Android app's onResume
     return () => {
         closed = true
         if (retry) clearTimeout(retry)
         es?.close()
+        document.removeEventListener("visibilitychange", onVisible)
+        delete window.kumoboxResumed
     }
 }
 

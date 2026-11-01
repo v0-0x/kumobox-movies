@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/v0-0x/kumobox-movies/server/internal/awake"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"github.com/v0-0x/kumobox-movies/server/internal/letterboxd"
 	"github.com/v0-0x/kumobox-movies/server/internal/library"
 	"github.com/v0-0x/kumobox-movies/server/internal/lifecycle"
+	"github.com/v0-0x/kumobox-movies/server/internal/notify"
 	"github.com/v0-0x/kumobox-movies/server/internal/player"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers"
 	"github.com/v0-0x/kumobox-movies/server/internal/providers/stremio"
@@ -59,6 +62,12 @@ type App struct {
 	Images     *images.Cache
 	Logs       *LogBuffer
 	Update     *update.Checker
+	// Awake keeps the computer from sleeping while others play its files.
+	Awake *awake.Keeper
+	// Trash holds the files put away from Library tools › Clean up.
+	Trash *library.Trash
+	// Notify tells about aired episodes and episodes ready in the library.
+	Notify *notify.Service
 	// Exits ends KumoBox from inside, e.g. to restart it after an update;
 	// cmd/kumobox waits for it, next to the signals.
 	Exits *lifecycle.Exits
@@ -84,6 +93,9 @@ type App struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+	// bg: the background jobs Start runs, which Shutdown waits for (they
+	// stop with ctx) before it closes the database.
+	bg sync.WaitGroup
 }
 
 // LogBuffer keeps the last server log lines for the Logs page.
@@ -149,6 +161,9 @@ func New(dataDir string) (*App, error) {
 		ctx: ctx, cancel: cancel, DataDir: dataDir, prefetch: newPrefetcher(),
 	}
 	a.HLS = stream.NewHLS(a.Local, hlsDir(dataDir))
+	a.Notify = notify.New(settings, hub, d, platform)
+	a.Trash = library.NewTrash(d, files, func() []string { return a.Settings.Get().LibraryDirs() })
+	a.Awake = awake.New(func() bool { return a.Settings.Get().Sharing.KeepAwake })
 	if a.Share, err = share.New(d, settings, files, hub); err != nil {
 		return nil, fmt.Errorf("library sharing: %w", err)
 	}
@@ -190,6 +205,10 @@ func (a *App) wire() {
 	// Titles with files get all their data, also those shared with this
 	// KumoBox (prefetch.go).
 	a.Scanner.OnScanned = a.prefetchLibrary
+	a.Scanner.OnNewFiles = a.Notify.NewFiles
+	a.Downloads.Done = func(it downloads.Item) bool {
+		return a.Notify.Downloaded(it.MediaID, it.Episode, it.Title, it.Output)
+	}
 	a.Share.OnFiles = a.prefetchLibrary
 	// KumoBoxes on the same Letterboxd account keep their watch histories
 	// in step, as positions are saved, and so their lists: an episode
@@ -197,13 +216,18 @@ func (a *App) wire() {
 	a.Share.History = a.History
 	a.History.OnChange = a.Share.HistoryChanged
 	a.Share.OnWatchedElsewhere = a.progressFromHistory
+	// The auto downloader sends what it finds where this KumoBox's downloads
+	// go (a TV's computer), like a torrent added by hand.
+	a.AutoDL.Send = func(ctx context.Context, mediaID int, uris []string) (bool, error) {
+		host, err := a.Share.SendDownload(ctx, share.DownloadTorrent, share.TorrentDownload{MediaID: mediaID, URIs: uris})
+		return host != "" || err != nil, err
+	}
 	a.Share.User = func() int {
 		if v := a.Platform.Viewer(); v != nil {
 			return v.ID
 		}
 		return 0
 	}
-
 	// Torrent search can use extension providers.
 	a.Torrents.ExtraProviders = a.Extensions.TorrentProviders
 
@@ -227,12 +251,29 @@ func (a *App) wire() {
 
 	a.Extensions.Host = a.pluginServices()
 
+	// Stable releases, or betas too (Settings › Updates & about).
+	a.Update.Channel = func() string { return a.Settings.Get().Updates.Channel }
 	a.Settings.OnChange(func(old, cur config.Settings) {
 		if !cur.Discord.RichPresence || cur.Discord.ClientID != old.Discord.ClientID {
 			a.clearPresence() // turned off: don't leave "Watching…" behind
 		}
 		if old.Library.AutoRefresh != cur.Library.AutoRefresh || fmt.Sprint(old.LibraryDirs()) != fmt.Sprint(cur.LibraryDirs()) {
 			a.Scanner.StartWatcher()
+		}
+		// Folders out of the library (or the library off): their files go,
+		// also when their drive isn't here.
+		if now := a.Settings.Get().LibraryDirs(); fmt.Sprint(old.LibraryDirs()) != fmt.Sprint(now) {
+			var out []string
+			for _, d := range old.LibraryDirs() {
+				if !slices.Contains(now, d) {
+					out = append(out, d)
+				}
+			}
+			a.Scanner.Forget(out)
+		}
+		// The library off: also what's no longer on the disk, wherever it was.
+		if a.Settings.Get().Library.Off && !old.Library.Off {
+			a.Scanner.ForgetGone()
 		}
 		// A new library folder: index it right away.
 		if fmt.Sprint(old.LibraryDirs()) != fmt.Sprint(cur.LibraryDirs()) && a.Scanner.HasLibrary() {
@@ -246,26 +287,68 @@ func (a *App) wire() {
 		if old.TMDB.APIKey != cur.TMDB.APIKey && cur.TMDB.APIKey != "" {
 			go a.warmDiscover()
 		}
+		// Another channel: what it offers, at once.
+		if old.Updates.Channel != cur.Updates.Channel {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				a.Update.Check(ctx)
+			}()
+		}
 		a.Hub.Publish(events.SettingsUpdated, nil)
 	})
+}
+
+// purgeTrash empties what's been in the trash a month, now and daily.
+func (a *App) purgeTrash() {
+	for {
+		if freed, err := a.Trash.Purge(time.Now()); err != nil {
+			log.Printf("trash: %v", err)
+		} else if freed > 0 {
+			log.Printf("trash: emptied what was there for 30 days (%d MB)", freed>>20)
+		}
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-time.After(24 * time.Hour):
+		}
+	}
+}
+
+// background runs a job of Start's, which Shutdown waits for.
+func (a *App) background(job func()) {
+	a.bg.Add(1)
+	go func() {
+		defer a.bg.Done()
+		job()
+	}()
 }
 
 // Start runs the background jobs.
 func (a *App) Start() {
 	a.Share.Start()
 	a.Letterboxd.Start(a.ctx)
-	go a.runPrefetch(a.ctx)
+	a.background(func() { a.runPrefetch(a.ctx) })
 	a.Extensions.LoadAll()
 	a.Downloads.Start()
 	a.Update.Start()
 	a.Scanner.StartWatcher()
-	go a.Torrents.RunCounter(a.ctx)
-	go a.AutoDL.Loop(a.ctx, func() (bool, time.Duration) {
-		cfg := a.Settings.Get()
-		return cfg.Torrent.AutoDownloader, time.Duration(cfg.Torrent.AutoDownloadMinutes) * time.Minute
+	a.background(func() { a.Torrents.RunCounter(a.ctx) })
+	a.background(func() { a.Notify.Run(a.ctx) })
+	a.background(a.purgeTrash)
+	a.background(func() {
+		a.AutoDL.Loop(a.ctx, func() (bool, time.Duration) {
+			cfg := a.Settings.Get()
+			return cfg.Torrent.AutoDownloader, time.Duration(cfg.Torrent.AutoDownloadMinutes) * time.Minute
+		})
 	})
-	go a.warmDiscover()
-	go func() {
+	a.background(a.warmDiscover)
+	// The library off: nothing kept that isn't there (Continue watching
+	// would offer it).
+	if a.Settings.Get().Library.Off {
+		a.background(a.Scanner.ForgetGone)
+	}
+	a.background(func() {
 		ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
 		defer cancel()
 		if view, err := a.Library.Collection(ctx, false); err == nil {
@@ -278,19 +361,31 @@ func (a *App) Start() {
 		}
 		// What earlier runs didn't get to (a scan prefetches on its own).
 		a.prefetchLibrary()
-	}()
+	})
 }
 
 func (a *App) Shutdown() {
 	a.cancel()
+	// The player first: it saves where it stopped, which sharing then sends
+	// to the other KumoBoxes before it stops.
+	a.Player.Stop()
 	a.Images.Close()
 	a.Share.Stop()
+	a.Awake.Close()
 	a.Update.Stop()
 	a.HLS.Close()
 	a.Scanner.StopWatcher()
-	a.Player.Stop()
 	a.Discord.Clear()
 	a.Extensions.Shutdown()
+	// The background jobs end with ctx; what they write (the database, the
+	// artwork in the data folder) is done before it closes.
+	done := make(chan struct{})
+	go func() { a.bg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		log.Printf("shutdown: background jobs still running after 10s")
+	}
 	a.healthStore.flush()
 	_ = a.DB.Close()
 }

@@ -1,19 +1,32 @@
 import { CheckCircle2, Download, Loader2, RotateCcw, Trash2, X, XCircle } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
 import { toast } from "@/lib/toast"
-import { Badge, Button, EmptyState, IconButton, Progress } from "@/components/ui"
+import { Badge, Button, EmptyState, ErrorState, IconButton, Progress } from "@/components/ui"
 import { api } from "@/lib/api"
 import { formatKey, isShow } from "@/lib/ids"
 import { useDownloads, useProviders, useStatus } from "@/lib/queries"
 import type { DownloadItem } from "@/lib/types"
 import { cn, img } from "@/lib/utils"
 
+const RUNNING = ["queued", "resolving", "downloading"]
+
 export default function DownloadsPage() {
-    const { data, isLoading } = useDownloads()
+    const { data, isLoading, error, refetch, isFetching } = useDownloads()
     const { data: status } = useStatus()
+    // This device's downloads go to another KumoBox (a TV's to its computer):
+    // that one's list is shown, as it's where they are.
+    const toHost = !!status?.settings.sharing.downloadTo
+    const host = useQuery({
+        queryKey: ["downloads-host"],
+        queryFn: () => api.get<{ host: string; items: DownloadItem[] | null; error?: string }>("/api/downloads/host"),
+        enabled: toHost,
+        refetchInterval: 3000,
+    })
+    if (toHost && host.data?.host) return <HostDownloads host={host.data.host} items={host.data.items ?? []} error={host.data.error} refetch={() => host.refetch()} local={data ?? []} />
     const items = data ?? []
-    const active = items.filter(i => ["queued", "resolving", "downloading"].includes(i.status))
-    const done = items.filter(i => !["queued", "resolving", "downloading"].includes(i.status))
+    const active = items.filter(i => RUNNING.includes(i.status))
+    const done = items.filter(i => !RUNNING.includes(i.status))
     const call = (p: Promise<unknown>) => p.catch((e: Error) => toast.error(e.message))
 
     return (
@@ -32,7 +45,8 @@ export default function DownloadsPage() {
                     </Button>
                 )}
             </div>
-            {!isLoading && items.length === 0 && (
+            {error && !data && <ErrorState title="Couldn't load the downloads" error={error} retrying={isFetching} onRetry={() => refetch()} />}
+            {!isLoading && !error && items.length === 0 && (
                 <EmptyState icon={<Download className="size-6" />} title="No downloads yet">
                     Open a movie or show, go to <b>Watch online</b> and hit the download button.
                 </EmptyState>
@@ -61,12 +75,71 @@ export default function DownloadsPage() {
     )
 }
 
+function HostDownloads({ host, items, error, refetch, local }: { host: string; items: DownloadItem[]; error?: string; refetch: () => void; local: DownloadItem[] }) {
+    const call = (p: Promise<unknown>) => p.then(refetch, (e: Error) => toast.error(e.message))
+    const active = items.filter(i => RUNNING.includes(i.status))
+    const done = items.filter(i => !RUNNING.includes(i.status)).slice(0, 50)
+    return (
+        <div className="min-h-full px-6 pt-8 pb-24 md:px-8 xl:px-10">
+            <div className="mb-8">
+                <h1 className="text-[1.75rem] font-semibold tracking-tight">Downloads</h1>
+                <p className="mt-1 text-muted">
+                    This device's downloads go to <span className="font-medium text-fg">{host}</span>: these are its downloads, and they show up in its library.
+                </p>
+            </div>
+            {error && <p className="mb-6 rounded-lg border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-200">{error}</p>}
+            {!error && items.length === 0 && (
+                <EmptyState icon={<Download className="size-6" />} title={`Nothing downloading on ${host}`}>
+                    Open a movie or show, go to <b>Watch online</b> and download a stream: it downloads on {host}.
+                </EmptyState>
+            )}
+            {active.length > 0 && (
+                <section className="mb-10">
+                    <h2 className="mb-4 text-lg font-semibold tracking-tight">In progress</h2>
+                    <div className="flex flex-col gap-3">
+                        {active.map(i => (
+                            <Row key={i.id} item={i} onCancel={() => call(api.post(`/api/downloads/host/${encodeURIComponent(i.id)}/cancel`))} />
+                        ))}
+                    </div>
+                </section>
+            )}
+            {done.length > 0 && (
+                <section className="mb-10">
+                    <h2 className="mb-4 text-lg font-semibold tracking-tight">History</h2>
+                    <div className="flex flex-col gap-3">
+                        {done.map(i => (
+                            <Row key={i.id} item={i} onRetry={() => call(api.post(`/api/downloads/host/${encodeURIComponent(i.id)}/retry`))} />
+                        ))}
+                    </div>
+                </section>
+            )}
+            {local.length > 0 && (
+                <section>
+                    <h2 className="mb-4 text-lg font-semibold tracking-tight">On this device</h2>
+                    <div className="flex flex-col gap-3">
+                        {local.map(i => (
+                            <Row
+                                key={i.id}
+                                item={i}
+                                onCancel={RUNNING.includes(i.status) ? () => call(api.post(`/api/downloads/${i.id}/cancel`)) : undefined}
+                                onRemove={RUNNING.includes(i.status) ? undefined : () => call(api.del(`/api/downloads/${i.id}`))}
+                            />
+                        ))}
+                    </div>
+                </section>
+            )}
+        </div>
+    )
+}
+
 function Row({ item, onCancel, onRetry, onRemove }: { item: DownloadItem; onCancel?: () => void; onRetry?: () => void; onRemove?: () => void }) {
     const statusLabel = { queued: "Queued", resolving: "Resolving stream", downloading: "Downloading", completed: "Completed", failed: "Failed", canceled: "Canceled" }[item.status]
     const tone = { queued: "gray", resolving: "blue", downloading: "brand", completed: "green", failed: "red", canceled: "gray" }[item.status] as "gray"
     // The streaming provider by name ("" when any provider would do).
     const { data: providers } = useProviders()
     const provider = item.provider ? (providers?.find(p => p.id === item.provider)?.name ?? item.provider) : ""
+    // Its length isn't known: how much is downloaded, instead of a percentage.
+    const soFar = item.done && !item.progress
     return (
         <div className="card flex items-center gap-4 p-3 pr-4">
             <Link to={`/entry?id=${item.mediaId}`} className="shrink-0">
@@ -85,13 +158,13 @@ function Row({ item, onCancel, onRetry, onRemove }: { item: DownloadItem; onCanc
                     <Badge tone={tone}>{statusLabel}</Badge>
                     {item.status === "downloading" && (
                         <span className="text-xs text-muted tabular-nums">
-                            {Math.floor(item.progress * 100)}% {item.speed && `· ${item.speed}`} {item.eta && `· ETA ${item.eta}`}
+                            {soFar ? `${item.done} downloaded` : `${Math.floor(item.progress * 100)}%`} {item.speed && `· ${item.speed}`} {item.eta && `· ETA ${item.eta}`}
                         </span>
                     )}
                     {item.error && <span className="truncate text-xs text-rose-300" title={item.error}>{item.error}</span>}
                     {item.status === "completed" && item.output && <span className="truncate text-xs text-subtle" title={item.output}>{item.output}</span>}
                 </div>
-                {(item.status === "downloading" || item.status === "resolving") && <Progress value={item.progress} className={cn("mt-2.5", item.status === "resolving" && "opacity-50")} />}
+                {(item.status === "downloading" || item.status === "resolving") && !soFar && <Progress value={item.progress} className={cn("mt-2.5", item.status === "resolving" && "opacity-50")} />}
             </div>
             <div className="flex shrink-0 gap-1">
                 {onCancel && (

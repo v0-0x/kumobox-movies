@@ -10,6 +10,7 @@ export class ApiError extends Error {
     }
 }
 
+// Told when the server asks for its password.
 type Listener = () => void
 const authListeners = new Set<Listener>()
 export function onPasswordRequired(fn: Listener) {
@@ -134,14 +135,19 @@ export function qs(params: Record<string, string | number | boolean | undefined 
 export type DesktopBridge = {
     openExternal: (url: string) => void
     platform: string
-    minimize?: () => void
-    toggleMaximize?: () => void
-    close?: () => void
     // Missing in desktop apps older than these settings.
     getPrefs?: () => Promise<DesktopPrefs>
     // true, or what went wrong (older apps: false).
     setPref?: (name: keyof DesktopPrefs, value: boolean) => Promise<true | false | { error: string }>
     quit?: () => void
+    // Picture in picture (lib/pip.ts): the small player window. Missing in
+    // older desktop apps. The requests are PlayerRequests (lib/store).
+    openMiniPlayer?: (page: string) => Promise<boolean>
+    closeMiniPlayer?: () => void
+    expandMiniPlayer?: (req: unknown) => void
+    // An episode handed back by the small window, for the big one to play.
+    takePendingPlay?: () => Promise<unknown>
+    onPlay?: (fn: (req: unknown) => void) => void
 }
 
 export type DesktopPrefs = { keepRunning: boolean; freeWhenLocked: boolean; startAtLogin?: boolean }

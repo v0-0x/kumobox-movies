@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The logo's cloud with its play button (packaging/icons/kumobox.svg, 64
+     units) in the middle of the adaptive icon's 108, inside the 66 every
+     shape shows. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="22"
+        android:translateY="22">
+        <path
+            android:fillColor="#141416"
+            android:fillType="evenOdd"
+            android:pathData="M12 42V28A9 9 0 0 1 22.53 19.13A12 12 0 0 1 45.46 23.02A7 7 0 0 1 52 30V42A6 6 0 0 1 46 48H18A6 6 0 0 1 12 42ZM30.26 26.68A2.5 2.5 0 0 0 26.5 28.84L26.5 38.16A2.5 2.5 0 0 0 30.26 40.32L38.28 35.66A2.5 2.5 0 0 0 38.28 31.34Z" />
+    </group>
+</vector>

@@ -19,11 +19,20 @@
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
   ${ifNot} ${Silent}
   ${andIfNot} ${isUpdated}
-    ${if} ${Cmd} `MessageBox MB_YESNO|MB_ICONQUESTION "Install the programs KumoBox uses?$\r$\n$\r$\nKumoBox can install ffmpeg (for its own player and downloads), mpv and yt-dlp with Scoop, for your Windows user (no administrator rights). A PowerShell window shows the progress: it takes a few minutes and needs an internet connection. Programs you already have are skipped.$\r$\n$\r$\nYou can also do this later in KumoBox: Settings > App > Programs." /SD IDNO IDYES`
+    ${if} ${Cmd} `MessageBox MB_YESNO|MB_ICONQUESTION "Install the programs KumoBox uses?$\r$\n$\r$\nKumoBox can install ffmpeg (for its own player and downloads), mpv and yt-dlp with Scoop, for your Windows user (no administrator rights). A PowerShell window shows the progress: it takes a few minutes and needs an internet connection. Programs you already have are skipped.$\r$\n$\r$\nYou can also do this later in KumoBox: Settings > Desktop app & programs." /SD IDNO IDYES`
       ; The 64-bit PowerShell, also from this 32-bit installer.
       ${DisableX64FSRedirection}
       Exec '"$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\install-tools.ps1"'
       ${EnableX64FSRedirection}
     ${endIf}
+  ${endIf}
+!macroend
+
+; Uninstalled (not updated): KumoBox's "start with Windows" entry goes too
+; (desktop/main.js setStartAtLogin), or Startup apps keeps a dead "KumoBox".
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "app.kumobox.desktop"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "app.kumobox.desktop"
   ${endIf}
 !macroend

@@ -54,6 +54,14 @@ files:
 
 beforePack: ./check-server.js # fails the build when the server is missing
 
+# KumoBox's app can't be used as a Node.js to run other code (with its
+# permissions, on macOS): no ELECTRON_RUN_AS_NODE, NODE_OPTIONS or --inspect.
+# main.js starts the server with spawn, which doesn't need them.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+
 win:
   icon: icon.png
   target:
@@ -68,7 +76,7 @@ win:
       to: kumobox.exe
     # The setup that installs the programs KumoBox uses (ffmpeg, mpv, yt-dlp,
     # with Scoop): the installer offers to run it (installer.nsh), and
-    # kumobox.exe has the same script built in for Settings > App > Programs.
+    # kumobox.exe has the same script built in for Settings > Desktop app & programs.
     - from: ../server/internal/winsetup/install-tools.ps1
       to: install-tools.ps1
 

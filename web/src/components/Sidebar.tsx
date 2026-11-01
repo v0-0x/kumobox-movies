@@ -1,7 +1,9 @@
 import {
+    ArrowLeft,
     Bell,
     BellOff,
     CalendarDays,
+    ChartColumn,
     Compass,
     Download,
     FolderSearch,
@@ -19,13 +21,18 @@ import {
     Unplug,
     UserRound,
 } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { NavLink, useLocation, useNavigate } from "react-router-dom"
+import { desktop } from "@/lib/api"
 import { useMediaQuery } from "@/lib/hooks"
 import { resultSummary, useCollection, useDownloads, useLetterboxd, useStatus } from "@/lib/queries"
-import { notificationsMutedStore, searchOpenStore, torrentCountStore, useStore } from "@/lib/store"
+import { notificationsMutedStore, torrentCountStore, useStore } from "@/lib/store"
+import { holidayStore, useClassic } from "@/lib/themes"
+import { tv } from "@/lib/tv"
 import { cn, img } from "@/lib/utils"
+import { HolidayOnLogo } from "./HolidayBadge"
 import { LetterboxdDialog, LetterboxdMark } from "./LetterboxdDialog"
+import { ThemesMenu } from "./ThemesMenu"
 import { PluginTrays } from "./plugins/PluginTrays"
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger, Tooltip } from "./ui"
 import { toast as sonner } from "sonner"
@@ -57,47 +64,139 @@ export function KumoBoxWordmark({ className }: { className?: string }) {
     )
 }
 
-type Item = { to: string; label: string; icon: React.ReactNode; badge?: number; hint?: string; match?: (p: string) => boolean }
+type Item = NavItem
 
-// Labels from 1024px wide; narrower, only the icons, named by tooltips.
-const WIDE = "(min-width: 1024px)"
+export type NavItem = { to: string; label: string; icon: React.ReactNode; badge?: number; hint?: string; match?: (p: string) => boolean }
 
-export function Sidebar() {
+// The app's pages, in their groups, with the counts shown on them (active
+// downloads, unmatched files): the sidebar's, and the phone's tab bar's.
+export function useNavGroups(): { label: string; items: NavItem[] }[] {
     const { data: status } = useStatus()
     const { data: coll } = useCollection()
     const { data: downloads } = useDownloads()
     const torrentCount = useStore(torrentCountStore)
+    const settings = status?.settings
+    const activeDownloads = (downloads ?? []).filter(d => ["queued", "resolving", "downloading"].includes(d.status)).length
+
+    return [
+        {
+            label: "Watch",
+            items: [
+                { to: "/", label: "Home", icon: <Home />, match: p => p === "/" },
+                { to: "/local", label: "Local library", icon: <HardDrive /> },
+                { to: "/schedule", label: "Calendar", icon: <CalendarDays /> },
+                { to: "/lists", label: "My list", icon: <ListChecks /> },
+                { to: "/stats", label: "Stats", icon: <ChartColumn /> },
+            ],
+        },
+        {
+            label: "Explore",
+            items: [
+                { to: "/discover", label: "Discover", icon: <Compass /> },
+                { to: "/search", label: "Search", icon: <Search />, hint: "Ctrl K" },
+            ],
+        },
+        {
+            label: "Downloads",
+            items: [
+                { to: "/torrent-list", label: "Torrents", icon: <Magnet />, badge: settings?.torrent.showActiveCount ? torrentCount : 0 },
+                { to: "/downloads", label: "Downloads", icon: <Download />, badge: activeDownloads },
+                { to: "/auto-downloader", label: "Auto downloader", icon: <Rss /> },
+            ],
+        },
+        {
+            label: "Library",
+            items: [
+                { to: "/library", label: "Library tools", icon: <FolderSearch />, badge: coll?.unmatchedCount ?? 0 },
+                { to: "/extensions", label: "Providers & extensions", icon: <Puzzle /> },
+            ],
+        },
+    ]
+}
+
+// Back to the page before, when there's one in KumoBox. Not on a TV: its
+// remote has Back. In the desktop app, Alt+Left (⌘[ on a Mac) and a
+// mouse's back button too, which a browser does by itself.
+function BackButton({ wide }: { wide: boolean }) {
+    const location = useLocation()
+    const navigate = useNavigate()
+    // React Router counts the pages it went through (history.state.idx).
+    const canGoBack = ((window.history.state as { idx?: number } | null)?.idx ?? 0) > 0
+    useEffect(() => {
+        if (!canGoBack || !desktop()) return
+        const typing = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))
+        const onKey = (e: KeyboardEvent) => {
+            const mac = navigator.platform.startsWith("Mac")
+            if (((!mac && e.altKey && e.key === "ArrowLeft") || (mac && e.metaKey && e.key === "[")) && !typing(e.target)) {
+                e.preventDefault()
+                navigate(-1)
+            }
+        }
+        const onMouse = (e: MouseEvent) => {
+            if (e.button === 3) {
+                e.preventDefault()
+                navigate(-1)
+            }
+        }
+        window.addEventListener("keydown", onKey)
+        window.addEventListener("mouseup", onMouse)
+        return () => {
+            window.removeEventListener("keydown", onKey)
+            window.removeEventListener("mouseup", onMouse)
+        }
+    }, [canGoBack, navigate, location.key])
+    if (!canGoBack) return null
+    return (
+        <Tooltip content="Back" side={wide ? "bottom" : "right"}>
+            <button
+                onClick={() => navigate(-1)}
+                aria-label="Back"
+                className="focus-ring grid size-8 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-white/[0.06] hover:text-fg"
+            >
+                <ArrowLeft className="size-[18px] stroke-[1.75]" />
+            </button>
+        </Tooltip>
+    )
+}
+
+// Labels from 1024px wide; narrower, only the icons, named by tooltips.
+const WIDE = "(min-width: 1024px)"
+// A short window (a laptop's): the groups without their names, closer.
+const SHORT = "(max-height: 880px)"
+const FADE = "linear-gradient(to bottom, #000 calc(100% - 36px), transparent)"
+
+export function Sidebar() {
+    const { data: status } = useStatus()
     const [letterboxdOpen, setLetterboxdOpen] = useState(false)
     const letterboxd = useLetterboxd()
     const location = useLocation()
     const navigate = useNavigate()
     const wide = useMediaQuery(WIDE)
-    const settings = status?.settings
+    const short = useMediaQuery(SHORT)
+    // Before 2.0: no group names, the open page in plain white.
+    const classic = useClassic()
+    // Links that don't fit scroll: they fade out at the bottom while there
+    // are more below, so they aren't taken for all of them.
+    const navRef = useRef<HTMLElement>(null)
+    const [more, setMore] = useState(false)
+    useEffect(() => {
+        const nav = navRef.current
+        if (!nav) return
+        const check = () => setMore(nav.scrollTop + nav.clientHeight < nav.scrollHeight - 2)
+        const ro = new ResizeObserver(check)
+        ro.observe(nav)
+        for (const group of nav.children) ro.observe(group)
+        nav.addEventListener("scroll", check, { passive: true })
+        check()
+        return () => {
+            ro.disconnect()
+            nav.removeEventListener("scroll", check)
+        }
+    }, [])
+    const holiday = useStore(holidayStore)
+
+    const groups = useNavGroups()
     const viewer = status?.letterboxd
-
-    const activeDownloads = (downloads ?? []).filter(d => ["queued", "resolving", "downloading"].includes(d.status)).length
-
-    const groups: Item[][] = [
-        [
-            { to: "/", label: "Home", icon: <Home />, match: p => p === "/" },
-            { to: "/local", label: "Local library", icon: <HardDrive /> },
-            { to: "/schedule", label: "Calendar", icon: <CalendarDays /> },
-            { to: "/lists", label: "My list", icon: <ListChecks /> },
-        ],
-        [
-            { to: "/discover", label: "Discover", icon: <Compass /> },
-            { to: "/search", label: "Search", icon: <Search />, hint: "Ctrl K" },
-        ],
-        [
-            { to: "/torrent-list", label: "Torrents", icon: <Magnet />, badge: settings?.torrent.showActiveCount ? torrentCount : 0 },
-            { to: "/downloads", label: "Downloads", icon: <Download />, badge: activeDownloads },
-            { to: "/auto-downloader", label: "Auto downloader", icon: <Rss /> },
-        ],
-        [
-            { to: "/library", label: "Library tools", icon: <FolderSearch />, badge: coll?.unmatchedCount ?? 0 },
-            { to: "/extensions", label: "Providers & extensions", icon: <Puzzle /> },
-        ],
-    ]
 
     const sync = () => {
         const id = toast.loading("Syncing with Letterboxd…")
@@ -115,24 +214,28 @@ export function Sidebar() {
             <NavLink
                 key={it.to}
                 to={it.to}
-                onClick={e => {
-                    if (it.to === "/search" && !e.metaKey && !e.ctrlKey) {
-                        e.preventDefault()
-                        searchOpenStore.set(true)
-                    }
-                }}
+                // Icons only (narrow): named for screen readers too.
+                aria-label={wide ? undefined : it.label}
                 className={cn(
-                    "focus-ring relative flex h-9 shrink-0 items-center rounded-md text-[13.5px] font-medium transition-colors [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:stroke-[1.75]",
+                    "focus-ring relative flex h-9 shrink-0 items-center text-[13.5px] font-medium transition-colors [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:stroke-[1.75] [&>svg]:transition-colors",
+                    classic ? "rounded-md" : "rounded-lg",
                     wide ? "gap-3 px-2.5" : "w-10 justify-center",
-                    active ? "bg-white/[0.08] text-fg" : "text-muted hover:bg-white/[0.04] hover:text-fg",
+                    // The page it's on: tinted with the accent.
+                    classic
+                        ? active
+                            ? "bg-white/[0.08] text-fg"
+                            : "text-muted hover:bg-white/[0.04] hover:text-fg"
+                        : active
+                          ? "bg-white/[0.07] text-fg [&>svg]:text-brand-strong"
+                          : "text-muted hover:bg-white/[0.045] hover:text-fg",
                 )}
             >
                 {it.icon}
                 {wide && <span className="truncate">{it.label}</span>}
-                {wide && it.hint && !badge && <kbd className="ml-auto font-sans text-[11px] text-subtle">{it.hint}</kbd>}
+                {wide && it.hint && !badge && !tv && <kbd className="ml-auto font-sans text-[11px] text-subtle">{it.hint}</kbd>}
                 {badge &&
                     (wide ? (
-                        <span className="ml-auto rounded bg-white/[0.08] px-1.5 text-[11px] leading-[18px] text-fg/80 tabular-nums">{badge}</span>
+                        <span className={cn("ml-auto bg-white/[0.08] px-1.5 text-[11px] leading-[18px] text-fg/80 tabular-nums", classic ? "rounded" : "rounded-md")}>{badge}</span>
                     ) : (
                         <span className="absolute top-0.5 right-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-brand px-1 text-[10px] font-semibold text-white tabular-nums">{badge}</span>
                     ))}
@@ -149,20 +252,39 @@ export function Sidebar() {
 
     return (
         <aside className={cn("relative z-40 flex h-full shrink-0 flex-col py-3", wide ? "w-56 px-3" : "w-16 items-center px-2")}>
-            <button onClick={() => navigate("/")} className={cn("focus-ring mb-4 flex h-10 items-center gap-2.5 rounded-md", wide ? "px-2" : "justify-center")} aria-label="KumoBox home">
-                <KumoBoxLogo className="size-7" />
-                {wide && <KumoBoxWordmark className="h-[18px] w-auto text-fg" />}
-            </button>
+            <div className={cn("mb-4 flex", wide ? "items-center gap-1" : "flex-col items-center gap-1")}>
+                {/* Home is the first link below: the remote skips this one. */}
+                <button
+                    onClick={() => navigate("/")}
+                    data-tv-skip-nav
+                    className={cn("focus-ring flex h-10 items-center gap-2.5 rounded-md", wide ? "min-w-0 flex-1 px-2" : "justify-center")}
+                    aria-label="KumoBox home"
+                >
+                    <span className="relative shrink-0">
+                        <KumoBoxLogo className="size-7" />
+                        <HolidayOnLogo holiday={holiday} />
+                    </span>
+                    {wide && <KumoBoxWordmark className="h-[18px] w-auto text-fg" />}
+                </button>
+                {!tv && <BackButton wide={wide} />}
+            </div>
 
-            <nav className={cn("no-scrollbar flex flex-1 flex-col overflow-y-auto", wide ? "gap-4" : "items-center gap-3")}>
+            <nav
+                ref={navRef}
+                className={cn("no-scrollbar flex flex-1 flex-col overflow-y-auto", wide ? (classic || short ? "gap-4" : tv ? "gap-3" : "gap-5") : "items-center gap-3")}
+                style={more ? { maskImage: FADE, WebkitMaskImage: FADE } : undefined}
+            >
                 {groups.map((g, i) => (
-                    <div key={i} className={cn("flex flex-col gap-0.5", !wide && "items-center", !wide && i > 0 && "border-t border-line pt-3")}>
-                        {g.map(link)}
+                    <div key={g.label} className={cn("flex flex-col gap-0.5", !wide && "items-center", (!wide || (tv && !classic)) && i > 0 && "border-t border-line pt-3")}>
+                        {/* Their names; not on a TV, whose screen is short. */}
+                        {wide && !tv && !classic && !short && <p className="px-2.5 pb-1 text-[11px] font-medium text-subtle">{g.label}</p>}
+                        {g.items.map(link)}
                     </div>
                 ))}
             </nav>
 
-            <div className={cn("flex flex-col gap-0.5 pt-3", !wide && "items-center")}>
+            <div className={cn("flex flex-col gap-0.5 pt-3", !classic && "border-t border-line", !wide && "items-center")}>
+                <ThemesMenu wide={wide} />
                 <PluginTrays />
                 <div className={cn("flex gap-0.5", wide ? "items-center" : "flex-col-reverse items-center")}>
                     <div className={wide ? "min-w-0 flex-1" : undefined}>{link({ to: "/settings", label: "Settings", icon: <SettingsIcon /> })}</div>
@@ -172,15 +294,20 @@ export function Sidebar() {
                     <DropdownTrigger asChild>
                         <button
                             className={cn(
-                                "focus-ring mt-1 flex h-10 items-center gap-2.5 rounded-md text-left transition-colors hover:bg-white/[0.04] data-[state=open]:bg-white/[0.06]",
-                                wide ? "px-2" : "w-10 justify-center",
+                                "focus-ring flex items-center gap-2.5 text-left transition-colors",
+                                classic
+                                    ? cn("mt-1 h-10 rounded-md hover:bg-white/[0.04] data-[state=open]:bg-white/[0.06]", wide ? "px-2" : "w-10 justify-center")
+                                    : cn(
+                                          "mt-1.5 rounded-[10px] data-[state=open]:bg-white/[0.07]",
+                                          wide ? "h-12 bg-white/[0.03] px-2 hover:bg-white/[0.055]" : "size-10 justify-center hover:bg-white/[0.05]",
+                                      ),
                             )}
                             aria-label="Letterboxd account"
                         >
                             {viewer?.avatar?.large ? (
-                                <img src={img(viewer.avatar.large)} alt="" className="size-7 shrink-0 rounded-full object-cover" />
+                                <img src={img(viewer.avatar.large)} alt="" className={cn("shrink-0 rounded-full object-cover", classic ? "size-7" : "size-8 ring-1 ring-white/10")} />
                             ) : (
-                                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-surface-3 text-muted">
+                                <span className={cn("grid shrink-0 place-items-center rounded-full bg-surface-3 text-muted", classic ? "size-7" : "size-8 ring-1 ring-white/10")}>
                                     {viewer ? <LetterboxdMark className="w-4" /> : <UserRound className="size-4" />}
                                 </span>
                             )}
@@ -196,7 +323,8 @@ export function Sidebar() {
                         <DropdownLabel>{viewer ? `${viewer.name} on Letterboxd` : "Letterboxd isn't connected"}</DropdownLabel>
                         {viewer ? (
                             <>
-                                {viewer.letterboxd && (
+                                {/* A TV has no browser to open it in. */}
+                                {viewer.letterboxd && !tv && (
                                     <DropdownItem icon={<UserRound />} onSelect={() => window.open(viewer.letterboxd, "_blank", "noopener")}>
                                         Letterboxd profile
                                     </DropdownItem>

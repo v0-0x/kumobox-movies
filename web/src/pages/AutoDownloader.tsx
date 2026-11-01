@@ -126,11 +126,7 @@ export default function AutoDownloaderPage() {
 
             {noClient && (
                 <div className="mb-6 rounded-xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-200">
-                    No torrent client is configured —{" "}
-                    <Link to="/settings?tab=torrent-client" className="underline">
-                        set one up
-                    </Link>{" "}
-                    first.
+                    No torrent client is configured — <Link to="/settings?tab=torrents" className="underline">set one up</Link> first.
                 </div>
             )}
             {settings && !settings.torrent.autoDownloader && (rules ?? []).some(r => r.enabled) && (
@@ -139,7 +135,15 @@ export default function AutoDownloaderPage() {
             {report && <RunSummary report={report} onClose={() => setReport(null)} />}
 
             {!isLoading && (rules ?? []).length === 0 && (
-                <EmptyState icon={<Rss className="size-6" />} title="No rules yet">
+                <EmptyState
+                    icon={<Rss className="size-6" />}
+                    title="No rules yet"
+                    action={
+                        <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setEditing(newRule(settings?.torrent.preferredResolution ?? "1080"))}>
+                            New rule
+                        </Button>
+                    }
+                >
                     Add a rule for each show you want to keep downloaded, e.g. “1080p, NTb or FLUX first, no HDTV”.
                 </EmptyState>
             )}
@@ -208,6 +212,7 @@ function RuleCard({ rule, shows, onEdit }: { rule: AutoRule; shows: Media[]; onE
         }
     }
     const del = async () => {
+        if (!confirm(`Delete the rule for ${media ? title(media) : rule.title}?`)) return
         try {
             await api.del(`/api/autodownloader/rules/${rule.id}`)
             qc.invalidateQueries({ queryKey: ["auto-rules"] })

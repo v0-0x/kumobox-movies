@@ -2,8 +2,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -19,15 +21,19 @@ const (
 	DefaultMarketplaceURL = "https://raw.githubusercontent.com/Bas1874/Seanime-Marketplace/refs/heads/main/Marketplace/Main.json"
 
 	// UpdateRepo is the GitHub repository KumoBox looks for updates in
-	// ($KUMOBOX_UPDATE_REPO overrides it).
-	UpdateRepo = "v0-0x/kumobox-movies"
+	// ($KUMOBOX_UPDATE_REPO overrides it), asked for by its number
+	// (UpdateRepoID): should it be renamed, the old name could be taken by
+	// anyone, who would then make the updates.
+	UpdateRepo   = "v0-0x/kumobox-movies"
+	UpdateRepoID = "1411506405"
 )
 
 // Set when building, with -ldflags "-X <module>/internal/config.AppVersion=…
 // -X <module>/internal/config.Commit=…": packaging/arch/PKGBUILD and the
 // Windows release workflow do, from the commit they build.
 var (
-	// AppVersion is 1.0.<number of commits> in those builds.
+	// AppVersion is 2.0.<commits since 2.0.0's> in those builds (1.0.<number
+	// of commits> before it; see update.VersionOf).
 	AppVersion = "1.0.0"
 	// Commit is the git commit KumoBox was built from; see BuildCommit.
 	Commit = ""
@@ -70,6 +76,8 @@ type Settings struct {
 	UI           UISettings           `json:"ui"`
 	Discord      DiscordSettings      `json:"discord"`
 	Extensions   ExtensionSettings    `json:"extensions"`
+	Notify       NotifySettings       `json:"notify"`
+	Updates      UpdateSettings       `json:"updates"`
 
 	// KumoBox (kumobox.go)
 	TMDB           TMDBSettings          `json:"tmdb"`
@@ -78,7 +86,29 @@ type Settings struct {
 	TorrentSources TorrentSourceSettings `json:"torrentSources"`
 }
 
+// UpdateSettings: which releases the updater offers (package update).
+type UpdateSettings struct {
+	// Channel: "stable", the releases for everyone, or "beta", which also
+	// gets the newer pre-releases each change is published as first.
+	Channel string `json:"channel"`
+}
+
+// UpdateChannels are the values UpdateSettings.Channel takes.
+var UpdateChannels = []string{"stable", "beta"}
+
+// NotifySettings: what KumoBox tells about as it happens (package notify).
+type NotifySettings struct {
+	// NewEpisodes: an episode of a show being watched aired.
+	NewEpisodes bool `json:"newEpisodes"`
+	// Downloads: an episode or a torrent finished downloading.
+	Downloads bool `json:"downloads"`
+}
+
 type LibrarySettings struct {
+	// Off: this computer has no library of its own; it plays the ones other
+	// computers share with it. The folders below are kept for when it's
+	// turned back on.
+	Off              bool     `json:"off"`
 	Dir              string   `json:"dir"`
 	ExtraDirs        []string `json:"extraDirs"`
 	AutoRefresh      bool     `json:"autoRefresh"`
@@ -129,7 +159,7 @@ type TranscodeSettings struct {
 	// "auto" picks direct play when the browser can decode the file,
 	// remux when only the container is the problem, transcode otherwise.
 	Mode      string `json:"mode"`
-	HwAccel   string `json:"hwAccel"` // "", "vaapi", "nvenc", "qsv"
+	HwAccel   string `json:"hwAccel"` // "", "vaapi", "nvenc", "qsv", "v4l2m2m" (Raspberry Pi)
 	VaapiNode string `json:"vaapiNode"`
 	Preset    string `json:"preset"`
 }
@@ -185,6 +215,15 @@ type SharingSettings struct {
 	Enabled bool `json:"enabled"`
 	// Name: what the others call this KumoBox (empty: the computer's name).
 	Name string `json:"name"`
+	// DownloadTo: the KumoBox this one's downloads and torrents go to (its ID;
+	// empty: saved here). Set when one allows it (package share).
+	DownloadTo string `json:"downloadTo,omitempty"`
+	// KeepAwake: this computer doesn't go to sleep while other devices play
+	// its files (package awake).
+	KeepAwake bool `json:"keepAwake"`
+	// AutoSync: Continue watching is synced with the paired KumoBoxes when they
+	// come back, without pressing Sync.
+	AutoSync bool `json:"autoSync"`
 }
 
 type ServerSettings struct {
@@ -210,7 +249,23 @@ type UISettings struct {
 	ShowEpisodeTitle bool     `json:"showEpisodeTitle"`
 	BlurUnwatched    bool     `json:"blurUnwatched"` // spoiler protection
 	HomeSections     []string `json:"homeSections"`
+	// The colors of the app (ColorThemes), and the holiday themes: "auto"
+	// (each in its month, see web/src/lib/themes.ts), "off", or one of
+	// Holidays always. SeasonalEffects: their snow, bats, hearts...
+	ColorTheme      string `json:"colorTheme"`
+	Seasonal        string `json:"seasonal"`
+	SeasonalEffects bool   `json:"seasonalEffects"`
+	// KumoBox's look from before 2.0 (its components, sidebar and holiday
+	// themes), with the same color themes.
+	ClassicLook bool `json:"classicLook"`
 }
+
+// ColorThemes and Holidays are the values UISettings takes (their colors are
+// in web/src/lib/themes.ts).
+var (
+	ColorThemes = []string{"kumobox", "midnight", "forest", "sakura", "ember", "ocean", "dusk", "black"}
+	Holidays    = []string{"newyear", "valentine", "sakura", "summer", "halloween", "christmas"}
+)
 
 type DiscordSettings struct {
 	RichPresence bool   `json:"richPresence"`
@@ -226,7 +281,7 @@ type ExtensionSettings struct {
 func Defaults() Settings {
 	home, _ := os.UserHomeDir()
 	videos := filepath.Join(home, videosFolder)
-	return Settings{
+	s := Settings{
 		SchemaVersion: schemaVersion,
 		Library: LibrarySettings{
 			Dir:              videos,
@@ -275,6 +330,9 @@ func Defaults() Settings {
 			CardSize:         "md",
 			ShowEpisodeTitle: true,
 			HomeSections:     []string{"continue", "genres", "watching", "airing", "planning", "completed"},
+			ColorTheme:       "kumobox",
+			Seasonal:         "auto",
+			SeasonalEffects:  true,
 		},
 		Discord:    DiscordSettings{RichPresence: false},
 		Extensions: ExtensionSettings{MarketplaceURL: DefaultMarketplaceURL},
@@ -283,7 +341,19 @@ func Defaults() Settings {
 		Letterboxd:     defaultLetterboxd(),
 		Providers:      defaultProviders(),
 		TorrentSources: defaultTorrentSources(),
+		Sharing:        SharingSettings{KeepAwake: true, AutoSync: true},
+		Notify:         NotifySettings{NewEpisodes: true, Downloads: true},
+		Updates:        UpdateSettings{Channel: "stable"},
 	}
+	if runtime.GOOS == "android" {
+		// The Android app (a TV's): it plays the libraries the computers
+		// share with it, and has none of its own.
+		s.Library.Dir, s.Library.RefreshOnStartup, s.Library.AutoRefresh = "", false, false
+		s.Sharing.Enabled = true
+		// A TV is slow at drawing them over the pages: on when asked for.
+		s.UI.SeasonalEffects = false
+	}
+	return s
 }
 
 // Store loads and saves settings, keeping a cached copy in memory.
@@ -320,6 +390,18 @@ func NewStore(d *db.DB) (*Store, error) {
 		}
 	}
 	return s, nil
+}
+
+// Decode reads settings saved as JSON (a backup's, say) as they're loaded:
+// on top of the defaults, brought up to this version.
+func Decode(raw []byte) (Settings, error) {
+	s := Defaults()
+	s.SchemaVersion = 0
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return Defaults(), err
+	}
+	migrate(&s)
+	return sanitize(s), nil
 }
 
 // Get returns a copy of the settings. Slices are copied too: callers decode
@@ -459,6 +541,15 @@ func sanitize(s Settings) Settings {
 	if s.UI.AccentColor == "" {
 		s.UI.AccentColor = d.UI.AccentColor
 	}
+	if !slices.Contains(UpdateChannels, s.Updates.Channel) {
+		s.Updates.Channel = d.Updates.Channel
+	}
+	if !slices.Contains(ColorThemes, s.UI.ColorTheme) {
+		s.UI.ColorTheme = d.UI.ColorTheme
+	}
+	if s.UI.Seasonal != "off" && !slices.Contains(Holidays, s.UI.Seasonal) {
+		s.UI.Seasonal = "auto"
+	}
 	if len(s.UI.HomeSections) == 0 {
 		s.UI.HomeSections = d.UI.HomeSections
 	}
@@ -469,8 +560,12 @@ func sanitize(s Settings) Settings {
 	return s
 }
 
-// LibraryDirs returns the main library dir followed by the extra ones.
+// LibraryDirs returns the main library dir followed by the extra ones
+// (none when the library is off).
 func (s Settings) LibraryDirs() []string {
+	if s.Library.Off {
+		return nil
+	}
 	var out []string
 	seen := map[string]bool{}
 	for _, d := range append([]string{s.Library.Dir}, s.Library.ExtraDirs...) {
@@ -500,7 +595,7 @@ func ExpandHome(p string) string { return expandHome(p) }
 // DataDir is ~/.local/share/kumobox on Linux, ~/Library/Application
 // Support/KumoBox on macOS and %APPDATA%\KumoBox on Windows, or $KUMOBOX_DATA_DIR.
 func DataDir() string {
-	if d := os.Getenv("KUMOBOX_DATA_DIR"); d != "" {
+	if d := Getenv("DATA_DIR"); d != "" {
 		return d
 	}
 	return defaultDataDir()

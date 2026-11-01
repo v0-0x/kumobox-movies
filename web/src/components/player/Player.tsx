@@ -3,32 +3,41 @@ import {
     ArrowLeft,
     Captions,
     Copy,
+    Check,
     FastForward,
     Gauge,
     Languages,
+    ListVideo,
     Loader2,
     Maximize,
+    Maximize2,
     Minimize,
     MonitorPlay,
     Pause,
     Play,
     RotateCcw,
     RotateCw,
+    SkipBack,
     SkipForward,
     Volume1,
     Volume2,
     VolumeX,
+    PictureInPicture2,
+    X,
 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "@/lib/toast"
-import { api, qs } from "@/lib/api"
-import { episodeIndex, formatKey, mediaIsShow, nextEpisode } from "@/lib/ids"
-import { prefersHls, randomId, videoCaps } from "@/lib/playback"
+import { api, ApiError, qs } from "@/lib/api"
+import { episodeIndex, formatKey, mediaIsShow, nextEpisode, splitKey } from "@/lib/ids"
+import { markNoPicture, pictureState, prefersHls, randomId, setSoftwareVideo, softwareVideo, videoCaps, videoFormat } from "@/lib/playback"
+import { canPip, closeMini, expandMini, openMini } from "@/lib/pip"
 import { useSettings, useStatus } from "@/lib/queries"
 import { skipAt, skipName, skipOn, skipRun, isSkippable } from "@/lib/skips"
-import { playerStore, type PlayerRequest } from "@/lib/store"
+import { playerStore, useStore, type PlayerRequest } from "@/lib/store"
+import { formatDelay, setSubDelay, subDelay, subLine, subStyleStore, subStyleVars } from "@/lib/subtitles"
 import type { EntryView, EpisodeView, PlayResult, Probe, Settings, SkipInterval, StreamSource, StreamSubtitle, TrackPrefs } from "@/lib/types"
-import { cn, copyText, formatDuration } from "@/lib/utils"
+import { android, androidApp, move, tv } from "@/lib/tv"
+import { cn, copyText, formatDuration, img, readLocal } from "@/lib/utils"
 import { parseVTT, type Cue } from "@/lib/vtt"
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger } from "../ui"
 
@@ -78,7 +87,9 @@ const langOf = (l?: string) => {
 }
 const langIn = (lang: string, list: string) => !!langOf(lang) && list.split(",").some(l => langOf(l) === langOf(lang))
 
-export function PlayerOverlay() {
+// mini: the small picture-in-picture player (the desktop app's /mini page,
+// lib/pip.ts).
+export function PlayerOverlay({ mini = false }: { mini?: boolean }) {
     const [req, setReq] = useState<PlayerRequest | null>(playerStore.get())
     useEffect(
         () =>
@@ -90,11 +101,31 @@ export function PlayerOverlay() {
             }),
         [],
     )
+    // The big player plays an episode: a small one somewhere stops.
+    useEffect(() => {
+        if (req && !mini) closeMini()
+    }, [req, mini])
+    // What goes fullscreen: around the player, which is made anew for each
+    // episode; the next one (or one picked in Episodes) stays fullscreen.
+    const stage = useRef<HTMLDivElement>(null)
     if (!req) return null
-    return <Player key={JSON.stringify(req)} req={req} onClose={() => playerStore.set(null)} />
+    return (
+        <div ref={stage} className="fixed inset-0 z-[80] bg-black fade-in">
+            <Player
+                key={JSON.stringify(req)}
+                req={req}
+                mini={mini}
+                stage={stage}
+                onClose={() => {
+                    playerStore.set(null)
+                    if (mini) closeMini()
+                }}
+            />
+        </div>
+    )
 }
 
-function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
+function Player({ req, onClose, mini, stage }: { req: PlayerRequest; onClose: () => void; mini: boolean; stage: React.RefObject<HTMLDivElement | null> }) {
     const settings = useSettings()
     // A device on the network: mpv would open on the computer KumoBox runs
     // on (the server refuses it, or plays the file here instead).
@@ -119,6 +150,33 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     // only start at a keyframe), so subtitles and times stay in sync.
     const [stream, setStream] = useState<{ url: string; base: number; hls: boolean; id?: string } | null>(null)
     const [restart, setRestart] = useState(0)
+    // A new <video> element (see the picture watchdog).
+    const [videoKey, setVideoKey] = useState(0)
+    const pictureTries = useRef(0)
+    // Streams that stopped early, opened again (see onEnded).
+    const earlyEnds = useRef(0)
+    // Where the episode is at (absolute), also while the video loads: where
+    // it was asked to start (see where).
+    const expected = useRef(0)
+    // A broken connection (Wi-Fi, the computer asleep): opened again from
+    // there, a few times (see retry).
+    const netRetries = useRef(0)
+    const retriedAt = useRef(0)
+    // Where it was when it couldn't be reached: Try again goes on from there.
+    const unreachableAt = useRef<number | null>(null)
+    const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+    // The video plays, since it was (re)opened: the spinner shows until then.
+    const [started, setStarted] = useState(false)
+    // Seeks pressed in a row (a remote's Left/Right): one restart of the
+    // converted stream from where they end, not one each (see seekBy).
+    const seekTarget = useRef<number | null>(null)
+    const seekTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+    // How long Left/Right has been held (bigger steps).
+    const held = useRef(0)
+    // The second shown, and the buffered end: drawn again when they change,
+    // not at each of the video's time updates (a TV is slow at it).
+    const shownSecond = useRef(-1)
+    const shownBuffered = useRef(-1)
     // stream
     const [sources, setSources] = useState<StreamSource[]>([])
     const [sourceIdx, setSourceIdx] = useState(0)
@@ -133,22 +191,52 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const [subKey, setSubKey] = useState<string>("off")
     // The subtitles of this stream were picked by hand.
     const subPicked = useRef(false)
+    // Why it didn't play, with its buttons: a TV's remote goes to them.
+    const errorBox = useRef<HTMLDivElement>(null)
+    useEffect(() => {
+        if (!tv || !error) return
+        const box = errorBox.current
+        ;(box?.querySelector<HTMLElement>("[data-primary]") ?? box?.querySelector<HTMLElement>("button"))?.focus({ preventScroll: true })
+    }, [error])
+    // The subtitles turned off with C, for C to turn them back on.
+    const lastSub = useRef<string | null>(null)
     const [cues, setCues] = useState<Cue[]>([])
+    // How they look on this device; seconds they're moved (this title's).
+    const subStyle = useStore(subStyleStore)
+    const [delay, setDelay] = useState(() => subDelay(req.mediaId))
     const [skips, setSkips] = useState<SkipInterval[]>([])
 
     const [paused, setPaused] = useState(true)
     const [time, setTime] = useState(0) // absolute time
     const [duration, setDuration] = useState(0)
     const [buffered, setBuffered] = useState(0)
-    const [volume, setVolume] = useState(() => Number(localStorage.getItem("kumobox-volume") ?? 1))
+    const [volume, setVolume] = useState(() => Number(readLocal("kumobox-volume") ?? 1))
     const [muted, setMuted] = useState(false)
     const [rate, setRate] = useState(1)
-    const [fullscreen, setFullscreen] = useState(false)
+    const [fullscreen, setFullscreen] = useState(() => !!document.fullscreenElement)
     const [controls, setControls] = useState(true)
     const [hoverTime, setHoverTime] = useState<{ x: number; t: number } | null>(null)
+    // Where Left/Right (a remote's) go, a moment: the seek bar shows it.
+    const [seekShown, setSeekShown] = useState<number | null>(null)
+    const seekShownTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+    // Previews on the seek bar (local files): off for this episode after a
+    // few fail (no ffmpeg where the file is, say).
+    const [thumbFails, setThumbFails] = useState(0)
     // The next episode: its file, or for a stream the episode to ask the
     // provider for (as this one was asked for).
     const [nextEp, setNextEp] = useState<{ path?: string; episode: number } | null>(null)
+    // The show's episodes (the Episodes panel, where another one is picked).
+    const [episodes, setEpisodes] = useState<EpisodeView[] | null>(null)
+    // An episode without its own picture shows the show's.
+    const [showArt, setShowArt] = useState("")
+    const [showEpisodes, setShowEpisodes] = useState(false)
+    // Closing: it fades out, then goes.
+    const [episodesLeaving, setEpisodesLeaving] = useState(false)
+    const episodesButton = useRef<HTMLButtonElement>(null)
+    // Where it started from a saved position: "Start over" shows a moment.
+    const [resumedFrom, setResumedFrom] = useState(0)
+    // The "Up next" card put away for this episode (and no playing on).
+    const [upNextOff, setUpNextOff] = useState(false)
 
     const startAt = useRef(0)
     const lastReport = useRef(0)
@@ -164,13 +252,25 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     const source = req.kind === "local" ? "local" : "stream"
     // Safari and iPhone/iPad get converted files as HLS (see lib/playback).
     const hlsMode = useMemo(() => prefersHls(), [])
-    const caps = useMemo(() => videoCaps(hlsMode && Hls.isSupported() ? "mse" : "element"), [hlsMode])
+    const allCaps = useMemo(() => videoCaps(hlsMode && Hls.isSupported() ? "mse" : "element"), [hlsMode])
+    // Formats that showed no picture here: converted (see the picture
+    // watchdog). And, last, the video converted in software rather than by
+    // the computer's encoder: kept for this device once chosen.
+    const [noPic, setNoPic] = useState<string[]>([])
+    const caps = useMemo(() => allCaps.filter(c => !noPic.includes(c)), [allCaps, noPic])
+    const [software, setSoftware] = useState(() => softwareVideo())
     const clientId = useMemo(() => randomId(), [])
     // What ffmpeg converts when the browser can't play it as it is: the file,
     // or the stream's link as the server named it.
     const convertPath = req.kind === "local" ? req.path : sources[sourceIdx]?.remote
     const base = method !== "direct" && stream ? stream.base : offset
     const absTime = (v: HTMLVideoElement) => v.currentTime + base
+    // Where the episode is at: the video's time once it has one, and until
+    // then (loading, failed before it loaded) where it was to start.
+    const where = (v: HTMLVideoElement | null = videoRef.current) => (v && v.readyState >= 1 && v.currentTime > 0 ? absTime(v) : expected.current)
+    // A line for the log (here, and the computer's for its files): what
+    // went wrong in the player.
+    const note = (text: string) => api.post("/api/playback/note", { path: req.kind === "local" ? req.path : "", text: `${title || "episode"}: ${text}` }).catch(() => {})
 
     // ------------------------------------------------------------------ load
     useEffect(() => {
@@ -204,13 +304,22 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     const audioCount = res.probe.audio?.length ?? 0
                     let ai = res.choice && res.choice.audio >= 0 ? res.choice.audio : (res.probe.audio?.findIndex(a => a.default) ?? 0)
                     if (ai < 0 || ai >= audioCount) ai = 0
+                    // Handed over from the other player: its tracks.
+                    const handed = req.tracks
+                    if (handed?.audio !== undefined && handed.audio < audioCount) ai = handed.audio
                     setAudioIndex(ai)
-                    if (res.choice?.note) toast.info(res.choice.note)
-                    const m = ai === 0 && res.probe.method === "direct" ? "direct" : res.probe.method === "direct" ? "remux" : res.probe.method
+                    if (res.choice?.note && !handed) toast.info(res.choice.note)
+                    // Converted in software on this device (Grey picture?): always
+                    // converted, never the file as it is.
+                    const m =
+                        softwareVideo() && res.probe.video?.length ? "transcode" : ai === 0 && res.probe.method === "direct" ? "direct" : res.probe.method === "direct" ? "remux" : res.probe.method
                     setMethod(m)
                     // Ignore saved positions past the end of this file.
-                    startAt.current = res.resumeAt && res.resumeAt < res.probe.duration - 10 ? res.resumeAt : 0
+                    // (One handed over from the other player is where it was, also
+                    // in the last seconds.)
+                    startAt.current = req.start !== undefined ? Math.min(req.start, Math.max(0, res.probe.duration - 1)) : res.resumeAt && res.resumeAt < res.probe.duration - 10 ? res.resumeAt : 0
                     if (m !== "direct") setOffset(startAt.current)
+                    if (startAt.current > 30 && !handed) setResumedFrom(startAt.current)
 
                     const subOpts: SubOption[] = [
                         ...(res.probe.subtitles ?? []).map(s => ({
@@ -234,6 +343,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     setSubs(subOpts)
                     const sub = res.choice?.sub ?? ""
                     setSubKey(subOpts.some(o => o.key === sub && !o.bitmap) ? sub : "off")
+                    if (handed?.sub && (handed.sub === "off" || subOpts.some(o => o.key === handed.sub))) setSubKey(handed.sub)
                 } else {
                     // The stream picked (or the provider's best link), then
                     // the other direct links to fall back on, in that order.
@@ -255,10 +365,14 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     originalRef.current = e?.media.originalLanguage ?? ""
                     setTitle(res.title || playerTitle(e, key, ""))
                     setSources(res.sources)
-                    setSourceIdx(0)
+                    // Handed over from the other player: the source it played.
+                    const handed = req.tracks
+                    const si = handed?.source !== undefined && handed.source < res.sources.length ? handed.source : 0
+                    setSourceIdx(si)
                     setDecided(-1)
                     startAt.current = res.resumeAt || 0
-                    applyStreamSubs(res.sources[0])
+                    if (startAt.current > 30 && !handed) setResumedFrom(startAt.current)
+                    applyStreamSubs(res.sources[si], handed?.sub)
                 }
                 // The next episode (across seasons): its file, or for a stream
                 // the one after, asked for as this one was (by key, or as the
@@ -267,7 +381,10 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 // the episodes the file just played holds too (S01E01E02).
                 entryP
                     .then(e => {
-                        if (cancelled || !e || !mediaIsShow(e.media) || key < 1000) return
+                        if (cancelled || !e) return
+                        if (mediaIsShow(e.media)) setEpisodes(e.episodes ?? [])
+                        setShowArt(e.media.bannerImage || e.media.coverImage?.large || "")
+                        if (!mediaIsShow(e.media) || key < 1000) return
                         const episodes = e.episodes ?? []
                         let next = nextEpisode(e.media, key)
                         let n = episodes.find(x => keyOf(x) === next)
@@ -316,9 +433,14 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         // stream). Subtitles picked by hand stay.
         if (!subPicked.current) setSubKey(streamSub(opts, settings?.playback.rememberTracks ? prefsRef.current : null, settings?.playback, originalRef.current, false))
     }
-    const applyStreamSubs = (src?: StreamSource) => {
+    // handed: the subtitles picked in the other player (picture in picture).
+    const applyStreamSubs = (src?: StreamSource, handed?: string) => {
         subPicked.current = false
         setStreamSubs(src, [])
+        if (handed && (handed === "off" || (src?.subtitles ?? []).some(x => `s:${x.original || x.url}` === handed))) {
+            subPicked.current = true
+            setSubKey(handed)
+        }
     }
 
     // Subtitles made for the very file playing: once the way a stream plays
@@ -442,11 +564,20 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     if (!cancelled) setStream({ url: s.url, base: s.start, hls: true, id: s.id })
                 } else {
                     const c = caps.join(",")
+                    // Where the stream starts, and how: converted when the
+                    // keyframe there isn't known (a copy would start at an
+                    // unknown frame), or the server didn't say.
                     const sp = await api
-                        .get<{ start: number }>(`/api/local/seekpoint${qs({ path: convertPath, t: offset.toFixed(3), audio: audioIndex, method, caps: c })}`)
-                        .catch(() => ({ start: offset }))
+                        .get<{ start: number; method?: string }>(`/api/local/seekpoint${qs({ path: convertPath, t: offset.toFixed(3), audio: audioIndex, method, caps: c })}`)
+                        // Not reached (the stream won't be either, and is
+                        // tried again): as asked.
+                        .catch(e => ({ start: offset, method: e instanceof ApiError && offset > 0 ? "transcode" : undefined }))
                     if (!cancelled)
-                        setStream({ url: `/api/local/transcode${qs({ path: convertPath, start: sp.start.toFixed(3), audio: audioIndex, method, caps: c })}`, base: sp.start, hls: false })
+                        setStream({
+                            url: `/api/local/transcode${qs({ path: convertPath, start: sp.start.toFixed(3), audio: audioIndex, method: sp.method || method, caps: c, encoder: software ? "software" : undefined })}`,
+                            base: sp.start,
+                            hls: false,
+                        })
                 }
             } catch (e: any) {
                 if (!cancelled) setError(e.message || String(e))
@@ -456,7 +587,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             cancelled = true
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [req, convertPath, decided, probe, method, offset, audioIndex, restart])
+    }, [req, convertPath, decided, probe, method, offset, audioIndex, restart, caps, software])
 
     // End the HLS session when the player closes.
     const sessionRef = useRef<string | undefined>(undefined)
@@ -486,13 +617,16 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         if (!v || !videoSrc) return
         hlsRef.current?.destroy()
         hlsRef.current = null
+        setStarted(false)
         const src = sources[sourceIdx]
         // A converted file or stream, as HLS (Safari) or progressive.
         const convHls = method !== "direct" && !!stream?.hls
         // HLS can start right where asked; the progressive stream starts at
         // its keyframe (stream.base).
         const resume = convHls ? Math.max(0, offset - stream!.base) : method !== "direct" ? 0 : startAt.current
+        expected.current = (method !== "direct" && stream ? stream.base : offset) + resume
         const isHls = convHls || (req.kind === "stream" && method === "direct" && (src?.type === "m3u8" || /m3u8/i.test(src?.originalUrl ?? "")))
+        let onMeta: (() => void) | null = null
         if (isHls && Hls.isSupported()) {
             // A local session's playlist grows while it's converted: give a
             // start, or players begin at its end like a live stream.
@@ -507,18 +641,32 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             })
             hls.loadSource(videoSrc)
             hls.attachMedia(v)
+            let recoveries = 0
             hls.on(Hls.Events.ERROR, (_, data) => {
                 if (!data.fatal) return
+                // A decoding hiccup: hls.js starts the decoder over, then
+                // with the audio codec swapped, before anything else.
+                if (data.type === Hls.ErrorTypes.MEDIA_ERROR && recoveries < 2) {
+                    if (++recoveries === 2) hls.swapAudioCodec()
+                    hls.recoverMediaError()
+                    return
+                }
+                // The connection broke: the same again from there.
+                if (data.type === Hls.ErrorTypes.NETWORK_ERROR && netRetries.current < (convHls ? MAX_RETRIES : 2)) {
+                    retry()
+                    return
+                }
                 if (convHls) {
-                    // The session ended (e.g. paused for a long time): start
-                    // a new one here. Anything else: convert everything.
-                    const at = v.currentTime + (stream?.base ?? 0)
+                    // Anything else: convert everything.
+                    const at = where(v)
                     startAt.current = 0
                     setOffset(at)
-                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setRestart(n => n + 1)
-                    else if (method === "remux") setMethod("transcode")
+                    if (method === "remux") setMethod("transcode")
                     else if (req.kind === "stream") nextSource()
-                    else setError("This video could not be played (" + data.details + ")")
+                    else {
+                        note(`the converted video can't be played here (${data.details})`)
+                        setError("This video could not be played (" + data.details + ")")
+                    }
                     return
                 }
                 if (method === "direct" && convertPath && probe && data.type !== Hls.ErrorTypes.NETWORK_ERROR) {
@@ -538,24 +686,130 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         } else {
             v.src = videoSrc
             if (resume > 0) {
-                const onMeta = () => {
+                onMeta = () => {
                     v.currentTime = resume
-                    v.removeEventListener("loadedmetadata", onMeta)
                 }
-                v.addEventListener("loadedmetadata", onMeta)
+                v.addEventListener("loadedmetadata", onMeta, { once: true })
             }
         }
         v.volume = volume
         v.playbackRate = rate
-        v.play().catch(() => {})
+        // Not allowed to play by itself: the play button shows, not the spinner.
+        v.play().catch(e => e?.name === "NotAllowedError" && setStarted(true))
         return () => {
+            // Not this source's start for the next one.
+            if (onMeta) v.removeEventListener("loadedmetadata", onMeta)
             hlsRef.current?.destroy()
             hlsRef.current = null
+            // Let go of it: a video element left with its source keeps its
+            // connection (and the computer's conversion) and a decoder.
+            v.pause()
+            v.removeAttribute("src")
+            v.load()
         }
         // A seek within one keyframe interval sets up the same stream again:
         // it still has to reload.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [videoSrc, stream])
+    }, [videoSrc, stream, videoKey])
+
+    // No picture: a TV's WebView sometimes plays the sound under a grey
+    // picture: either no frame is shown at all, or the frames shown are one
+    // flat grey (what a decoder shows with no picture to start from; seen on
+    // the Fire TV with the Pi's video, 2026-10-30). Sound for a few seconds
+    // with no frame shown, or only flat grey ones:
+    //   1. it's opened again from there, in a new video element, as closing
+    //      and opening the player would do (a first-time glitch);
+    //   2. when still nothing is decoded and the video was copied (the TV
+    //      said it plays that format), it's converted, and the format is
+    //      converted for this device from then on (lib/playback);
+    //   3. when converted video shows nothing either (a computer's encoder
+    //      the TV can't take), it's converted in software, and from then on
+    //      for this device (lib/playback softwareVideo);
+    //   4. then it says so, and the sound plays on.
+    // Each try is in the computer's log, where the file is (a note).
+    useEffect(() => {
+        const v = videoRef.current
+        // Not for a file without video (sound only).
+        if (!v || !videoSrc || req.kind !== "local" || pictureTries.current >= 4 || (probe && !probe.video?.length)) return
+        // Frames shown (requestVideoFrameCallback), or else decoded.
+        const rvfc = "requestVideoFrameCallback" in v
+        let frames = 0
+        let handle = 0
+        const onFrame = () => {
+            frames++
+            handle = v.requestVideoFrameCallback(onFrame)
+        }
+        if (rvfc) handle = v.requestVideoFrameCallback(onFrame)
+        const decoded = () => ("getVideoPlaybackQuality" in v ? v.getVideoPlaybackQuality().totalVideoFrames : 1)
+        const shown = () => (rvfc ? frames : decoded()) > 0
+        // A small copy of the frame, to tell a picture from flat grey.
+        const canvas = document.createElement("canvas")
+        canvas.width = 32
+        canvas.height = 18
+        let grey = false
+        let from = -1
+        // Counted again from a seek; not while KumoBox is in the background
+        // (nothing is drawn then).
+        const onSeek = () => void (from = -1)
+        v.addEventListener("seeking", onSeek)
+        const timer = setInterval(() => {
+            if (v.paused || v.readyState < 3 || v.seeking || document.hidden) {
+                from = -1
+                return
+            }
+            if (shown()) {
+                // A picture (or one that can't be read): nothing to do.
+                if (pictureState(v, canvas) !== "grey") return clearInterval(timer)
+                grey = true
+            }
+            if (from < 0) {
+                from = v.currentTime
+                return
+            }
+            if (v.currentTime - from < 3) return
+            clearInterval(timer)
+            const at = absTime(v)
+            const tries = ++pictureTries.current
+            const vt = probe?.video?.[0]
+            const format = vt ? videoFormat(vt) : ""
+            // The server copies the video when the TV says it plays it.
+            const copied = !software && !!format && caps.includes(format)
+            note(
+                `${grey ? "only a flat grey picture" : "no picture"} after 3s of sound (try ${tries}, ${method}${software ? " software" : ""}${stream?.hls ? " hls" : ""}, ` +
+                    `video ${copied ? "copied" : "converted"}, from ${Math.round(at)}s, ` +
+                    `${format || "?"} ${vt?.height ?? "?"}p, ${decoded()} decoded, ${rvfc ? frames + " shown" : "no frame callback"}, ` +
+                    `${v.videoWidth}x${v.videoHeight}, ready ${v.readyState})`,
+            )
+            const again = (next: () => void) => {
+                startAt.current = 0
+                setOffset(at)
+                next()
+                setMethod("transcode")
+            }
+            if (tries === 1) {
+                reopen(at)
+            } else if (decoded() > 0 && !grey) {
+                // Frames decoded, none shown: converting wouldn't change that.
+            } else if (copied) {
+                toast.info("Converting the video for this device…")
+                markNoPicture(format)
+                again(() => setNoPic(n => [...n, format]))
+            } else if (!software) {
+                toast.info("Converting the video another way…")
+                setSoftwareVideo(true)
+                again(() => setSoftware(true))
+            } else {
+                pictureTries.current = 4
+                toast.error("This device shows no picture of this video: only its sound plays.")
+            }
+        }, 500)
+        return () => {
+            clearInterval(timer)
+            v.removeEventListener("seeking", onSeek)
+            if (rvfc && handle) v.cancelVideoFrameCallback(handle)
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [videoSrc, stream, videoKey])
 
     // ------------------------------------------------------------- subtitles
     // Loaded again only when another file is picked (not when more
@@ -591,6 +845,10 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedSub?.url, selectedSub?.bitmap])
 
+    // A new video element has no track yet.
+    useEffect(() => {
+        trackRef.current = null
+    }, [videoKey])
     useEffect(() => {
         const v = videoRef.current
         if (!v) return
@@ -598,21 +856,32 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             trackRef.current = v.addTextTrack("subtitles", "KumoBox", "und")
         }
         const tr = trackRef.current
-        tr.mode = "showing"
+        // Hidden while they change: a cue removed while it shows can stay
+        // drawn otherwise (Chromium, the stream started over elsewhere).
+        tr.mode = "hidden"
         while (tr.cues && tr.cues.length) tr.removeCue(tr.cues[0])
         for (const c of cues) {
-            const s = c.start - base
-            const e = c.end - base
+            const s = c.start - base + delay
+            const e = c.end - base + delay
             if (e <= 0) continue
             try {
                 const cue = new VTTCue(Math.max(0, s), e, c.text.replace(/<[^>]+>/g, m => (/^<\/?(i|b|u)>$/i.test(m) ? m : "")))
-                cue.line = -2
+                cue.line = subLine(subStyle)
                 tr.addCue(cue)
             } catch {
                 /* ignore bad cue */
             }
         }
-    }, [cues, base])
+        tr.mode = "showing"
+    }, [cues, base, videoKey, delay, subStyle])
+    // Subtitles earlier or later (z / x, or the subtitles menu): kept for the
+    // movie or show.
+    const moveSubs = (by: number) => {
+        const d = by === 0 ? 0 : Math.round((delay + by) * 10) / 10
+        setDelay(d)
+        if (mediaId > 0) setSubDelay(mediaId, d)
+        toast.info(`Subtitle timing: ${formatDelay(d)}${d === 0 ? "" : d > 0 ? " (later)" : " (earlier)"}`, { id: "sub-delay" })
+    }
 
     // -------------------------------------------------------------- progress
     // The stream source playing (a ref: reports don't change with it).
@@ -625,7 +894,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             const now = Date.now()
             if (!force && now - lastReport.current < 5000) return
             lastReport.current = now
-            const position = absTime(v)
+            const position = where(v)
             const dur = duration || v.duration || 0
             if (position < 3 && !didEnd) return
             // A stream says which one plays: once it's well under way, the
@@ -651,7 +920,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     )
 
     const saveTrackPrefs = (next: { audio?: number; sub?: string }) => {
-        if (!settings?.playback.rememberTracks || mediaId <= 0) return
+        if (mediaId <= 0 || !settings?.playback.rememberTracks) return
         const a = next.audio ?? audioIndex
         const sk = next.sub ?? subKey
         const audio = probe?.audio?.[a]
@@ -671,23 +940,37 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     }
 
     // --------------------------------------------------------------- actions
+    const clampTime = (t: number) => {
+        const v = videoRef.current
+        const total = duration || v?.duration || 0
+        return Math.max(0, Math.min(total > 0 ? total - 0.5 : t, t))
+    }
+    // HLS can seek within what's converted so far.
+    const inHls = (t: number) => {
+        const v = videoRef.current
+        if (!v || !stream?.hls || !v.seekable.length) return false
+        const rel = t - stream.base
+        return rel >= 0 && rel < v.seekable.end(v.seekable.length - 1) - 1
+    }
+    // Going to t starts the converted stream over.
+    const restarts = (t: number) => req.kind === "local" && method !== "direct" && !inHls(t)
     const seekTo = (t: number) => {
         const v = videoRef.current
         if (!v) return
-        const total = duration || v.duration || 0
-        t = Math.max(0, Math.min(total > 0 ? total - 0.5 : t, t))
+        if (seekTimer.current) clearTimeout(seekTimer.current)
+        seekTimer.current = null
+        seekTarget.current = null
+        t = clampTime(t)
+        expected.current = t
         if (method !== "direct" && stream) {
-            // HLS can seek within what's converted so far.
-            if (stream?.hls && v.seekable.length) {
-                const rel = t - stream.base
-                if (rel >= 0 && rel < v.seekable.end(v.seekable.length - 1) - 1) {
-                    v.currentTime = rel
-                    return
-                }
+            if (inHls(t)) {
+                v.currentTime = t - stream.base
+                return
             }
             // Otherwise the stream starts over from there.
             v.pause()
             startAt.current = 0
+            setStarted(false)
             setOffset(t)
             setRestart(n => n + 1)
             setTime(t)
@@ -697,7 +980,56 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
     }
     const seekBy = (d: number) => {
         const v = videoRef.current
-        if (v) seekTo(absTime(v) + d)
+        if (!v) return
+        const t = clampTime((seekTarget.current ?? where(v)) + d)
+        setSeekShown(t)
+        if (seekShownTimer.current) clearTimeout(seekShownTimer.current)
+        seekShownTimer.current = setTimeout(() => setSeekShown(null), 1500)
+        if (seekTarget.current === null && !restarts(t)) return seekTo(t)
+        // A restart: a moment later, from where the presses in a row end.
+        seekTarget.current = t
+        setTime(t)
+        if (seekTimer.current) clearTimeout(seekTimer.current)
+        seekTimer.current = setTimeout(() => {
+            const to = seekTarget.current
+            seekTimer.current = null
+            seekTarget.current = null
+            if (to !== null) seekTo(to)
+        }, 600)
+    }
+    useEffect(
+        () => () => {
+            if (seekTimer.current) clearTimeout(seekTimer.current)
+            if (retryTimer.current) clearTimeout(retryTimer.current)
+            if (seekShownTimer.current) clearTimeout(seekShownTimer.current)
+        },
+        [],
+    )
+    // The same video again from at, in a new video element (as closing and
+    // opening the player would).
+    const reopen = (at: number) => {
+        expected.current = at
+        startAt.current = method === "direct" || req.kind !== "local" ? at : 0
+        if (req.kind === "local" && method !== "direct") {
+            setStream(null)
+            setOffset(at)
+            setRestart(n => n + 1)
+        }
+        setVideoKey(k => k + 1)
+    }
+    // The connection broke (Wi-Fi, the computer asleep or gone): the same
+    // again from where it was, after a moment (longer each time), rather
+    // than converting it or saying it can't be played.
+    const retry = (at = where()) => {
+        const n = ++netRetries.current
+        retriedAt.current = at
+        setStarted(false)
+        // Another computer's file: it may have gone to sleep. Woken up (if it
+        // can be from here), it answers the next tries.
+        if (n === 1 && req.kind === "local" && req.path.startsWith("kumobox://")) api.post("/api/sharing/wake", { path: req.path }).catch(() => {})
+        toast.info(n === 1 ? "Connection lost: trying again…" : `Still trying to reach it (${n})…`)
+        if (retryTimer.current) clearTimeout(retryTimer.current)
+        retryTimer.current = setTimeout(() => reopen(at), 1000 * Math.min(8, 2 ** (n - 1)))
     }
     const togglePlay = () => {
         const v = videoRef.current
@@ -706,12 +1038,44 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         else v.pause()
     }
     const toggleFullscreen = () => {
+        if (mini) return expand()
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
-        else containerRef.current?.requestFullscreen().catch(() => {})
+        else (stage.current ?? containerRef.current)?.requestFullscreen().catch(() => {})
+    }
+    // Picture in picture (the desktop app's, lib/pip.ts). The episode as it
+    // is here, for the other player: where it's at, and the tracks.
+    const pip = useMemo(() => !mini && canPip(), [mini])
+    const handOver = (): PlayerRequest => {
+        const tracks = { audio: audioIndex, sub: subKey, source: sourceIdx }
+        const start = Math.max(0, where() - 1)
+        return req.kind === "local" ? { kind: "local", path: req.path, mediaId, episode, start, tracks } : { ...req, start, tracks }
+    }
+    const toPip = async () => {
+        const v = videoRef.current
+        if (!pip || !v) return
+        const handed = handOver()
+        const wasPaused = v.paused
+        v.pause()
+        try {
+            await openMini(handed)
+        } catch (e: any) {
+            toast.error(`Picture in picture didn't open: ${e?.message ?? e}`)
+            if (!wasPaused) v.play().catch(() => {})
+            return
+        }
+        report(true)
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+        onClose()
+    }
+    // The small player's way back: the big one, from where it's at.
+    const expand = () => {
+        const handed = handOver()
+        videoRef.current?.pause()
+        report(true)
+        expandMini(handed)
     }
     const changeAudio = (i: number) => {
-        const v = videoRef.current
-        const at = v ? absTime(v) : 0
+        const at = where()
         setAudioIndex(i)
         if (method === "direct") setMethod("remux")
         startAt.current = 0
@@ -735,16 +1099,51 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
         onClose()
     }
-    const playNext = () => {
+    // The next episode. finished: this one counts as watched to the end (it
+    // ended, or Up next was taken in its ending); else where it's at is saved.
+    const playNext = (finished = false) => {
         if (!nextEp) return
-        report(true)
+        if (!finished) report(true)
+        else if (!ended.current) {
+            ended.current = true
+            report(true, true)
+        }
         if (req.kind === "local" && nextEp.path) playerStore.set({ kind: "local", path: nextEp.path, mediaId, episode: nextEp.episode })
         // The next episode: the best link of the provider playing this one.
         else if (req.kind === "stream") playerStore.set({ kind: "stream", mediaId, episode: nextEp.episode, provider: sources[sourceIdx]?.provider ?? req.provider })
     }
+    // Episodes: one that can play here (a file for a file, aired for a
+    // stream), and playing it; where this one's at is saved.
+    const playable = (n: EpisodeView) => (req.kind === "local" ? !!n.file : n.aired || n.hasFile)
+    const playEpisode = (n: EpisodeView) => {
+        setShowEpisodes(false)
+        const k = keyOf(n)
+        if (k === episode || !playable(n)) return
+        report(true)
+        if (req.kind === "local" && n.file) playerStore.set({ kind: "local", path: n.file.path, mediaId, episode: k })
+        // The best link of the provider playing this one.
+        else if (req.kind === "stream") playerStore.set({ kind: "stream", mediaId, episode: k, provider: sources[sourceIdx]?.provider ?? req.provider })
+    }
+    const toggleEpisodes = () => {
+        if (showEpisodes) {
+            if (episodesLeaving) return
+            setEpisodesLeaving(true)
+            setTimeout(() => {
+                setShowEpisodes(false)
+                setEpisodesLeaving(false)
+            }, 160)
+            if (tv) episodesButton.current?.focus({ preventScroll: true })
+            return
+        }
+        setShowEpisodes(true)
+        // Watched marks and where each was left, as they are now.
+        api.get<EntryView>(`/api/media/${mediaId}`)
+            .then(e => setEpisodes(e.episodes))
+            .catch(() => {})
+    }
     const openInMpv = async () => {
         const v = videoRef.current
-        const at = v ? absTime(v) : 0
+        const at = where(v)
         try {
             if (req.kind === "local") await api.post("/api/playback/local", { path: req.path, mediaId, episode, player: "mpv", start: at })
             else {
@@ -854,11 +1253,42 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentSkip?.start, autoSkip])
 
+    // Up next: shown from the end credits (when they play rather than being
+    // skipped), or the last 15 seconds. With playing on by itself, it counts
+    // down to the end of the video: nothing after the credits is cut.
+    const videoLength = Number.isFinite(duration) ? duration : 0
+    const credits = skippable.find(s => s.start > videoLength / 2 && skipName(s.type) === "credits")
+    const upNextAt = credits && !skipOn(settings?.playback, credits.type) ? credits.start : videoLength - 15
+    const showUpNext = !!nextEp && videoLength > 60 && started && !upNextOff && time >= upNextAt && time < videoLength
+    const autoNext = !!settings?.playback.autoPlayNext
+    const countdown = Math.max(0, Math.ceil(videoLength - time))
+    // Gone back before it (rewound, also once it ended): it's shown, and
+    // plays on, again.
+    useEffect(() => {
+        if (time >= upNextAt - 5) return
+        ended.current = false
+        if (upNextOff) setUpNextOff(false)
+    }, [upNextOff, time, upNextAt])
+    // Where it resumed, a moment: Start over.
+    const showResumed = resumedFrom > 0 && started && time >= resumedFrom - 1 && time < resumedFrom + 10
+    const startOver = () => {
+        setResumedFrom(0)
+        // The intro is skipped again, as on a first play.
+        skipped.current.clear()
+        seekTo(0)
+    }
+
     // -------------------------------------------------------------- keyboard
     // Keys go to the player, not to what had the focus on the page behind it:
     // the episode card that opened it plays it again on Space or Enter.
     useEffect(() => {
+        // TV: closed, the remote's focus goes back to what opened it (the
+        // episode's card), not to the top of the page.
+        const opener = document.activeElement as HTMLElement | null
         containerRef.current?.focus({ preventScroll: true })
+        return () => {
+            if (tv && opener && opener !== document.body && opener.isConnected && !opener.closest("[data-tv-scope]")) opener.focus({ preventScroll: true })
+        }
     }, [])
     useEffect(() => {
         // Typing, or in one of the player's menus: the keys are theirs.
@@ -866,18 +1296,55 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         const onKey = (e: KeyboardEvent) => {
             if (e.ctrlKey || e.metaKey || e.altKey || theirs(e.target)) return
             const v = videoRef.current
+            const box = containerRef.current
+            // TV (the remote): on the picture, Left/Right seek, OK plays or
+            // pauses and Up goes to the controls; on those, the arrows move
+            // between them (lib/tv) and Down goes back to the picture.
+            const t = e.target as HTMLElement
+            // The Episodes panel: Back (and e) put it away; the arrows are
+            // its list's (a TV's remote moves in it, lib/tv: it's a dialog),
+            // and OK plays the one picked.
+            const panel = box?.querySelector<HTMLElement>("[data-episodes]")
+            if (panel) {
+                if (e.key === "Escape" || e.key === "e") {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    toggleEpisodes()
+                    return
+                }
+                if (e.key.startsWith("Arrow") || (panel.contains(t) && (e.key === "Enter" || e.key === " "))) return
+            }
+            const onPicture = !box || t === box || !box.contains(t) || !!t.closest("[data-tv-skip]")
+            if (tv && box && e.key.startsWith("Arrow") && (!onPicture || e.key === "ArrowUp" || e.key === "ArrowDown")) {
+                poke()
+                if (!onPicture) {
+                    if (!move(e.key === "ArrowUp" ? "up" : e.key === "ArrowDown" ? "down" : e.key === "ArrowLeft" ? "left" : "right", box) && e.key === "ArrowDown") box.focus()
+                } else if (e.key === "ArrowUp") {
+                    box.querySelector<HTMLElement>('[data-tv-controls="bottom"] button')?.focus()
+                }
+                e.preventDefault()
+                e.stopPropagation()
+                return
+            }
             let handled = true
             switch (e.key) {
                 case " ":
                 case "k":
                     if (!e.repeat) togglePlay()
                     break
+                case "Enter":
+                    // Held down (a remote's OK): once, not again and again.
+                    if (tv && onPicture && !t.closest("[data-tv-skip]")) !e.repeat && togglePlay()
+                    else handled = false
+                    break
                 case "ArrowLeft":
-                    seekBy(-5)
+                case "ArrowRight": {
+                    // Held on a remote: bigger steps the longer it is.
+                    held.current = e.repeat ? held.current + 1 : 0
+                    const step = tv ? (held.current > 12 ? 60 : held.current > 4 ? 30 : 10) : 5
+                    seekBy(e.key === "ArrowLeft" ? -step : step)
                     break
-                case "ArrowRight":
-                    seekBy(5)
-                    break
+                }
                 case "j":
                     seekBy(-10)
                     break
@@ -893,21 +1360,61 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 case "f":
                     toggleFullscreen()
                     break
+                case "p":
+                    if (mini) expand()
+                    else if (pip) toPip()
+                    else handled = false
+                    break
                 case "m":
                     setMuted(m => !m)
                     break
                 case "s":
                     if (currentSkip) seekTo(currentSkip.end)
                     break
+                case "z":
+                    if (subKey !== "off") moveSubs(-0.1)
+                    break
+                case "x":
+                    if (subKey !== "off") moveSubs(0.1)
+                    break
                 case "n":
                     playNext()
                     break
+                case "e":
+                    if (!mini && episodes?.length) toggleEpisodes()
+                    else handled = false
+                    break
+                // Subtitles off, and back on (the ones there were).
+                case "c": {
+                    const on = subs.find(s => s.key === lastSub.current && !s.bitmap) ?? subs.find(s => !s.bitmap)
+                    if (subKey !== "off") {
+                        lastSub.current = subKey
+                        changeSub("off")
+                    } else if (on) changeSub(on.key)
+                    break
+                }
+                // Closes (like mpv's q; a remote's Stop).
+                case "q":
+                    close()
+                    break
                 case "Escape":
                     if (document.fullscreenElement) handled = false
-                    else close()
+                    // Up next showing: Back puts it away (and the episode
+                    // doesn't play on).
+                    else if (showUpNext) setUpNextOff(true)
+                    // TV: Back hides the controls first, then closes.
+                    else if (tv && controls && !paused) {
+                        setControls(false)
+                        box?.focus({ preventScroll: true })
+                        // Not shown again (poke) by this key.
+                        e.preventDefault()
+                        e.stopPropagation()
+                        return
+                    } else close()
                     break
                 default:
-                    if (/^[0-9]$/.test(e.key) && v) seekTo(((duration || v.duration) * Number(e.key)) / 10)
+                    if (e.key === "0") startOver()
+                    else if (/^[1-9]$/.test(e.key) && v) seekTo(((duration || v.duration) * Number(e.key)) / 10)
                     else handled = false
             }
             if (handled) {
@@ -940,15 +1447,47 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         } catch {
             /* ignore */
         }
-    }, [volume, muted])
+    }, [volume, muted, videoKey])
     useEffect(() => {
         if (videoRef.current) videoRef.current.playbackRate = rate
-    }, [rate])
+    }, [rate, videoKey])
     useEffect(() => {
         const onFs = () => setFullscreen(!!document.fullscreenElement)
         document.addEventListener("fullscreenchange", onFs)
         return () => document.removeEventListener("fullscreenchange", onFs)
     }, [])
+
+    // TV: Skip intro/credits takes the remote's focus when it shows (OK
+    // skips; Left/Right still seek), unless it's on the controls.
+    const skipRef = useRef<HTMLButtonElement>(null)
+    // Up next stands for Skip credits (and preview) while it shows: its Play now.
+    const showingSkip = !!currentSkip && !(showUpNext && (skipWhat === "credits" || skipWhat === "preview"))
+    useEffect(() => {
+        if (!tv || !showingSkip) return
+        const box = containerRef.current
+        const a = document.activeElement
+        if (!box || a === box || !box.contains(a)) skipRef.current?.focus({ preventScroll: true })
+        return () => {
+            if (document.activeElement === skipRef.current || document.activeElement === document.body) box?.focus({ preventScroll: true })
+        }
+    }, [showingSkip])
+    // TV: Up next takes the remote's focus too (OK plays the next episode,
+    // Back puts it away).
+    const upNextRef = useRef<HTMLButtonElement>(null)
+    useEffect(() => {
+        if (!tv || !showUpNext) return
+        const box = containerRef.current
+        const a = document.activeElement
+        if (!box || a === box || a === document.body || !box.contains(a)) upNextRef.current?.focus({ preventScroll: true })
+        return () => {
+            if (document.activeElement === upNextRef.current || document.activeElement === document.body) box?.focus({ preventScroll: true })
+        }
+    }, [showUpNext])
+    // The Android app keeps the screen on while a video plays.
+    useEffect(() => {
+        android?.keepAwake?.(!paused)
+        return () => android?.keepAwake?.(false)
+    }, [paused])
 
     // auto-hide controls
     const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -956,28 +1495,48 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
         setControls(true)
         if (hideTimer.current) clearTimeout(hideTimer.current)
         hideTimer.current = setTimeout(() => {
-            if (!videoRef.current?.paused) setControls(false)
-        }, 2600)
+            if (videoRef.current?.paused) return
+            // Not while one of its menus is open (subtitles, audio…), nor
+            // Episodes (it sits on them).
+            if (document.querySelector('[role="menu"], [data-episodes]')) return poke()
+            setControls(false)
+            // TV: the remote's focus doesn't stay on hidden buttons.
+            if (tv && containerRef.current?.querySelector("[data-tv-controls]:focus-within")) containerRef.current.focus()
+        }, tv ? 4000 : 2600)
     }
     useEffect(() => () => void (hideTimer.current && clearTimeout(hideTimer.current)), [])
     useEffect(() => () => report(true), [report])
 
     const total = duration || 0
     const pct = total > 0 ? (time / total) * 100 : 0
+    // The seek bar's preview: where the mouse is over it, or where Left/Right
+    // go; with a picture of the video there (each 10 seconds), for files.
+    const previewAt = hoverTime ? hoverTime.t : seekShown
+    const previewStep = previewAt === null ? null : Math.max(0, Math.floor(previewAt / 10) * 10)
+    const thumbStep = useDebounced(previewStep, 120)
+    const thumbs = req.kind === "local" && thumbFails < 3 && total > 0
+    const thumbSrc = thumbs && thumbStep !== null ? `/api/local/thumb${qs({ path: req.path, t: thumbStep })}` : ""
+    const aspect = probe?.video?.[0]?.width && probe.video[0].height ? probe.video[0].width / probe.video[0].height : 16 / 9
     const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2
 
     return (
         <div
             ref={containerRef}
             tabIndex={-1}
+            data-tv-scope
             className={cn("fixed inset-0 z-[80] bg-black outline-none fade-in", !controls && !paused && "cursor-none")}
             onMouseMove={poke}
             onClick={e => e.target === e.currentTarget && togglePlay()}
         >
             <video
+                key={videoKey}
                 ref={videoRef}
                 className="absolute inset-0 size-full"
+                style={subStyleVars(subStyle)}
                 playsInline
+                // Black until the first frame (Android's WebView draws a grey
+                // one with a play button otherwise).
+                poster={BLANK}
                 crossOrigin="anonymous"
                 onClick={togglePlay}
                 onDoubleClick={toggleFullscreen}
@@ -991,12 +1550,27 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                     report(true)
                 }}
                 onWaiting={() => setBuffering(true)}
-                onPlaying={() => setBuffering(false)}
+                onPlaying={() => {
+                    setBuffering(false)
+                    setStarted(true)
+                }}
                 onCanPlay={() => setBuffering(false)}
                 onTimeUpdate={e => {
                     const v = e.currentTarget
-                    setTime(absTime(v))
-                    if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1) + base)
+                    if (v.currentTime > 0) expected.current = absTime(v)
+                    // Played on well after the connection came back.
+                    if (netRetries.current && Math.abs(expected.current - retriedAt.current) > 30) netRetries.current = 0
+                    // Seeks waiting to happen show where they go.
+                    const now = absTime(v)
+                    if (seekTarget.current === null && Math.floor(now) !== shownSecond.current) {
+                        shownSecond.current = Math.floor(now)
+                        setTime(now)
+                    }
+                    const end = v.buffered.length ? v.buffered.end(v.buffered.length - 1) + base : 0
+                    if (Math.abs(end - shownBuffered.current) >= 1) {
+                        shownBuffered.current = end
+                        setBuffered(end)
+                    }
                     report()
                 }}
                 onLoadedMetadata={e => {
@@ -1005,52 +1579,105 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 }}
                 onEnded={() => {
                     if (ended.current) return
+                    const v = videoRef.current
+                    const at = v ? absTime(v) : 0
+                    const total = duration || (v && Number.isFinite(v.duration) ? v.duration : 0)
+                    // Stopped well before the episode's end: the stream broke
+                    // (the computer went to sleep, its connection dropped), it
+                    // didn't end. Go on from there, rather than counting the
+                    // episode as watched and playing the next one.
+                    if (v && total > 0 && total - at > 20 && earlyEnds.current < 3) {
+                        earlyEnds.current++
+                        note(`the video stopped at ${Math.round(at)}s of ${Math.round(total)}s (${method})`)
+                        toast.info("The video stopped early: going on from there…")
+                        reopen(at)
+                        return
+                    }
                     ended.current = true
                     report(true, true)
-                    if (settings?.playback.autoPlayNext && nextEp) playNext()
+                    if (settings?.playback.autoPlayNext && nextEp && !upNextOff) playNext(true)
                 }}
                 onError={() => {
                     const v = videoRef.current
-                    if (method === "direct" && convertPath && probe) {
-                        // The browser couldn't play it as it is: convert it.
-                        toast.info("Switching to compatibility mode…")
-                        const at = v && v.currentTime > 0 ? v.currentTime : startAt.current
-                        startAt.current = 0
-                        setOffset(at)
-                        setMethod("remux")
-                    } else if (method === "remux" && convertPath && !hlsRef.current) {
-                        setOffset(v ? absTime(v) : offset)
-                        setMethod("transcode")
-                    } else if (req.kind === "local" && !hlsRef.current) {
-                        // Converted and still not playable: say so rather
-                        // than spin forever.
-                        setError("This video could not be played, even converted.")
-                    } else if (req.kind === "stream" && !hlsRef.current) {
-                        nextSource()
-                    }
+                    if (!v?.error) return
+                    const code = v.error.code
+                    const at = where(v)
+                    const why = mediaErrorText(v)
+                    // The browser can't tell a video it can't fetch (the
+                    // computer asleep, the connection gone) from one it can't
+                    // play: it's fetched to see, before trying another way.
+                    const check: Promise<Fetchable> =
+                        code === MediaError.MEDIA_ERR_DECODE ? Promise.resolve("ok") : code === MediaError.MEDIA_ERR_NETWORK && !hlsRef.current ? Promise.resolve("down") : fetchable(videoSrc)
+                    check.then(state => {
+                        // Another video by now (closed, or opened again).
+                        if (videoRef.current !== v) return
+                        if (state === "down") {
+                            if (netRetries.current < MAX_RETRIES) retry(at)
+                            else {
+                                note(`the video can't be reached${why}`)
+                                unreachableAt.current = at
+                                setError("The video can't be reached. Is the computer that has it on, and on the network?")
+                            }
+                            return
+                        }
+                        if (method === "direct" && convertPath && probe) {
+                            // The browser couldn't play it as it is: convert it.
+                            toast.info("Switching to compatibility mode…")
+                            startAt.current = 0
+                            setOffset(at)
+                            setMethod("remux")
+                        } else if (method === "remux" && convertPath && !hlsRef.current) {
+                            setOffset(at)
+                            setMethod("transcode")
+                        } else if (req.kind === "stream" && !hlsRef.current) {
+                            sourceError.current = sourceError.current || why.replace(/^ \(|\)$/g, "")
+                            nextSource()
+                        } else if (req.kind === "local") {
+                            // Converted, and still not playable here.
+                            note(`the converted video can't be played here${why}`)
+                            setError(`This device can't play the converted video${why}.`)
+                        }
+                    })
                 }}
             />
 
-            {(loading || buffering) && !error && (
+            {(loading || buffering || !started) && !error && (
                 <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                    <Loader2 className="size-12 animate-spin text-white/80" />
+                    <Loader2 className={cn("animate-spin text-white/80", mini ? "size-8" : "size-12")} />
                 </div>
             )}
             {error && (
-                <div className="absolute inset-0 grid place-items-center p-6">
-                    <div className="max-w-md rounded-xl border border-line-strong bg-surface-1 p-6 text-center">
-                        <p className="text-lg font-semibold">Playback failed</p>
-                        <p className="mt-2 text-sm text-muted">{error}</p>
-                        <div className="mt-5 flex flex-wrap justify-center gap-2">
+                <div className={cn("absolute inset-0 grid place-items-center", mini ? "p-2" : "p-6")}>
+                    <div ref={errorBox} className={cn("max-w-md rounded-xl border border-line-strong bg-surface-1 text-center", mini ? "p-3" : "p-6")}>
+                        <p className={cn("font-semibold", mini ? "text-sm" : "text-lg")}>Playback failed</p>
+                        <p className={cn("text-muted", mini ? "mt-1 line-clamp-2 text-xs" : "mt-2 text-sm")}>{error}</p>
+                        <div className={cn("flex flex-wrap justify-center gap-2", mini ? "mt-3" : "mt-5")}>
                             <button className="h-10 rounded-xl bg-white/10 px-4 text-sm font-medium hover:bg-white/15" onClick={close}>
                                 Close
                             </button>
-                            <button className="flex h-10 items-center gap-2 rounded-xl bg-white/10 px-4 text-sm font-medium hover:bg-white/15" onClick={copyDetails}>
-                                <Copy className="size-4" /> Copy details
-                            </button>
-                            {!remote && !!status?.features.mpv && (req.kind === "local" || sources.length > 0) && (
+                            {!mini && (
+                                <button className="flex h-10 items-center gap-2 rounded-xl bg-white/10 px-4 text-sm font-medium hover:bg-white/15" onClick={copyDetails}>
+                                    <Copy className="size-4" /> Copy details
+                                </button>
+                            )}
+                            {unreachableAt.current !== null && (
                                 <button
-                                    className={cn("h-10 rounded-xl px-4 text-sm font-medium", canTryNext ? "bg-white/10 hover:bg-white/15" : "bg-brand text-white")}
+                                    data-primary
+                                    className="h-10 rounded-xl bg-brand px-4 text-sm font-medium text-white"
+                                    onClick={() => {
+                                        const at = unreachableAt.current ?? where()
+                                        unreachableAt.current = null
+                                        netRetries.current = 0
+                                        setError("")
+                                        retry(at)
+                                    }}
+                                >
+                                    Try again
+                                </button>
+                            )}
+                            {!remote && !!status?.features.mpv && (req.kind === "local" || sources.length > 0) && !androidApp && !mini && (
+                                <button
+                                    className={cn("h-10 rounded-xl px-4 text-sm font-medium", canTryNext || unreachableAt.current !== null ? "bg-white/10 hover:bg-white/15" : "bg-brand text-white")}
                                     onClick={openInMpv}
                                 >
                                     Open in mpv
@@ -1066,8 +1693,25 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                 </div>
             )}
 
-            {/* top bar */}
-            <div className={cn("absolute inset-x-0 top-0 flex items-center gap-4 bg-gradient-to-b from-black/80 to-transparent px-6 pt-5 pb-14 transition-opacity duration-300", controls || paused ? "opacity-100" : "pointer-events-none opacity-0")}>
+            {/* top bar. The small window's: what plays, back to KumoBox and close;
+                dragging it moves the window. */}
+            {mini && (
+                <div
+                    className={cn(
+                        "absolute inset-x-0 top-0 flex items-center gap-1.5 bg-gradient-to-b from-black/80 to-transparent px-3 pt-2 pb-8 transition-opacity duration-300 [-webkit-app-region:drag]",
+                        controls || paused ? "opacity-100" : "opacity-0",
+                    )}
+                >
+                    <p className="min-w-0 flex-1 truncate text-[13px] font-semibold text-white">{title}</p>
+                    <button onClick={expand} title="Back to KumoBox (p)" aria-label="Back to KumoBox" className="grid size-8 shrink-0 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20 [-webkit-app-region:no-drag]">
+                        <Maximize2 className="size-4" />
+                    </button>
+                    <button onClick={close} title="Close" aria-label="Close" className="grid size-8 shrink-0 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20 [-webkit-app-region:no-drag]">
+                        <X className="size-4" />
+                    </button>
+                </div>
+            )}
+            <div data-tv-controls="top" hidden={mini} className={cn("absolute inset-x-0 top-0 flex items-center gap-4 bg-gradient-to-b from-black/80 to-transparent px-6 pt-5 pb-14 transition-opacity duration-300", controls || paused ? "opacity-100" : "pointer-events-none opacity-0")}>
                 <button onClick={close} className="grid size-10 place-items-center rounded-full bg-white/10 text-white backdrop-blur hover:bg-white/20" aria-label="Close player">
                     <ArrowLeft className="size-5" />
                 </button>
@@ -1088,10 +1732,17 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             </div>
 
             {/* bottom controls */}
-            <div className={cn("absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-6 pt-20 pb-5 transition-opacity duration-300", controls || paused ? "opacity-100" : "pointer-events-none opacity-0")}>
+            <div
+                data-tv-controls="bottom"
+                className={cn(
+                    "absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent transition-opacity duration-300",
+                    mini ? "px-3 pt-10 pb-1.5" : "px-6 pt-20 pb-5",
+                    controls || paused ? "opacity-100" : "pointer-events-none opacity-0",
+                )}
+            >
                 {/* scrubber */}
                 <div
-                    className="group/seek relative mb-3 h-5 cursor-pointer"
+                    className={cn("group/seek relative cursor-pointer", mini ? "mb-1 h-4" : "mb-3 h-5")}
                     onMouseMove={e => {
                         const r = e.currentTarget.getBoundingClientRect()
                         setHoverTime({ x: e.clientX - r.left, t: ((e.clientX - r.left) / r.width) * total })
@@ -1110,33 +1761,66 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                         <div className="absolute inset-y-0 left-0 bg-brand" style={{ width: `${pct}%` }} />
                     </div>
                     <div className="absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 scale-0 rounded-full bg-white shadow transition-transform group-hover/seek:scale-100" style={{ left: `${pct}%` }} />
-                    {hoverTime && (
-                        <div className="absolute -top-8 -translate-x-1/2 rounded-md bg-black/80 px-2 py-1 text-xs font-medium text-white" style={{ left: hoverTime.x }}>
-                            {formatDuration(hoverTime.t)}
+                    {previewAt !== null && total > 0 && (
+                        <div
+                            className="pointer-events-none absolute bottom-full mb-2 flex -translate-x-1/2 flex-col items-center gap-1.5"
+                            style={{
+                                left: hoverTime
+                                    ? `clamp(${thumbs && !mini ? 5.5 : 2}rem, ${hoverTime.x}px, calc(100% - ${thumbs && !mini ? 5.5 : 2}rem))`
+                                    : `clamp(${thumbs && !mini ? 5.5 : 2}rem, ${(previewAt / total) * 100}%, calc(100% - ${thumbs && !mini ? 5.5 : 2}rem))`,
+                            }}
+                        >
+                            {thumbs && !mini && (
+                                <div className="w-44 overflow-hidden rounded-lg bg-black/80 ring-1 ring-white/15 shadow-2xl" style={{ aspectRatio: String(aspect) }}>
+                                    {thumbSrc && (
+                                        <img
+                                            src={thumbSrc}
+                                            alt=""
+                                            className="size-full object-cover"
+                                            onLoad={() => thumbFails && setThumbFails(0)}
+                                            onError={() => setThumbFails(n => n + 1)}
+                                        />
+                                    )}
+                                </div>
+                            )}
+                            <div className="rounded-md bg-black/80 px-2 py-1 text-xs font-medium text-white tabular-nums">{formatDuration(previewAt)}</div>
                         </div>
                     )}
                 </div>
 
-                <div className="flex items-center gap-2 text-white">
-                    <CtrlButton onClick={togglePlay} label={paused ? "Play (k)" : "Pause (k)"}>
-                        {paused ? <Play className="size-6 fill-white" /> : <Pause className="size-6 fill-white" />}
+                <div className={cn("flex items-center text-white", mini ? "gap-0.5" : "gap-2")}>
+                    <CtrlButton small={mini} onClick={togglePlay} label={paused ? "Play (k)" : "Pause (k)"}>
+                        {paused ? <Play className={cn("fill-white", mini ? "size-5" : "size-6")} /> : <Pause className={cn("fill-white", mini ? "size-5" : "size-6")} />}
                     </CtrlButton>
-                    <CtrlButton onClick={() => seekBy(-10)} label="Back 10s (j)">
-                        <RotateCcw className="size-5" />
-                    </CtrlButton>
-                    <CtrlButton onClick={() => seekBy(10)} label="Forward 10s (l)">
-                        <RotateCw className="size-5" />
-                    </CtrlButton>
-                    {nextEp && (
-                        <CtrlButton onClick={playNext} label="Next episode (n)">
-                            <SkipForward className="size-5" />
+                    {!mini && (
+                        // Not on a phone, where the buttons wouldn't fit across (its
+                        // own buttons set the volume).
+                        <CtrlButton onClick={startOver} label="Start over (0)" className="max-sm:hidden">
+                            <SkipBack className="size-5" />
                         </CtrlButton>
                     )}
-                    <div className="group/vol flex items-center">
-                        <CtrlButton onClick={() => setMuted(m => !m)} label="Mute (m)">
-                            <VolumeIcon className="size-5" />
+                    <CtrlButton small={mini} onClick={() => seekBy(-10)} label="Back 10s (j)">
+                        <RotateCcw className={mini ? "size-4" : "size-5"} />
+                    </CtrlButton>
+                    <CtrlButton small={mini} onClick={() => seekBy(10)} label="Forward 10s (l)">
+                        <RotateCw className={mini ? "size-4" : "size-5"} />
+                    </CtrlButton>
+                    {nextEp && (
+                        <CtrlButton small={mini} onClick={() => playNext()} label="Next episode (n)">
+                            <SkipForward className={mini ? "size-4" : "size-5"} />
+                        </CtrlButton>
+                    )}
+                    {!mini && episodes && episodes.length > 1 && (
+                        <CtrlButton ref={episodesButton} onClick={toggleEpisodes} label="Episodes (e)" className={cn("data-episodes-toggle", showEpisodes && !episodesLeaving && "bg-white/15 text-brand-strong")}>
+                            <ListVideo className="size-5" />
+                        </CtrlButton>
+                    )}
+                    <div className="group/vol flex items-center max-sm:hidden">
+                        <CtrlButton small={mini} onClick={() => setMuted(m => !m)} label="Mute (m)">
+                            <VolumeIcon className={mini ? "size-4" : "size-5"} />
                         </CtrlButton>
                         <input
+                            hidden={mini}
                             type="range"
                             min={0}
                             max={1}
@@ -1149,7 +1833,7 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                             className="w-0 accent-white opacity-0 transition-all duration-200 group-hover/vol:w-24 group-hover/vol:opacity-100"
                         />
                     </div>
-                    <span className="ml-2 text-sm font-medium text-white/85 tabular-nums">
+                    <span className={cn("font-medium text-white/85 tabular-nums", mini ? "ml-1 text-xs" : "ml-2 text-sm")}>
                         {formatDuration(time)} <span className="text-white/45">/ {formatDuration(total)}</span>
                     </span>
 
@@ -1157,11 +1841,11 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                         {/* subtitles */}
                         <Dropdown>
                             <DropdownTrigger asChild>
-                                <button className={cn("grid size-10 place-items-center rounded-full hover:bg-white/15", subKey !== "off" && "text-brand-strong")} aria-label="Subtitles">
-                                    <Captions className="size-5" />
+                                <button className={cn("grid place-items-center rounded-full hover:bg-white/15", mini ? "size-8" : "size-10", subKey !== "off" && "text-brand-strong")} aria-label="Subtitles">
+                                    <Captions className={mini ? "size-4" : "size-5"} />
                                 </button>
                             </DropdownTrigger>
-                            <DropdownContent className="z-[90] max-h-80 overflow-y-auto">
+                            <DropdownContent className="z-[90] max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">
                                 <DropdownLabel>Subtitles</DropdownLabel>
                                 <DropdownItem onSelect={() => changeSub("off")}>{subKey === "off" ? "● " : ""}Off</DropdownItem>
                                 {subs.map(s => (
@@ -1171,10 +1855,33 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                                         {s.bitmap ? " (mpv only)" : ""}
                                     </DropdownItem>
                                 ))}
+                                {subKey !== "off" && (
+                                    <>
+                                        <DropdownSeparator />
+                                        <DropdownLabel>Timing: {formatDelay(delay)}</DropdownLabel>
+                                        <DropdownItem keepOpen onSelect={() => moveSubs(-0.5)}>
+                                            Earlier by 0.5s
+                                        </DropdownItem>
+                                        <DropdownItem keepOpen onSelect={() => moveSubs(-0.1)}>
+                                            Earlier by 0.1s (z)
+                                        </DropdownItem>
+                                        <DropdownItem keepOpen onSelect={() => moveSubs(0.1)}>
+                                            Later by 0.1s (x)
+                                        </DropdownItem>
+                                        <DropdownItem keepOpen onSelect={() => moveSubs(0.5)}>
+                                            Later by 0.5s
+                                        </DropdownItem>
+                                        {delay !== 0 && (
+                                            <DropdownItem keepOpen onSelect={() => moveSubs(0)}>
+                                                Reset timing
+                                            </DropdownItem>
+                                        )}
+                                    </>
+                                )}
                             </DropdownContent>
                         </Dropdown>
                         {/* audio */}
-                        {!!convertPath && (probe?.audio?.length ?? 0) > 1 && (
+                        {!!convertPath && (probe?.audio?.length ?? 0) > 1 && !mini && (
                             <Dropdown>
                                 <DropdownTrigger asChild>
                                     <button className="grid size-10 place-items-center rounded-full hover:bg-white/15" aria-label="Audio track">
@@ -1193,56 +1900,87 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
                             </Dropdown>
                         )}
                         {/* quality / speed */}
-                        <Dropdown>
-                            <DropdownTrigger asChild>
-                                <button className="grid size-10 place-items-center rounded-full hover:bg-white/15" aria-label="Settings">
-                                    <Gauge className="size-5" />
-                                </button>
-                            </DropdownTrigger>
-                            <DropdownContent className="z-[90] max-h-96 overflow-y-auto">
-                                {req.kind === "stream" && sources.length > 1 && (
-                                    <>
-                                        <DropdownLabel>Source</DropdownLabel>
-                                        {sources.map((s, i) => (
-                                            <DropdownItem key={i} onSelect={() => changeSource(i)}>
-                                                {sourceIdx === i ? "● " : ""}
-                                                {[s.server, s.quality, s.label].filter(Boolean).join(" · ")}
+                        {!mini && (
+                            <Dropdown>
+                                <DropdownTrigger asChild>
+                                    <button className="grid size-10 place-items-center rounded-full hover:bg-white/15" aria-label="Settings">
+                                        <Gauge className="size-5" />
+                                    </button>
+                                </DropdownTrigger>
+                                <DropdownContent className="z-[90] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">
+                                    {req.kind === "stream" && sources.length > 1 && (
+                                        <>
+                                            <DropdownLabel>Source</DropdownLabel>
+                                            {sources.map((s, i) => (
+                                                <DropdownItem key={i} onSelect={() => changeSource(i)}>
+                                                    {sourceIdx === i ? "● " : ""}
+                                                    {[s.server, s.quality, s.label].filter(Boolean).join(" · ")}
+                                                </DropdownItem>
+                                            ))}
+                                            <DropdownSeparator />
+                                        </>
+                                    )}
+                                    {!!convertPath && !!probe && method !== "transcode" && (
+                                        <>
+                                            <DropdownItem
+                                                onSelect={() => {
+                                                    const v = videoRef.current
+                                                    // The video too: copied, it would stay as it was.
+                                                    const vt = probe?.video?.[0]
+                                                    if (vt) setNoPic(n => [...n, videoFormat(vt)])
+                                                    setOffset(v ? absTime(v) : 0)
+                                                    setMethod("transcode")
+                                                }}
+                                            >
+                                                Force transcoding
                                             </DropdownItem>
-                                        ))}
-                                        <DropdownSeparator />
-                                    </>
-                                )}
-                                {!!convertPath && !!probe && method !== "transcode" && (
-                                    <>
-                                        <DropdownItem
-                                            onSelect={() => {
-                                                const v = videoRef.current
-                                                setOffset(v ? absTime(v) : 0)
-                                                setMethod("transcode")
-                                            }}
-                                        >
-                                            Force transcoding
+                                            <DropdownSeparator />
+                                        </>
+                                    )}
+                                    {req.kind === "local" && !!probe?.video?.length && (
+                                        <>
+                                            <DropdownItem
+                                                onSelect={() => {
+                                                    const v = videoRef.current
+                                                    const on = !software
+                                                    setSoftwareVideo(on)
+                                                    note(on ? "grey picture: converted in software from now on, on this device" : "converted as before again, on this device")
+                                                    if (on) toast.info("Converting the video in software on this device from now on")
+                                                    setOffset(v ? absTime(v) : 0)
+                                                    setSoftware(on)
+                                                    setMethod("transcode")
+                                                }}
+                                            >
+                                                {software ? "● Converted in software here (turn off)" : "Grey picture? Convert in software"}
+                                            </DropdownItem>
+                                            <DropdownSeparator />
+                                        </>
+                                    )}
+                                    <DropdownLabel>Speed</DropdownLabel>
+                                    {[0.75, 1, 1.25, 1.5, 2].map(r => (
+                                        <DropdownItem key={r} onSelect={() => setRate(r)}>
+                                            {rate === r ? "● " : ""}
+                                            {r}×
                                         </DropdownItem>
-                                        <DropdownSeparator />
-                                    </>
-                                )}
-                                <DropdownLabel>Speed</DropdownLabel>
-                                {[0.75, 1, 1.25, 1.5, 2].map(r => (
-                                    <DropdownItem key={r} onSelect={() => setRate(r)}>
-                                        {rate === r ? "● " : ""}
-                                        {r}×
-                                    </DropdownItem>
-                                ))}
-                            </DropdownContent>
-                        </Dropdown>
-                        {!remote && (
+                                    ))}
+                                </DropdownContent>
+                            </Dropdown>
+                        )}
+                        {!androidApp && !mini && !remote && (
                             <CtrlButton onClick={openInMpv} label="Continue in mpv">
                                 <MonitorPlay className="size-5" />
                             </CtrlButton>
                         )}
-                        <CtrlButton onClick={toggleFullscreen} label="Fullscreen (f)">
-                            {fullscreen ? <Minimize className="size-5" /> : <Maximize className="size-5" />}
-                        </CtrlButton>
+                        {pip && (
+                            <CtrlButton onClick={toPip} label="Picture in picture (p)">
+                                <PictureInPicture2 className="size-5" />
+                            </CtrlButton>
+                        )}
+                        {!tv && !mini && (
+                            <CtrlButton onClick={toggleFullscreen} label="Fullscreen (f)">
+                                {fullscreen ? <Minimize className="size-5" /> : <Maximize className="size-5" />}
+                            </CtrlButton>
+                        )}
                     </div>
                 </div>
             </div>
@@ -1250,23 +1988,288 @@ function Player({ req, onClose }: { req: PlayerRequest; onClose: () => void }) {
             {/* skip (the next episode is in the controls, and n). Above the
                 controls: their gradient reaches up behind the button and
                 would otherwise take its clicks while the controls show. */}
-            <div className="absolute right-8 bottom-32 z-10 flex flex-col items-end gap-3">
-                {currentSkip && (
-                    <button onClick={() => seekTo(currentSkip.end)} className="flex h-11 items-center gap-2 rounded-xl bg-white px-5 text-sm font-semibold text-black shadow-2xl rise-in hover:bg-white/90">
-                        <FastForward className="size-4 fill-black" /> Skip {skipWhat}
+            <div className={cn("absolute z-10 flex flex-col items-end", mini ? "right-3 bottom-14 gap-2" : "right-8 bottom-32 gap-3")}>
+                {currentSkip && showingSkip && (
+                    <button
+                        ref={skipRef}
+                        data-tv-skip
+                        onClick={() => seekTo(currentSkip.end)}
+                        className={cn("flex items-center gap-2 bg-white font-semibold text-black shadow-2xl rise-in hover:bg-white/90", mini ? "h-8 rounded-lg px-3 text-xs" : "h-11 rounded-xl px-5 text-sm")}
+                    >
+                        <FastForward className={cn("fill-black", mini ? "size-3.5" : "size-4")} /> Skip {skipWhat}
                     </button>
                 )}
+                {showUpNext && nextEp && (
+                    <div data-tv-skip className={cn("bg-black/80 text-white shadow-2xl ring-1 ring-white/10 backdrop-blur rise-in", mini ? "w-52 rounded-xl p-2.5" : "w-72 rounded-2xl p-4")}>
+                        <p className="text-xs font-medium tracking-wide text-white/60 uppercase">Up next</p>
+                        <p className={cn("mt-0.5 font-semibold", mini && "text-sm")}>Episode {nextEp.episode}</p>
+                        <p className={cn("mt-0.5 text-white/70 tabular-nums", mini ? "text-xs" : "text-sm")}>{autoNext ? (countdown <= 10 ? `Playing in ${countdown}s` : "Plays when this one ends") : "Ready when you are"}</p>
+                        <div className={cn("flex gap-2", mini ? "mt-2" : "mt-3")}>
+                            <button
+                                ref={upNextRef}
+                                onClick={() => playNext(true)}
+                                className={cn("flex flex-1 items-center justify-center gap-2 bg-white font-semibold text-black hover:bg-white/90", mini ? "h-8 rounded-lg text-xs" : "h-10 rounded-xl text-sm")}
+                            >
+                                <Play className={cn("fill-black", mini ? "size-3.5" : "size-4")} /> Play now
+                            </button>
+                            <button onClick={() => setUpNextOff(true)} className={cn("font-medium text-white/80 hover:bg-white/10 hover:text-white", mini ? "h-8 rounded-lg px-2 text-xs" : "h-10 rounded-xl px-3 text-sm")}>
+                                {autoNext ? "Cancel" : "Hide"}
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+            {showEpisodes && episodes && !mini && (
+                <EpisodesPanel
+                    episodes={episodes}
+                    current={episode}
+                    progress={total > 0 ? Math.round((time / total) * 100) / 100 : 0}
+                    art={showArt}
+                    leaving={episodesLeaving}
+                    playable={playable}
+                    onPlay={playEpisode}
+                    onClose={toggleEpisodes}
+                />
+            )}
+            {showResumed && !mini && !showEpisodes && (
+                <div className="absolute bottom-32 left-8 z-10 flex items-center gap-3 rounded-xl bg-black/75 py-2 pr-2 pl-4 text-sm text-white shadow-2xl ring-1 ring-white/10 backdrop-blur rise-in">
+                    <span className="tabular-nums">Resumed at {formatDuration(resumedFrom)}</span>
+                    {tv ? (
+                        <span className="pr-2 text-white/60">Start over is in the controls (Up)</span>
+                    ) : (
+                        <button onClick={startOver} className="flex h-8 items-center gap-1.5 rounded-lg bg-white/15 px-3 font-medium hover:bg-white/25">
+                            <SkipBack className="size-3.5" /> Start over
+                        </button>
+                    )}
+                </div>
+            )}
+        </div>
+    )
+}
+
+// value, once it stopped changing for ms.
+function useDebounced<T>(value: T, ms: number): T {
+    const [v, setV] = useState(value)
+    useEffect(() => {
+        const t = setTimeout(() => setV(value), ms)
+        return () => clearTimeout(t)
+    }, [value, ms])
+    return v
+}
+
+// How many times a broken connection is tried again (see retry).
+const MAX_RETRIES = 6
+
+type Fetchable = "ok" | "down" | "error"
+
+// Whether a video can be fetched (its first bytes): "down" when the
+// connection fails, or the computer that has it doesn't answer.
+async function fetchable(src: string): Promise<Fetchable> {
+    if (!src) return "error"
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 20_000)
+    try {
+        const r = await fetch(src, { headers: { Range: "bytes=0-1" }, signal: ctl.signal, credentials: "same-origin", cache: "no-store" })
+        return r.ok ? "ok" : r.status >= 502 && r.status <= 504 ? "down" : "error"
+    } catch {
+        return "down"
+    } finally {
+        clearTimeout(timer)
+        ctl.abort()
+    }
+}
+
+// An empty picture (a transparent pixel): the video's poster.
+const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+
+const CtrlButton = forwardRef<HTMLButtonElement, { children: React.ReactNode; onClick: () => void; label: string; small?: boolean; className?: string }>(function CtrlButton(
+    { children, onClick, label, small, className },
+    ref,
+) {
+    return (
+        <button
+            ref={ref}
+            onClick={onClick}
+            title={label}
+            aria-label={label}
+            className={cn("grid shrink-0 place-items-center rounded-full transition hover:bg-white/15 active:scale-95", small ? "size-8" : "size-10", className)}
+        >
+            {children}
+        </button>
+    )
+})
+
+// The show's episodes, a small grid in the corner above the controls (the
+// Episodes button's): each one's picture, number, name and how far it was
+// watched, the one playing ringed in the theme's color. Picked, it plays.
+// Inside the player (not a menu of the page's), so it works in fullscreen.
+function EpisodesPanel({
+    episodes,
+    current,
+    progress,
+    art,
+    leaving,
+    playable,
+    onPlay,
+    onClose,
+}: {
+    episodes: EpisodeView[]
+    current: number
+    progress: number // the one playing, 0-1
+    art: string
+    leaving: boolean
+    playable: (n: EpisodeView) => boolean
+    onPlay: (n: EpisodeView) => void
+    onClose: () => void
+}) {
+    const panel = useRef<HTMLDivElement>(null)
+    const list = useRef<HTMLDivElement>(null)
+    const chips = useRef<HTMLDivElement>(null)
+    // The player's handlers are new each time it draws (several times a
+    // second): through refs, the tiles aren't drawn again for that.
+    const handlers = useRef({ onPlay, onClose })
+    handlers.current = { onPlay, onClose }
+    const play = useCallback((n: EpisodeView) => handlers.current.onPlay(n), [])
+    // A season at a time (a long one a hundred at a time: a TV draws a long
+    // list slowly), opening on the one with the episode playing.
+    const ranges = useMemo(() => {
+        const out: EpisodeView[][] = []
+        const seasons = new Map<number, EpisodeView[]>()
+        for (const n of episodes) {
+            const s = splitKey(keyOf(n))[0]
+            seasons.set(s, [...(seasons.get(s) ?? []), n])
+        }
+        for (const eps of seasons.values()) for (let i = 0; i < eps.length; i += EPISODE_RANGE) out.push(eps.slice(i, i + EPISODE_RANGE))
+        return out
+    }, [episodes])
+    const [range, setRange] = useState(() => Math.max(0, ranges.findIndex(r => r.some(n => keyOf(n) === current))))
+    const shown = ranges[range] ?? episodes
+    // Opens at the one playing (on a TV, with the remote on it), its
+    // hundred's button in sight.
+    useEffect(() => {
+        const chip = chips.current?.querySelector<HTMLElement>("[aria-pressed=true]")
+        if (chip && chips.current) chips.current.scrollLeft = chip.offsetLeft - chips.current.clientWidth / 2 + chip.offsetWidth / 2
+        const el = list.current?.querySelector<HTMLElement>("[data-current]")
+        if (el && list.current) list.current.scrollTop = el.offsetTop - list.current.clientHeight / 2 + el.offsetHeight / 2
+        if (tv) el?.focus({ preventScroll: true })
+    }, [])
+    // A click anywhere else puts it away (and does what it does there).
+    useEffect(() => {
+        const down = (e: PointerEvent) => {
+            const t = e.target as HTMLElement | null
+            if (!t || panel.current?.contains(t) || t.closest(".data-episodes-toggle")) return
+            handlers.current.onClose()
+        }
+        document.addEventListener("pointerdown", down, true)
+        return () => document.removeEventListener("pointerdown", down, true)
+    }, [])
+    return (
+        <div
+            ref={panel}
+            data-episodes
+            role="dialog"
+            aria-label="Episodes"
+            className={cn(
+                "absolute bottom-[6.75rem] left-4 z-30 flex max-h-[min(30rem,calc(100%-9.5rem))] w-[clamp(19rem,24vw,30rem)] max-w-[calc(100%-2rem)] origin-bottom-left flex-col overflow-hidden rounded-2xl border border-line bg-surface-1/[0.98] text-fg shadow-2xl shadow-black/60 sm:left-6",
+                leaving ? "corner-out" : "corner-in",
+            )}
+        >
+            <div className="flex items-center gap-2 px-3.5 pt-3 pb-2">
+                <h2 className="flex-1 text-sm font-semibold">
+                    Episodes <span className="ml-0.5 text-xs font-normal text-subtle tabular-nums">{episodes.length}</span>
+                </h2>
+                <button onClick={onClose} aria-label="Close episodes" title="Close (e)" className="focus-ring grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-3 hover:text-fg">
+                    <X className="size-4" />
+                </button>
+            </div>
+            {ranges.length > 1 && (
+                <div ref={chips} className="no-scrollbar flex shrink-0 gap-1 overflow-x-auto scroll-smooth px-3.5 pb-2">
+                    {ranges.map((r, i) => (
+                        <button
+                            key={i}
+                            aria-pressed={i === range}
+                            onClick={() => {
+                                setRange(i)
+                                list.current?.scrollTo({ top: 0 })
+                            }}
+                            className={cn(
+                                "focus-ring h-6 shrink-0 rounded-full px-2.5 text-[11px] font-medium tabular-nums transition-colors",
+                                i === range ? "bg-brand text-white" : "bg-surface-3 text-muted hover:text-fg",
+                            )}
+                        >
+                            {rangeLabel(r)}
+                        </button>
+                    ))}
+                </div>
+            )}
+            <div ref={list} className="grid grid-cols-3 content-start gap-x-2 gap-y-3 overflow-y-auto overscroll-contain scroll-smooth px-3 pb-3.5">
+                {shown.map(n => (
+                    <EpisodeTile
+                        key={keyOf(n)}
+                        ep={n}
+                        art={art}
+                        playing={keyOf(n) === current}
+                        ok={keyOf(n) === current || playable(n)}
+                        progress={keyOf(n) === current ? progress : n.watched ? 1 : n.history?.duration ? n.resumeAt / n.history.duration : 0}
+                        onPlay={play}
+                    />
+                ))}
             </div>
         </div>
     )
 }
 
-function CtrlButton({ children, onClick, label }: { children: React.ReactNode; onClick: () => void; label: string }) {
+// One episode in the grid. Drawn again only when what it shows changes
+// (the one playing as it goes on), not as the player ticks.
+const EpisodeTile = memo(function EpisodeTile({ ep: n, art, playing, ok, progress, onPlay }: { ep: EpisodeView; art: string; playing: boolean; ok: boolean; progress: number; onPlay: (n: EpisodeView) => void }) {
+    const name = n.title || formatKey(keyOf(n))
     return (
-        <button onClick={onClick} title={label} aria-label={label} className="grid size-10 place-items-center rounded-full transition hover:bg-white/15 active:scale-95">
-            {children}
+        <button
+            data-current={playing || undefined}
+            disabled={!ok}
+            onClick={() => onPlay(n)}
+            title={ok ? name : `${name}: ${n.aired ? "not downloaded" : "not out yet"}`}
+            className={cn("group/ep flex min-w-0 flex-col gap-1 rounded-lg p-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-brand", !ok && "opacity-40")}
+        >
+            <span
+                className={cn(
+                    "relative block aspect-video w-full overflow-hidden rounded-md bg-surface-3 ring-1 transition-[box-shadow,transform] duration-200",
+                    playing ? "ring-2 ring-brand" : "ring-line",
+                    ok && !playing && "group-hover/ep:-translate-y-0.5 group-hover/ep:ring-line-strong",
+                )}
+            >
+                {(n.image || art) && <img src={img(n.image || art)} alt="" loading="lazy" className={cn("size-full object-cover", !n.image && "opacity-60")} />}
+                <span className="absolute top-1 left-1 rounded bg-black/70 px-1 text-[10px] leading-4 font-semibold text-white tabular-nums">{formatKey(keyOf(n))}</span>
+                {n.watched && !playing && (
+                    <span className="absolute top-1 right-1 grid size-4 place-items-center rounded-full bg-brand text-white">
+                        <Check className="size-2.5 stroke-[3]" />
+                    </span>
+                )}
+                {playing && (
+                    <span className="absolute inset-0 grid place-items-center bg-black/45">
+                        <Play className="size-4 fill-white text-white" />
+                    </span>
+                )}
+                {progress > 0.01 && (
+                    <span className="absolute inset-x-0 bottom-0 h-[3px] bg-black/50">
+                        <span className="block h-full bg-brand transition-[width] duration-500" style={{ width: `${Math.min(100, progress * 100)}%` }} />
+                    </span>
+                )}
+            </span>
+            <span className={cn("line-clamp-2 px-0.5 text-[11px] leading-tight", playing ? "font-semibold text-fg" : "text-muted group-hover/ep:text-fg")}>{name}</span>
         </button>
     )
+})
+
+const EPISODE_RANGE = 100
+
+// A range's chip: its season ("Season 2"), or the part of a long one
+// ("S01E101–E200").
+function rangeLabel(r: EpisodeView[]) {
+    const [s, first] = splitKey(keyOf(r[0]))
+    const last = splitKey(keyOf(r[r.length - 1]))[1]
+    if (first <= 1 && r.length < EPISODE_RANGE) return s === 0 ? "Specials" : `Season ${s}`
+    return `${formatKey(keyOf(r[0]))}–E${String(last).padStart(2, "0")}`
 }
 
 // The key of an episode of the title page (the server sends key, season
@@ -1285,6 +2288,14 @@ function playerTitle(e: EntryView | null, key: number, fallback: string) {
     }
     const ep = (e.episodes ?? []).find(x => keyOf(x) === key)
     return `${name} — ${formatKey(key)}${ep?.title ? ` · ${ep.title}` : ""}`
+}
+
+// Why the video element gave up, as far as the browser says.
+function mediaErrorText(v: HTMLVideoElement | null): string {
+    const e = v?.error
+    if (!e) return ""
+    const kind = { 1: "stopped", 2: "network error", 3: "can't decode it", 4: "format not supported" }[e.code] ?? `error ${e.code}`
+    return ` (${kind}${e.message ? `: ${e.message}` : ""})`
 }
 
 // The subtitles a stream opens with, by the server's rules for files

@@ -122,7 +122,7 @@ function useMediaIndex() {
 
 function useRoots() {
     const { data: status } = useStatus()
-    return useMemo(() => [status?.settings.library.dir ?? "", ...(status?.settings.library.extraDirs ?? [])].filter(Boolean), [status])
+    return useMemo(() => (status?.settings.library.off ? [] : [status?.settings.library.dir ?? "", ...(status?.settings.library.extraDirs ?? [])].filter(Boolean)), [status])
 }
 
 // Adds the videos of folders that no scan has added yet to the index, and
@@ -240,7 +240,7 @@ export function LibraryFolders() {
     return (
         <div className="flex flex-col gap-4">
             <p className="text-sm text-muted">
-                Wrong or missing match? Use <b>Match…</b> to pick the right movie or show. Manual matches are locked, so later scans keep them.
+                Wrong or missing match? Use <b>Match…</b> or <b>Change match…</b> to pick the right movie or show. Matches you pick are locked, so later scans keep them.
             </p>
             <div className="w-full max-w-md">
                 <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter folders or titles…" icon={<Search className="size-4" />} />

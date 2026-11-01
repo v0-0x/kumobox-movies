@@ -1,6 +1,7 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import type { FuzzyDate, Media } from "./types"
+import { tv } from "./tv"
 
 export function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs))
@@ -46,8 +47,13 @@ export function img(url?: string | null) {
     return url
 }
 
-export function cover(m?: Media | null) {
-    return img(m?.coverImage?.extraLarge || m?.coverImage?.large || m?.coverImage?.medium || "")
+// A cover the size it's shown: "poster" (a title's page), "card" (a grid's;
+// on a TV the smaller one does, at its scale, and takes a quarter of the
+// memory), "thumb" (small, in lists).
+export function cover(m?: Media | null, size: "poster" | "card" | "thumb" = "card") {
+    const c = m?.coverImage
+    const big = size === "poster" || (size === "card" && !tv)
+    return img((big ? c?.extraLarge || c?.large : c?.large || c?.extraLarge) || c?.medium || "")
 }
 
 // The poster attributes of an <img> shown `width` CSS pixels wide: the sizes
@@ -260,6 +266,21 @@ export function relativeTime(unix: number) {
     return new Date(unix * 1000).toLocaleDateString()
 }
 
+// Compares two KumoBox versions (2.0.<commits since 2.0.0's>, 1.0.<number
+// of commits> before): null when either isn't one, or is 1.0.0 (built by
+// hand: its version is unknown).
+export function compareVersions(a?: string, b?: string): number | null {
+    const parse = (v?: string) => {
+        const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(v ?? "")
+        return m && v !== "1.0.0" ? m.slice(1).map(Number) : null
+    }
+    const x = parse(a)
+    const y = parse(b)
+    if (!x || !y) return null
+    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1
+    return 0
+}
+
 // Overviews can carry a little HTML (<br>, <i>, <b>) or entities.
 export function cleanDescription(html?: string) {
     if (!html) return ""
@@ -349,4 +370,21 @@ export function externalLinks(m: Media) {
     if (m.imdbId) out.push({ label: "IMDb", url: `https://www.imdb.com/title/${m.imdbId}/` })
     if (!show && m.tmdbId) out.push({ label: "Letterboxd", url: `https://letterboxd.com/tmdb/${m.tmdbId}/` })
     return out
+}
+
+// This browser's storage, read and written without failing when it can't be
+// (site data blocked, a private window): null, and nothing kept, then.
+export function readLocal(key: string): string | null {
+    try {
+        return localStorage.getItem(key)
+    } catch {
+        return null
+    }
+}
+export function writeLocal(key: string, value: string) {
+    try {
+        localStorage.setItem(key, value)
+    } catch {
+        /* not kept */
+    }
 }

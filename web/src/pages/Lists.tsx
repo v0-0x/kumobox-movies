@@ -146,7 +146,7 @@ export default function ListsPage() {
                     {q || liked ? "Nothing matches these filters." : `Add ${noun} to your ${LIST_STATUS[statusTab].toLowerCase()} from their page${statusTab === "COMPLETED" && !status?.letterboxd ? ", or connect Letterboxd to bring your diary" : ""}.`}
                 </EmptyState>
             ) : (
-                <MediaGrid size={status?.settings.ui.cardSize}>
+                <MediaGrid size={status?.settings.ui.cardSize} start>
                     {entries.map(e => (
                         <MediaCard key={e.mediaId} media={e.media} listEntry={e} />
                     ))}

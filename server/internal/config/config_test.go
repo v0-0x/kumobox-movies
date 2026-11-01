@@ -216,3 +216,45 @@ func TestMigrateIgnorePatterns(t *testing.T) {
 		t.Fatalf("after a restart: %q", got)
 	}
 }
+
+func TestThemeSettings(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "kumobox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	// Saved before themes: the defaults (holiday themes on, by month).
+	if err := d.SetKV(settingsKey, map[string]any{"ui": map[string]any{"accentColor": "#22c3a6"}}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewStore(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := s.Get().UI
+	if ui.ColorTheme != "kumobox" || ui.Seasonal != "auto" || !ui.SeasonalEffects || ui.AccentColor != "#22c3a6" || ui.ClassicLook {
+		t.Fatalf("old settings: %+v", ui)
+	}
+	// The classic look is kept.
+	next := s.Get()
+	next.UI.ClassicLook = true
+	if got, err := s.Save(next); err != nil || !got.UI.ClassicLook || !s.Get().UI.ClassicLook {
+		t.Fatalf("classic look: %+v, %v", got.UI, err)
+	}
+	for _, c := range []struct{ theme, seasonal, wantTheme, wantSeasonal string }{
+		{"midnight", "off", "midnight", "off"},
+		{"black", "christmas", "black", "christmas"},
+		{"nope", "easter", "kumobox", "auto"},
+		{"", "", "kumobox", "auto"},
+	} {
+		next := s.Get()
+		next.UI.ColorTheme, next.UI.Seasonal, next.UI.SeasonalEffects = c.theme, c.seasonal, false
+		got, err := s.Save(next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.UI.ColorTheme != c.wantTheme || got.UI.Seasonal != c.wantSeasonal || got.UI.SeasonalEffects {
+			t.Fatalf("%q/%q saved as %q/%q effects=%v", c.theme, c.seasonal, got.UI.ColorTheme, got.UI.Seasonal, got.UI.SeasonalEffects)
+		}
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0-0x/kumobox-movies/server/internal/config"
 	"github.com/v0-0x/kumobox-movies/server/internal/events"
 	"github.com/v0-0x/kumobox-movies/server/internal/lifecycle"
 )
@@ -36,6 +37,9 @@ type fakeGitHub struct {
 
 	mu       sync.Mutex
 	requests []*http.Request
+	// channel is the checker's update channel: "beta" once the default
+	// branch is served (that's where Linux betas come from).
+	channel string
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -81,6 +85,7 @@ func (f *fakeGitHub) each(fn func(r *http.Request)) {
 // branch serves a repository whose default branch "main" is at headSHA,
 // the 57th commit.
 func (f *fakeGitHub) branch() {
+	f.channel = "beta"
 	f.json("GET /repos/o/r", map[string]any{"default_branch": "main", "private": true})
 	f.json("GET /repos/o/r/commits/main", map[string]any{
 		"sha":      headSHA,
@@ -114,13 +119,14 @@ func newTestChecker(t *testing.T, gh *fakeGitHub) *Checker {
 	t.Helper()
 	c := New(events.NewHub(), lifecycle.NewExits())
 	c.API = gh.URL
-	c.Repo = "o/r"
+	c.Repo, c.RepoID = "o/r", ""
 	c.Client = gh.Client()
 	c.CacheDir = filepath.Join(t.TempDir(), "update")
 	c.Token = func(context.Context) string { return "secret-token" }
 	c.Executable = func() (string, error) { return "/home/me/kumobox/dist/kumobox", nil }
 	c.StartInstaller = func(string, ...string) error { return fmt.Errorf("no installer in tests") }
 	c.Version, c.Commit, c.GOOS = "1.0.50", oldSHA, "linux"
+	c.Channel = func() string { return gh.channel }
 	c.FirstCheck = time.Hour
 	t.Cleanup(c.Stop)
 	return c
@@ -268,7 +274,7 @@ func TestCheckWindowsPicksNewestRelease(t *testing.T) {
 	if c.asset == nil || c.asset.ID != 42 || c.asset.Name != "KumoBox-Setup-1.0.10-windows-x64.exe" || !strings.HasPrefix(c.asset.Digest, "sha256:") {
 		t.Fatalf("installer %+v", c.asset)
 	}
-	if !slices.Contains(gh.paths(), "/repos/o/r/releases?per_page=50") {
+	if !slices.Contains(gh.paths(), "/repos/o/r/releases?per_page=100") {
 		t.Fatalf("requests: %q", gh.paths())
 	}
 	// A portable copy (no uninstaller next to it) can't install it.
@@ -293,6 +299,9 @@ func TestCompareVersions(t *testing.T) {
 		{"1.1", "1.0.99", 1},
 		{"2.0.0", "10.0.0", -1},
 		{"1.0.5", "1.0.5", 0},
+		// 2.0.0 is newer than every 1.0 (1.0.139 the last).
+		{"2.0.0", "1.0.139", 1},
+		{"2.0.1", "2.0.0", 1},
 	} {
 		if got := compareVersions(tc.a, tc.b); got != tc.want {
 			t.Errorf("compareVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
@@ -329,7 +338,8 @@ func TestTokenFromEnvironment(t *testing.T) {
 	}
 }
 
-// Then the GitHub CLI's, then git's credential helpers', without prompts.
+// Then the GitHub CLI's. git's credential helpers are never asked (on
+// Windows they can open a Credential Manager window).
 func TestTokenFromPrograms(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the stand-in programs are shell scripts")
@@ -349,33 +359,20 @@ func TestTokenFromPrograms(t *testing.T) {
 	script("gh", `[ "$*" = "auth token --hostname github.com" ] || exit 2
 echo gh-token
 `)
-	script("git", `[ "$*" = "credential fill" ] || exit 2
-input=""
-while IFS= read -r line; do input="$input$line;"; done
-printf 'stdin=%s\nprompt=%s\ngcm=%s\naskpass=%s/%s\n' "$input" "$GIT_TERMINAL_PROMPT" "$GCM_INTERACTIVE" "${GIT_ASKPASS-unset}" "${GIT_ASKPASS:+set}" >"$FAKE_GIT_RECORD"
+	script("git", `echo "$*" >"$FAKE_GIT_RECORD"
 printf 'protocol=https\nhost=github.com\nusername=me\npassword=git-token\n'
 `)
 	ctx := context.Background()
 	if tok := githubToken(ctx); tok != "gh-token" {
 		t.Fatalf("token %q, want gh's", tok)
 	}
-	// gh isn't signed in: git's credentials.
+	// gh isn't signed in: anonymous, and git wasn't run.
 	script("gh", "echo 'not logged in' >&2; exit 1\n")
-	if tok := githubToken(ctx); tok != "git-token" {
-		t.Fatalf("token %q, want git's", tok)
-	}
-	got, err := os.ReadFile(record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "stdin=protocol=https;host=github.com;;\nprompt=0\ngcm=never\naskpass=/\n"; string(got) != want {
-		t.Fatalf("git credential fill got:\n%s\nwant:\n%s", got, want)
-	}
-	// Nothing anywhere: anonymous.
-	_ = os.Remove(filepath.Join(bin, "gh"))
-	script("git", "exit 128\n")
 	if tok := githubToken(ctx); tok != "" {
 		t.Fatalf("token %q, want none", tok)
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Fatal("git was asked for credentials")
 	}
 }
 
@@ -684,5 +681,110 @@ func TestApplyNeedsAnUpdate(t *testing.T) {
 	check(t, c)
 	if err := c.Apply(); err != ErrNoUpdate {
 		t.Fatalf("Apply = %v, want ErrNoUpdate", err)
+	}
+}
+
+// KumoBox asks GitHub for its repository by number: its old name, after a
+// rename, could be taken by anyone, who'd then make the updates.
+func TestRepositoryByNumber(t *testing.T) {
+	c := New(events.NewHub(), lifecycle.NewExits())
+	t.Cleanup(c.Stop)
+	if c.RepoID == "" || c.Repo != config.UpdateRepo {
+		t.Fatalf("repo %q, id %q", c.Repo, c.RepoID)
+	}
+	g := &github{repo: c.Repo, repoID: c.RepoID}
+	if g.root() != "/repositories/"+config.UpdateRepoID {
+		t.Errorf("root %q", g.root())
+	}
+	t.Setenv("KUMOBOX_UPDATE_REPO", "me/fork")
+	c2 := New(events.NewHub(), lifecycle.NewExits())
+	t.Cleanup(c2.Stop)
+	if g := (&github{repo: c2.Repo, repoID: c2.RepoID}); g.root() != "/repos/me/fork" {
+		t.Errorf("override: %q", g.root())
+	}
+}
+
+// The version from the number of commits matches what the release
+// workflows and the PKGBUILD make (desktop/package.json says where 2.0.0
+// is), and is newer than every 1.0.
+func TestVersionOf(t *testing.T) {
+	raw, err := os.ReadFile("../../../desktop/package.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg struct {
+		Version string `json:"version"`
+		Base    int    `json:"kumoboxVersionBase"`
+	}
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Base != VersionBase || !strings.HasPrefix(pkg.Version, "2.0.") {
+		t.Fatalf("desktop/package.json says %s from commit %d; the updater %d", pkg.Version, pkg.Base, VersionBase)
+	}
+	for n, want := range map[int]string{VersionBase: "2.0.0", VersionBase + 5: "2.0.5", 139: "1.0.139"} {
+		if got := VersionOf(n); got != want {
+			t.Errorf("VersionOf(%d) = %s, want %s", n, got, want)
+		}
+	}
+	if compareVersions(VersionOf(VersionBase), VersionOf(VersionBase-1)) <= 0 {
+		t.Error("2.0.0 isn't newer than the last 1.0")
+	}
+	// Releases of both: the 2.0 one is picked.
+	got := pickRelease([]release{{TagName: "windows-v1.0.146"}, {TagName: "windows-v2.0.0"}, {TagName: "windows-v1.0.139"}}, "windows-v", false)
+	if got == nil || got.TagName != "windows-v2.0.0" {
+		t.Fatalf("picked %+v", got)
+	}
+}
+
+func TestCheckWindowsBetaChannel(t *testing.T) {
+	gh := newFakeGitHub(t)
+	gh.json("GET /repos/o/r/releases", windowsReleases([]byte("installer")))
+	c := newTestChecker(t, gh)
+	c.GOOS, c.Version, c.Commit = "windows", "1.0.10", ""
+	// Stable: the pre-release 1.0.11 isn't offered.
+	if st := check(t, c); st.Error != "" || st.Available || st.Latest.Version != "1.0.10" || st.Latest.Beta {
+		t.Fatalf("stable: error %q, available %v, latest %+v", st.Error, st.Available, st.Latest)
+	}
+	// Beta: it is.
+	gh.channel = "beta"
+	if st := check(t, c); st.Error != "" || !st.Available || st.Latest.Version != "1.0.11" || !st.Latest.Beta {
+		t.Fatalf("beta: error %q, available %v, latest %+v", st.Error, st.Available, st.Latest)
+	}
+	// Back to stable on the beta: nothing to install, and why.
+	gh.channel = ""
+	c.Version = "1.0.11"
+	if st := check(t, c); st.Available || !strings.Contains(st.Note, "beta") {
+		t.Fatalf("back to stable: available %v, note %q", st.Available, st.Note)
+	}
+}
+
+func TestCheckLinuxStableRelease(t *testing.T) {
+	gh := newFakeGitHub(t)
+	rel := func(tag string, pre bool) map[string]any {
+		return map[string]any{"tag_name": tag, "prerelease": pre, "html_url": "https://github.com/o/r/releases/tag/" + tag, "target_commitish": headSHA}
+	}
+	gh.json("GET /repos/o/r/releases", []map[string]any{
+		rel("android-v2.0.3", true), // a beta
+		rel("windows-v2.0.2", false),
+		rel("android-v2.0.1", false),
+		rel("macos-v2.0.2", false),
+	})
+	gh.json("GET /repos/o/r/commits/windows-v2.0.2", map[string]any{
+		"sha": headSHA, "html_url": "https://github.com/o/r/commit/" + headSHA,
+		"commit": map[string]any{"message": "Release", "committer": map[string]any{"date": "2026-10-01T10:00:00Z"}},
+	})
+	gh.compare("ahead", "Fix")
+	c := newTestChecker(t, gh)
+	st := check(t, c)
+	if st.Error != "" || !st.Available || st.Latest == nil || st.Latest.Version != "2.0.2" || st.Latest.Commit != headSHA || st.Latest.Beta {
+		t.Fatalf("error %q, available %v, latest %+v", st.Error, st.Available, st.Latest)
+	}
+	if !slices.Equal(st.Changes, []string{"Fix"}) {
+		t.Fatalf("changes %q", st.Changes)
+	}
+	// Not the default branch: that's for betas.
+	if slices.Contains(gh.paths(), "/repos/o/r/commits/main") {
+		t.Fatalf("requests: %q", gh.paths())
 	}
 }

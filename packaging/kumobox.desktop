@@ -10,3 +10,4 @@ Categories=AudioVideo;Video;Player;
 Keywords=movies;tv;shows;series;player;tmdb;letterboxd;torrent;
 StartupWMClass=KumoBox
 StartupNotify=true
+SingleMainWindow=true

@@ -3,6 +3,7 @@
 package history
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/db"
@@ -15,6 +16,22 @@ type Entry struct {
 	Duration  float64 `json:"duration"` // seconds
 	Source    string  `json:"source"`   // local | stream | torrent
 	UpdatedAt int64   `json:"updatedAt"`
+	// Seq is the order this KumoBox stored it in (later is higher), whoever
+	// watched it: another KumoBox asks for what came after the last it has.
+	Seq int64 `json:"seq,omitempty"`
+}
+
+// nextSeq is the next order a position is stored in.
+const nextSeq = `(SELECT COALESCE(MAX(seq), 0) + 1 FROM watch_history)`
+
+const entryCols = `media_id, episode, position, duration, source, updated_at, seq`
+
+func scanEntry(sc interface{ Scan(...any) error }) (*Entry, error) {
+	var e Entry
+	if err := sc.Scan(&e.MediaID, &e.Episode, &e.Position, &e.Duration, &e.Source, &e.UpdatedAt, &e.Seq); err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 // Percent returns the watched fraction 0-1.
@@ -48,11 +65,11 @@ func (s *Store) Save(e Entry) error {
 		return nil
 	}
 	e.UpdatedAt = time.Now().Unix()
-	_, err := s.db.Write(`INSERT INTO watch_history(media_id, episode, position, duration, source, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?)
+	_, err := s.db.Write(`INSERT INTO watch_history(media_id, episode, position, duration, source, updated_at, seq)
+		VALUES(?, ?, ?, ?, ?, ?, `+nextSeq+`)
 		ON CONFLICT(media_id, episode) DO UPDATE SET position = excluded.position,
 			duration = CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE watch_history.duration END,
-			source = excluded.source, updated_at = excluded.updated_at`,
+			source = excluded.source, updated_at = excluded.updated_at, seq = excluded.seq`,
 		e.MediaID, e.Episode, e.Position, e.Duration, e.Source, e.UpdatedAt)
 	if err == nil {
 		if saved := s.Get(e.MediaID, e.Episode); saved != nil {
@@ -68,10 +85,10 @@ func (s *Store) MarkFinished(mediaID, episode int, duration float64, source stri
 	if duration <= 0 {
 		duration = 1
 	}
-	_, err := s.db.Write(`INSERT INTO watch_history(media_id, episode, position, duration, source, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?)
+	_, err := s.db.Write(`INSERT INTO watch_history(media_id, episode, position, duration, source, updated_at, seq)
+		VALUES(?, ?, ?, ?, ?, ?, `+nextSeq+`)
 		ON CONFLICT(media_id, episode) DO UPDATE SET position = excluded.position, duration = excluded.duration,
-			source = excluded.source, updated_at = excluded.updated_at`,
+			source = excluded.source, updated_at = excluded.updated_at, seq = excluded.seq`,
 		mediaID, episode, duration, duration, source, time.Now().Unix())
 	if err == nil {
 		if saved := s.Get(mediaID, episode); saved != nil {
@@ -82,13 +99,11 @@ func (s *Store) MarkFinished(mediaID, episode int, duration float64, source stri
 }
 
 func (s *Store) Get(mediaID, episode int) *Entry {
-	var e Entry
-	err := s.db.QueryRow(`SELECT media_id, episode, position, duration, source, updated_at FROM watch_history WHERE media_id = ? AND episode = ?`, mediaID, episode).
-		Scan(&e.MediaID, &e.Episode, &e.Position, &e.Duration, &e.Source, &e.UpdatedAt)
+	e, err := scanEntry(s.db.QueryRow(`SELECT `+entryCols+` FROM watch_history WHERE media_id = ? AND episode = ?`, mediaID, episode))
 	if err != nil {
 		return nil
 	}
-	return &e
+	return e
 }
 
 // ResumePosition returns where to start an episode (0 if it was finished or
@@ -164,41 +179,77 @@ func (s *Store) LastWatched() map[int]int64 {
 }
 
 // Since returns the entries updated after t (unix seconds), oldest first:
-// what another KumoBox on the same account hasn't seen yet.
+// what another KumoBox on the same account hasn't seen yet (an older KumoBox asks
+// so; see After).
 func (s *Store) Since(t int64, limit int) []*Entry {
-	rows, err := s.db.Query(`SELECT media_id, episode, position, duration, source, updated_at FROM watch_history
-		WHERE updated_at > ? ORDER BY updated_at LIMIT ?`, t, limit)
+	return s.query(`WHERE updated_at > ? ORDER BY updated_at LIMIT ?`, t, limit)
+}
+
+// After returns the entries stored after seq, in the order they were
+// (whatever their time: one from another KumoBox comes late), up to limit:
+// what another KumoBox on the same account hasn't seen yet.
+func (s *Store) After(seq int64, limit int) []*Entry {
+	return s.query(`WHERE seq > ? ORDER BY seq LIMIT ?`, seq, limit)
+}
+
+// Latest returns the limit entries stored last, the latest first.
+func (s *Store) Latest(limit int) []*Entry {
+	return s.query(`ORDER BY seq DESC LIMIT ?`, limit)
+}
+
+func (s *Store) query(where string, args ...any) []*Entry {
+	rows, err := s.db.Query(`SELECT `+entryCols+` FROM watch_history `+where, args...)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	var out []*Entry
 	for rows.Next() {
-		var e Entry
-		if rows.Scan(&e.MediaID, &e.Episode, &e.Position, &e.Duration, &e.Source, &e.UpdatedAt) == nil {
-			out = append(out, &e)
+		if e, err := scanEntry(rows); err == nil {
+			out = append(out, e)
 		}
 	}
 	return out
 }
 
+// How far ahead of this KumoBox's clock another's entries may be.
+const maxAhead = 5 * time.Minute
+
 // Merge takes an entry from another KumoBox on the same account when it's
 // newer than this one's, with its time, and reports whether it did.
 func (s *Store) Merge(e Entry) (bool, error) {
-	if e.MediaID <= 0 || e.Episode < 0 || e.UpdatedAt <= 0 || e.Position < 0 || e.Duration < 0 {
-		return false, nil
-	}
-	res, err := s.db.Write(`INSERT INTO watch_history(media_id, episode, position, duration, source, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?)
-		ON CONFLICT(media_id, episode) DO UPDATE SET position = excluded.position, duration = excluded.duration,
-			source = excluded.source, updated_at = excluded.updated_at
-		WHERE excluded.updated_at > watch_history.updated_at`,
-		e.MediaID, e.Episode, e.Position, e.Duration, e.Source, e.UpdatedAt)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	merged, err := s.MergeAll([]Entry{e})
+	return len(merged) > 0, err
+}
+
+// MergeAll merges entries from another KumoBox (see Merge) at once, and
+// returns those it took.
+func (s *Store) MergeAll(entries []Entry) ([]Entry, error) {
+	var merged []Entry
+	err := s.db.Tx(func(tx *sql.Tx) error {
+		for _, e := range entries {
+			if e.MediaID <= 0 || e.Episode < 0 || e.UpdatedAt <= 0 || e.Position < 0 || e.Duration < 0 {
+				continue
+			}
+			// Not from the future (a few minutes aside: clocks differ): it
+			// would stay over every position saved here after it.
+			e.UpdatedAt = min(e.UpdatedAt, time.Now().Add(maxAhead).Unix())
+			res, err := tx.Exec(`INSERT INTO watch_history(media_id, episode, position, duration, source, updated_at, seq)
+				VALUES(?, ?, ?, ?, ?, ?, `+nextSeq+`)
+				ON CONFLICT(media_id, episode) DO UPDATE SET position = excluded.position, duration = excluded.duration,
+					source = excluded.source, updated_at = excluded.updated_at, seq = excluded.seq
+				WHERE excluded.updated_at > watch_history.updated_at`,
+				e.MediaID, e.Episode, e.Position, e.Duration, e.Source, e.UpdatedAt)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				merged = append(merged, e)
+			}
+		}
+		return nil
+	})
+	return merged, err
 }
 
 func (s *Store) Clear(mediaID, episode int) error {

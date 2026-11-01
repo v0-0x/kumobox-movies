@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/app"
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
@@ -31,7 +32,19 @@ func newTestServer(t *testing.T) *Server {
 		dead.Close()
 		t.Setenv("KUMOBOX_TMDB_URL", dead.URL)
 	}
-	a, err := app.New(t.TempDir())
+	// Not t.TempDir: a database write still finishing as the app shuts down
+	// can add a file (SQLite's -wal) while the folder is removed, so its
+	// removal is tried again (after Shutdown, registered below).
+	dir, err := os.MkdirTemp("", "kumobox-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 20 && os.RemoveAll(dir) != nil; i++ {
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	a, err := app.New(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +59,10 @@ func do(s *Server, method, path, remote string, body string, mod func(r *http.Re
 		r.Header.Set("Content-Type", "application/json")
 	} else {
 		r = httptest.NewRequest(method, "http://127.0.0.1:43311"+path, nil)
+		if method == http.MethodPost {
+			// As the app sends them (api.post).
+			r.Header.Set("Content-Type", "application/json")
+		}
 	}
 	r.RemoteAddr = remote
 	if mod != nil {
@@ -226,6 +243,9 @@ func TestLoopbackHostNames(t *testing.T) {
 		}
 	}
 	// Devices of the network open KumoBox by the computer's local name.
+	was := machineName
+	machineName = func() string { return "mypc" }
+	t.Cleanup(func() { machineName = was })
 	for _, host := range []string{"mypc.local:43311", "mypc:43311", "mypc.tail1234.ts.net:43311"} {
 		if w := do(s, "GET", "/api/status", "192.168.1.20:5000", "", withHost(host)); w.Code != http.StatusOK {
 			t.Errorf("LAN device with Host %s: got %d", host, w.Code)
@@ -480,5 +500,44 @@ func TestUIFramingAndCSP(t *testing.T) {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP too strict, missing %q: %s", want, csp)
 		}
+	}
+}
+
+// The names a request may reach this computer by: its own, not one a
+// website controls (DNS rebinding), even a home network's or Tailscale's.
+func TestHostNames(t *testing.T) {
+	was := machineName
+	machineName = func() string { return "mypc" }
+	t.Cleanup(func() { machineName = was })
+	for host, ok := range map[string]bool{
+		"127.0.0.1:43311": true, "[::1]:43311": true, "192.168.1.20": true, "localhost": true,
+		"mypc": true, "MyPC.local": true, "mypc.lan:43311": true, "mypc.home.arpa": true, "mypc.tail1234.ts.net": true, "mypc.local.": true,
+		"attacker": false, "evil.ts.net": false, "evil.tail1234.ts.net": false, "nas.lan": false, "mypc.evil.com": false,
+		"evil.example.com": false, "mypc.a.b.ts.net": false, "localhost.evil.com": false,
+	} {
+		if hostAllowed(host) != ok {
+			t.Errorf("%q: allowed %v", host, !ok)
+		}
+	}
+}
+
+// Other websites can't make this computer do things, even through a
+// browser that doesn't say where a request comes from; the app can.
+func TestNoCrossSitePosts(t *testing.T) {
+	s := newTestServer(t)
+	local := "127.0.0.1:5000"
+	form := func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") }
+	if w := do(s, "POST", "/api/downloads/clear", local, "x", form); w.Code != http.StatusForbidden {
+		t.Errorf("a form post with no origin: %d", w.Code)
+	}
+	if w := do(s, "POST", "/api/downloads/clear", local, "x", func(r *http.Request) { form(r); r.Header.Set("Sec-Fetch-Site", "same-origin") }); w.Code != http.StatusOK {
+		t.Errorf("the app's own: %d %s", w.Code, w.Body)
+	}
+	if w := do(s, "POST", "/api/downloads/clear", local, "{}", nil); w.Code != http.StatusOK {
+		t.Errorf("JSON: %d %s", w.Code, w.Body)
+	}
+	// Nor show its pages in a frame.
+	if w := do(s, "GET", "/settings", local, "", nil); w.Header().Get("X-Frame-Options") != "DENY" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
+		t.Errorf("page headers: %v", w.Header())
 	}
 }

@@ -24,7 +24,7 @@ export function NowPlaying() {
     const skip = skipAt(s.skips ?? [], s.position)
     const offerSkip = !!skip && (!skipOn(settings?.playback, skip.type) || skip.end >= s.duration - 1)
     return (
-        <div className="fixed bottom-5 left-1/2 z-50 w-[min(92vw,560px)] -translate-x-1/2 rounded-xl border border-line-strong bg-surface-2 p-3 shadow-2xl shadow-black/50 rise-in">
+        <div className="fixed bottom-[calc(1.25rem+var(--phone-bar,0px))] left-1/2 z-50 w-[min(92vw,560px)] -translate-x-1/2 rounded-xl border border-line-strong bg-surface-2 p-3 shadow-2xl shadow-black/50 rise-in">
             <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                     <p className="truncate text-xs text-muted">Playing in mpv{episode ? ` · ${episode}` : ""}</p>
@@ -68,7 +68,7 @@ export function ScanIndicator() {
     const s = useStore(scanStore)
     if (!s.running) return null
     return (
-        <div className="fixed right-5 bottom-5 z-50 w-80 rounded-xl border border-line-strong bg-surface-2 p-4 shadow-2xl shadow-black/50 rise-in">
+        <div className="fixed right-5 bottom-[calc(1.25rem+var(--phone-bar,0px))] z-50 w-[min(20rem,calc(100vw-2.5rem))] rounded-xl border border-line-strong bg-surface-2 p-4 shadow-2xl shadow-black/50 rise-in">
             <div className="flex items-center gap-3">
                 <Loader2 className="size-4 animate-spin text-muted" />
                 <div className="min-w-0 flex-1">

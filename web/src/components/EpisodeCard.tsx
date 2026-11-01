@@ -1,4 +1,5 @@
-import { Check, CheckCheck, Clock, HardDrive, Minus, Play } from "lucide-react"
+import { Check, CheckCheck, Clock, HardDrive, Info, Minus, Play } from "lucide-react"
+import { useClassic } from "@/lib/themes"
 import { backdrop, cn, formatDuration } from "@/lib/utils"
 import { Tooltip } from "./ui"
 
@@ -19,14 +20,17 @@ type Props = {
     onClick?: () => void
     actions?: React.ReactNode
     onRemove?: () => void // "Continue watching": removes the card's item
+    onInfo?: () => void // "Continue watching": opens the movie's or show's page
     className?: string
 }
 
-export function EpisodeCard({ image, label, title, subtitle, runtime, watched, hasFile, progress, resumeAt, aired = true, blur, large, onClick, actions, onRemove, className }: Props) {
+export function EpisodeCard({ image, label, title, subtitle, runtime, watched, hasFile, progress, resumeAt, aired = true, blur, large, onClick, actions, onRemove, onInfo, className }: Props) {
+    const classic = useClassic()
     return (
         <div
             role="button"
             tabIndex={0}
+            data-tv-card
             onClick={e => {
                 // Menus open in portals outside the card, but React still
                 // bubbles their clicks up to here: "Play in mpv" from the
@@ -40,9 +44,9 @@ export function EpisodeCard({ image, label, title, subtitle, runtime, watched, h
                 e.preventDefault()
                 onClick?.()
             }}
-            className={cn("group/ep focus-ring flex cursor-pointer flex-col gap-2.5 rounded-lg outline-none", !aired && "cursor-default opacity-50", className)}
+            className={cn("group/ep focus-ring flex cursor-pointer flex-col gap-2.5 outline-none", classic ? "rounded-lg" : "rounded-[10px]", !aired && "cursor-default opacity-50", className)}
         >
-            <div className="relative aspect-video overflow-hidden rounded-lg bg-surface-2">
+            <div className={cn("relative aspect-video overflow-hidden bg-surface-2", classic ? "rounded-lg" : "rounded-[10px] shadow-[0_6px_18px_-12px_rgb(0_0_0/0.8)]")}>
                 {image ? (
                     <img
                         {...backdrop(image, large ? 400 : 300)}
@@ -58,7 +62,13 @@ export function EpisodeCard({ image, label, title, subtitle, runtime, watched, h
                 ) : (
                     <div className={cn("grid size-full place-items-center bg-surface-3 font-semibold text-white/15 tabular-nums", (label?.length ?? 0) > 4 ? "text-2xl" : "text-3xl")}>{label}</div>
                 )}
-                <div className="pointer-events-none absolute inset-0 rounded-lg ring-1 ring-white/[0.07] transition-[box-shadow] duration-300 ring-inset group-hover/ep:ring-white/20" />
+                <div
+                    data-tv-ring
+                    className={cn(
+                        "pointer-events-none absolute inset-0 ring-1 transition-[box-shadow] duration-300 ring-inset",
+                        classic ? "rounded-lg ring-white/[0.07] group-hover/ep:ring-white/20" : "rounded-[10px] ring-white/[0.07] group-hover/ep:ring-white/[0.22]",
+                    )}
+                />
                 {aired && (
                     <div className="absolute inset-0 grid place-items-center opacity-0 transition-opacity duration-200 group-hover/ep:opacity-100">
                         <span className={cn("grid place-items-center rounded-full bg-white/95 text-neutral-950 shadow-lg shadow-black/40", large ? "size-14" : "size-11")}>
@@ -83,26 +93,35 @@ export function EpisodeCard({ image, label, title, subtitle, runtime, watched, h
                     )}
                 </div>
                 {actions && (
-                    <div className="absolute top-2 right-2 opacity-0 transition-opacity group-hover/ep:opacity-100 focus-within:opacity-100" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                    <div className="absolute top-2 right-2 opacity-0 transition-opacity group-hover/ep:opacity-100 focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
                         {actions}
                     </div>
                 )}
-                {onRemove && (
+                {(onRemove || onInfo) && (
                     <div
                         // On hover, and always on touch screens, which can't hover.
-                        className="absolute top-2 right-2 opacity-0 transition-opacity group-hover/ep:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100"
+                        className="absolute top-2 right-2 flex gap-1 opacity-0 transition-opacity group-hover/ep:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100"
                         onClick={e => e.stopPropagation()}
                         onKeyDown={e => e.stopPropagation()}
                     >
-                        <Tooltip content="Remove from Continue watching">
-                            <button
-                                aria-label="Remove from Continue watching"
-                                onClick={onRemove}
-                                className="focus-ring grid size-7 place-items-center rounded-md bg-black/70 text-white transition-colors hover:bg-black/85"
-                            >
-                                <Minus className="size-4" />
-                            </button>
-                        </Tooltip>
+                        {onInfo && (
+                            <Tooltip content="Movie or show page">
+                                <button aria-label="Movie or show page" onClick={onInfo} className="focus-ring grid size-7 place-items-center rounded-md bg-black/70 text-white transition-colors hover:bg-black/85">
+                                    <Info className="size-4" />
+                                </button>
+                            </Tooltip>
+                        )}
+                        {onRemove && (
+                            <Tooltip content="Remove from Continue watching">
+                                <button
+                                    aria-label="Remove from Continue watching"
+                                    onClick={onRemove}
+                                    className="focus-ring grid size-7 place-items-center rounded-md bg-black/70 text-white transition-colors hover:bg-black/85"
+                                >
+                                    <Minus className="size-4" />
+                                </button>
+                            </Tooltip>
+                        )}
                     </div>
                 )}
                 {resumeAt !== undefined && resumeAt > 0 && (
@@ -112,7 +131,7 @@ export function EpisodeCard({ image, label, title, subtitle, runtime, watched, h
                 )}
                 {!!progress && progress > 0 && (
                     <div className="absolute inset-x-0 bottom-0 h-[3px] bg-black/50">
-                        <div className="h-full bg-brand" style={{ width: `${Math.min(100, progress * 100)}%` }} />
+                        <div className={cn("h-full bg-brand", !classic && "rounded-r-full")} style={{ width: `${Math.min(100, progress * 100)}%` }} />
                     </div>
                 )}
             </div>

@@ -1,8 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query"
 import {
     ArrowDownUp,
+    ArrowLeftRight,
     ChevronLeft,
     ChevronRight,
+    Dices,
     Download,
     FolderOpen,
     FolderSearch,
@@ -20,6 +22,7 @@ import {
 } from "lucide-react"
 import { useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
+import { DevicePrompts } from "@/components/DevicePrompts"
 import { EpisodeCard } from "@/components/EpisodeCard"
 import { LetterboxdDialog, LetterboxdMark } from "@/components/LetterboxdDialog"
 import { ListCardMenu } from "@/components/ListCardMenu"
@@ -27,8 +30,10 @@ import { Carousel, MediaCard, MediaCardSkeleton, MediaGrid } from "@/components/
 import { useLibraryCardMenu } from "@/components/library/LibraryCardMenu"
 import { PluginSlot } from "@/components/plugins/PluginSlot"
 import { ProgramsNotice } from "@/components/ProgramsNotice"
-import { Button, Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger, EmptyState, IconButton, SectionHeader, Skeleton } from "@/components/ui"
+import { SleepingHosts } from "@/components/SleepingHosts"
+import { Button, ChipRow, Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownSeparator, DropdownTrigger, EmptyState, IconButton, SectionHeader, Skeleton } from "@/components/ui"
 import { UpdateBanner } from "@/components/UpdateBanner"
+import { WatchPicker } from "@/components/WatchPicker"
 import { api } from "@/lib/api"
 import { usePersisted } from "@/lib/hooks"
 import { episodeIndex, formatKey, mediaIsShow, totalEpisodes } from "@/lib/ids"
@@ -114,6 +119,36 @@ export default function HomePage() {
         letterboxd.sync.mutate(undefined, { onSuccess: r => toast.success(`Synced with Letterboxd: ${resultSummary(r)}`, { id }), onError: () => toast.dismiss(id) })
     }
 
+    // Paired with another KumoBox (a TV, a computer): Sync brings the watch
+    // history from each to the other now, so Continue watching goes on from
+    // where it stopped on any of them.
+    const paired = status?.paired ?? []
+    const [picking, setPicking] = useState(false)
+    const [syncing, setSyncing] = useState(false)
+    const qc = useQueryClient()
+    const syncDevices = async () => {
+        setSyncing(true)
+        const id = toast.loading(`Syncing with ${paired.join(", ")}…`)
+        try {
+            const res = await api.post<{ devices: string[]; unreachable: string[] | null; skipped?: string[] | null; updated: number }>("/api/sharing/sync")
+            qc.invalidateQueries({ queryKey: ["collection"] })
+            qc.invalidateQueries({ queryKey: ["entry"] })
+            // What didn't go as it should, each with why (the server says).
+            const notes = [...(res.unreachable ?? []).map(d => `Couldn't sync with ${d}.`), ...(res.skipped ?? []).map(d => `Not synced with ${d}.`)].join(" ")
+            if (!res.devices?.length) {
+                if (notes) toast.error(notes, { id })
+                else toast.success("Nothing to sync", { id })
+            } else {
+                const what = res.updated > 0 ? `${res.updated} position${res.updated === 1 ? "" : "s"} updated` : "already up to date"
+                toast.success(`Synced with ${res.devices.join(", ")}: ${what}.${notes ? " " + notes : ""}`, { id })
+            }
+        } catch (e: any) {
+            toast.error(e.message, { id })
+        } finally {
+            setSyncing(false)
+        }
+    }
+
     const isEmpty = !isLoading && !error && (data?.lists ?? []).every(l => l.items.length === 0) && (data?.localOnly?.length ?? 0) === 0
     const filtered = !!genre || onlyLocal
     const listRowsEmpty = sections.filter(id => rows[id]).every(id => rows[id].items.length === 0)
@@ -125,7 +160,10 @@ export default function HomePage() {
 
     return (
         <div className="relative min-h-full pb-24">
+            <WatchPicker open={picking} onOpenChange={setPicking} />
             <UpdateBanner />
+            <SleepingHosts />
+            <DevicePrompts />
             <Hero
                 item={hero}
                 trending={hero ? null : trending}
@@ -135,8 +173,9 @@ export default function HomePage() {
                 loading={isLoading}
                 toolbar={
                     <div className="glass flex items-center gap-0.5 rounded-lg p-1 [&_button]:text-white/80 [&_button:hover]:bg-white/10 [&_button:hover]:text-white [&_button[data-state=open]]:bg-white/10">
-                        <Button size="sm" variant="ghost" icon={<HardDrive className="size-4" />} onClick={() => navigate("/local")}>
-                            Local library
+                        {/* On a phone, the buttons' icons only: they fit across. */}
+                        <Button size="sm" variant="ghost" icon={<HardDrive className="size-4" />} onClick={() => navigate("/local")} aria-label="Local library">
+                            <span className="max-sm:hidden">Local library</span>
                         </Button>
                         <IconButton label="Library tools" size="sm" onClick={() => navigate("/library")}>
                             <LibraryBig className="size-4" />
@@ -148,9 +187,17 @@ export default function HomePage() {
                         <IconButton label="Downloads" size="sm" onClick={() => navigate("/downloads")}>
                             <Download className="size-4" />
                         </IconButton>
-                        <Button size="sm" variant="ghost" loading={scanning || scan.isPending} icon={<FolderSync className="size-4" />} onClick={() => scan.mutate(false)}>
-                            Refresh
+                        <IconButton label="What should I watch?" size="sm" onClick={() => setPicking(true)}>
+                            <Dices className="size-4" />
+                        </IconButton>
+                        <Button size="sm" variant="ghost" loading={scanning || scan.isPending} icon={<FolderSync className="size-4" />} onClick={() => scan.mutate(false)} aria-label="Refresh">
+                            <span className="max-sm:hidden">Refresh</span>
                         </Button>
+                        {paired.length > 0 && (
+                            <Button size="sm" variant="ghost" loading={syncing} icon={<ArrowLeftRight className="size-4" />} onClick={syncDevices} title={`Continue watching from ${paired.join(", ")}`} aria-label="Sync">
+                                <span className="max-sm:hidden">Sync</span>
+                            </Button>
+                        )}
                         <Dropdown>
                             <DropdownTrigger asChild>
                                 <IconButton label="Display" size="sm">
@@ -370,9 +417,11 @@ function Hero({
                 {loading ? (
                     <Skeleton className="h-11 w-96" />
                 ) : item ? (
-                    <div key={item.media.id} className="max-w-3xl rise-in">
+                    // Clear of the arrows at its right on a phone.
+                    <div key={item.media.id} className="max-w-3xl rise-in max-sm:pr-20">
                         <p className="text-sm font-medium text-white/65">Continue watching{show ? ` · ${formatKey(item.episode)}` : ""}</p>
-                        <Link to={`/entry?id=${item.media.id}`} className="mt-1.5 block text-4xl leading-[1.1] font-semibold tracking-tight text-white transition-colors hover:text-white/85 md:text-[2.75rem]">
+                        {/* On a TV the cards below are what's picked (the banner follows them). */}
+                        <Link to={`/entry?id=${item.media.id}`} data-tv-skip-nav className="mt-1.5 block text-4xl leading-[1.1] font-semibold tracking-tight text-white transition-colors hover:text-white/85 md:text-[2.75rem]">
                             {title(item.media)}
                         </Link>
                         {show && item.title && <p className="mt-2 text-[15px] text-white/65">{item.title}</p>}
@@ -393,8 +442,8 @@ function Hero({
                 )}
             </div>
             {count > 1 && (
-                <div className="absolute right-4 bottom-28 z-20 flex items-center gap-3 md:right-8 xl:right-10">
-                    <div className="flex gap-1.5">
+                <div data-tv-skip-nav className="absolute right-4 bottom-28 z-20 flex items-center gap-3 md:right-8 xl:right-10">
+                    <div className="flex gap-1.5 max-sm:hidden">
                         {Array.from({ length: Math.min(count, 8) }).map((_, i) => (
                             <button
                                 key={i}
@@ -420,6 +469,7 @@ function Hero({
 
 function ContinueRow({ items, onFocus }: { items: ContinueItem[]; onFocus: (i: number) => void }) {
     const { watch } = usePlay()
+    const navigate = useNavigate()
     const qc = useQueryClient()
     const ref = useRef<HTMLDivElement>(null)
     // The server hides it until it offers another episode or it's watched
@@ -454,7 +504,7 @@ function ContinueRow({ items, onFocus }: { items: ContinueItem[]; onFocus: (i: n
                 const total = totalEpisodes(it.media) || it.total
                 const left = it.duration > 0 && it.resumeAt > 0 ? it.duration - it.resumeAt : 0
                 return (
-                    <div key={it.media.id} className="w-[min(82vw,400px)] shrink-0 snap-start" onMouseEnter={() => onFocus(i)}>
+                    <div key={it.media.id} className="w-[min(82vw,400px)] shrink-0 snap-start" onMouseEnter={() => onFocus(i)} onFocus={() => onFocus(i)} data-tv-autofocus={i === 0 || undefined}>
                         <EpisodeCard
                             large
                             image={it.image || (show ? "" : it.media.bannerImage)}
@@ -482,6 +532,7 @@ function ContinueRow({ items, onFocus }: { items: ContinueItem[]; onFocus: (i: n
                             resumeAt={it.resumeAt}
                             onClick={() => watch(it.media.id, it.episode, it.hasFile ? it.filePath : null)}
                             onRemove={() => remove(it, i)}
+                            onInfo={() => navigate(`/entry?id=${it.media.id}`)}
                         />
                     </div>
                 )
@@ -491,34 +542,24 @@ function ContinueRow({ items, onFocus }: { items: ContinueItem[]; onFocus: (i: n
 }
 
 function GenreBar({ genres, value, onChange }: { genres: string[]; value: string | null; onChange: (g: string | null) => void }) {
-    const ref = useRef<HTMLDivElement>(null)
     return (
-        <div className="relative flex items-center">
-            <div ref={ref} className="no-scrollbar flex flex-1 gap-2 overflow-x-auto scroll-smooth py-1">
-                <button
-                    onClick={() => onChange(null)}
-                    className={cn("h-8 shrink-0 rounded-full px-3.5 text-[13px] font-medium transition-colors", !value ? "bg-white text-neutral-950" : "bg-white/[0.05] text-muted hover:bg-white/[0.09] hover:text-fg")}
-                >
-                    All
-                </button>
-                {genres.map(g => (
-                    <button
-                        key={g}
-                        onClick={() => onChange(value === g ? null : g)}
-                        className={cn("h-8 shrink-0 rounded-full px-3.5 text-[13px] font-medium transition-colors", value === g ? "bg-white text-neutral-950" : "bg-white/[0.05] text-muted hover:bg-white/[0.09] hover:text-fg")}
-                    >
-                        {g}
-                    </button>
-                ))}
-            </div>
+        <ChipRow label="More genres">
             <button
-                aria-label="More genres"
-                onClick={() => ref.current?.scrollBy({ left: 400, behavior: "smooth" })}
-                className="ml-2 grid size-8 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-white/[0.06] hover:text-fg"
+                onClick={() => onChange(null)}
+                className={cn("h-8 shrink-0 rounded-full px-3.5 text-[13px] font-medium transition-colors", !value ? "bg-white text-neutral-950" : "bg-white/[0.05] text-muted hover:bg-white/[0.09] hover:text-fg")}
             >
-                <ChevronRight className="size-4" />
+                All
             </button>
-        </div>
+            {genres.map(g => (
+                <button
+                    key={g}
+                    onClick={() => onChange(value === g ? null : g)}
+                    className={cn("h-8 shrink-0 rounded-full px-3.5 text-[13px] font-medium transition-colors", value === g ? "bg-white text-neutral-950" : "bg-white/[0.05] text-muted hover:bg-white/[0.09] hover:text-fg")}
+                >
+                    {g}
+                </button>
+            ))}
+        </ChipRow>
     )
 }
 

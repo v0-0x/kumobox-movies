@@ -227,7 +227,7 @@ func (m *Manager) launchPlugin(ctx context.Context, l *Loaded) {
 		fail(err)
 		return
 	}
-	domains := append([]string{}, builtinPluginDomains...)
+	var domains []string
 	if man.Plugin != nil {
 		na := man.Plugin.Permissions.Allow.NetworkAccess
 		for _, d := range na.AllowedDomains {
@@ -247,7 +247,7 @@ func (m *Manager) launchPlugin(ctx context.Context, l *Loaded) {
 		Prefs:           prefs,
 		Store:           m.store(man.ID),
 		Storage:         storage,
-		Fetcher:         m.fetcher.Isolated().WithDomains(domains), // own cookie jar, not shared across plugins
+		Fetcher:         NewPluginFetcher(domains, builtinPluginDomains),
 		Extra:           h.install,
 		OnTooMuchMemory: func(rt *Runtime) { m.pluginUsedTooMuchMemory(l, rt) },
 	})
@@ -404,7 +404,8 @@ func (h *PluginHost) fireHook(name string, raw []byte) {
 
 func (h *PluginHost) fireCollectionHooks() {
 	svc := h.mgr.Host
-	if svc.Collection == nil {
+	// The user's lists: for plugins allowed to read AniList.
+	if svc.Collection == nil || !h.scopes["anilist"] {
 		return
 	}
 	ctx, cancel := context.WithTimeout(h.rt.ctx, 30*time.Second)
@@ -586,6 +587,7 @@ func (h *PluginHost) bindings(r *Runtime, vm *goja.Runtime) *goja.Object {
 		return result(svc.AnimeEntry(ctx, id))
 	})
 	_ = host.Set("mangaCollection", func() goja.Value {
+		needScope("$anilist", "anilist")
 		if svc.Collection == nil {
 			return result(nil, unsupported("collections"))
 		}

@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -27,6 +29,9 @@ type Scanner struct {
 	hub      *events.Hub
 	// OnScanned runs after each scan that went through (in the background).
 	OnScanned func()
+	// OnNewFiles gets the files a scan found that weren't in the library
+	// before (not on the first scan of a library), matched or not.
+	OnNewFiles func([]*LocalFile)
 	// newMatcher makes the scan's matcher (tests replace it).
 	newMatcher func(threshold float64, outsideList bool) *Matcher
 
@@ -149,8 +154,11 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 		}
 		s.hub.Publish(events.ScanProgress, ScanProgress{Stage: "walking", Done: len(found), Message: "Found " + itoa(len(found)) + " files…"})
 	}
+	if cfg.Library.Off {
+		return nil, ErrLibraryOff
+	}
 	if len(walked) == 0 {
-		return nil, errors.New("no library directory found — set one in Settings › Library")
+		return nil, errors.New("no library directory found — set one in Settings › Local library")
 	}
 
 	existing, err := s.Store.All()
@@ -170,7 +178,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 	upgrade := version < matcherVersion && !opts.SkipMatching
 
 	res = &ScanResult{Total: len(found)}
-	var changed []*LocalFile
+	var changed, added []*LocalFile
 	var toMatch []*LocalFile
 	for path, info := range found {
 		old := byPath[path]
@@ -211,6 +219,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 			}
 		} else {
 			res.Added++
+			added = append(added, f)
 		}
 		if !f.Locked && !f.Ignored {
 			toMatch = append(toMatch, f)
@@ -285,6 +294,25 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (res *ScanResult, 
 	if s.OnScanned != nil {
 		go s.OnScanned()
 	}
+	if s.OnNewFiles != nil && len(added) > 0 && len(byPath) > 0 {
+		// A file that went from one place to another (a folder renamed) isn't
+		// new: one gone with its name and size.
+		moved := map[string]bool{}
+		for _, p := range removed {
+			if f := byPath[p]; f != nil {
+				moved[fmt.Sprintf("%s|%d", f.Name, f.Size)] = true
+			}
+		}
+		var fresh []*LocalFile
+		for _, f := range added {
+			if !moved[fmt.Sprintf("%s|%d", f.Name, f.Size)] {
+				fresh = append(fresh, f)
+			}
+		}
+		if len(fresh) > 0 {
+			go s.OnNewFiles(fresh)
+		}
+	}
 	return res, nil
 }
 
@@ -346,6 +374,72 @@ func (s *Scanner) removedFiles(byPath map[string]*LocalFile, found map[string]fs
 		}
 	}
 	return removed
+}
+
+// ErrLibraryOff: this computer's library is off (Settings › Local library).
+var ErrLibraryOff = errors.New("this computer's library is off: it plays the ones your other computers share with it (Settings › Local library)")
+
+// Forget drops from the index the files of folders that left the library
+// (taken out of it, or the library turned off); they stay on the disk. A
+// file also in a folder still in the library stays. Unlike a scan, this
+// doesn't wait for the folder's drive: a library moved to another computer with
+// its drive is gone from here for good. It waits for a running scan.
+func (s *Scanner) Forget(folders []string) {
+	if len(folders) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	roots := s.settings.Get().LibraryDirs()
+	all, err := s.Store.All()
+	if err != nil {
+		log.Printf("library: %v", err)
+		return
+	}
+	var gone []string
+	for _, f := range all {
+		if underAny(f.Path, folders) && !underAny(f.Path, roots) {
+			gone = append(gone, f.Path)
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	if err := s.Store.Delete(gone...); err != nil {
+		log.Printf("library: %v", err)
+		return
+	}
+	log.Printf("library: forgot the %d files of %s (no longer in the library; nothing was deleted)", len(gone), strings.Join(folders, ", "))
+	s.hub.Publish(events.LibraryUpdated, nil)
+}
+
+// ForgetGone drops from the index every file that isn't on the disk, its
+// drive gone or not: for a computer whose library is off, where nothing
+// should be kept for a drive coming back (one that moved to another computer,
+// say). Files still there (a download kept here) stay.
+func (s *Scanner) ForgetGone() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, err := s.Store.All()
+	if err != nil {
+		log.Printf("library: %v", err)
+		return
+	}
+	var gone []string
+	for _, f := range all {
+		if _, err := os.Stat(f.Path); errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			gone = append(gone, f.Path)
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	if err := s.Store.Delete(gone...); err != nil {
+		log.Printf("library: %v", err)
+		return
+	}
+	log.Printf("library: forgot %d files that aren't on the disk (the library is off)", len(gone))
+	s.hub.Publish(events.LibraryUpdated, nil)
 }
 
 // ScanSoon starts an incremental scan in the background, or queues one if a

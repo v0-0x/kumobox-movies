@@ -4,6 +4,8 @@ import { Link } from "react-router-dom"
 import { airedEpisodes, episodeIndex, formatKey, mediaIsShow, totalEpisodes } from "@/lib/ids"
 import type { ListEntry, Media } from "@/lib/types"
 import { airsIn, cn, cover, entryUrl, formatLabel, poster, starText, title, year } from "@/lib/utils"
+import { useClassic } from "@/lib/themes"
+import { tv } from "@/lib/tv"
 import { Dropdown, DropdownContent, DropdownTrigger, IconButton } from "./ui"
 
 type Props = {
@@ -37,10 +39,20 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
     const score = media.averageScore ?? media.meanScore
     // The user's rating, Letterboxd-style, for movies and finished shows.
     const stars = listEntry && (!show || listEntry.status === "COMPLETED") ? starText(listEntry.score) : ""
+    // Before 2.0: flatter, squarer, a lighter hairline on hover, no lift.
+    const classic = useClassic()
+    const label = classic ? "rounded bg-black/70" : "rounded-md bg-black/65 backdrop-blur-sm"
 
     const card = (
-        <Link to={entryUrl(media)} className={cn("group/card focus-ring relative flex flex-col gap-2.5 rounded-lg outline-none", !menu && className)}>
-            <div className="relative aspect-[2/3] overflow-hidden rounded-lg bg-surface-2">
+        <Link to={entryUrl(media)} data-tv-card className={cn("group/card focus-ring relative flex flex-col gap-2.5 outline-none", classic ? "rounded-lg" : "rounded-[10px]", !menu && className)}>
+            {/* Lifted a little under the pointer (not on a TV: it's slow at it). */}
+            <div
+                className={cn(
+                    "relative aspect-[2/3] overflow-hidden bg-surface-2",
+                    classic ? "rounded-lg" : "rounded-[10px] shadow-[0_6px_18px_-12px_rgb(0_0_0/0.8)] transition-[transform,box-shadow] duration-300 ease-out",
+                    !tv && !classic && "group-hover/card:-translate-y-0.5 group-hover/card:shadow-[0_12px_28px_-14px_rgb(0_0_0/0.9)]",
+                )}
+            >
                 {cover(media) && (
                     <img
                         {...poster(media, 220)}
@@ -52,12 +64,20 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
                     />
                 )}
                 {/* A hairline, so dark covers don't melt into the page. */}
-                <div className="pointer-events-none absolute inset-0 rounded-lg ring-1 ring-white/[0.07] transition-[box-shadow] duration-300 ring-inset group-hover/card:ring-white/20" />
+                <div
+                    data-tv-ring
+                    className={cn(
+                        "pointer-events-none absolute inset-0 ring-1 transition-[box-shadow] duration-300 ring-inset",
+                        classic ? "rounded-lg ring-white/[0.07] group-hover/card:ring-white/20" : "rounded-[10px] ring-white/[0.07] group-hover/card:ring-white/[0.22]",
+                    )}
+                />
 
                 <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
-                    {behind > 0 && <span className="rounded bg-brand px-1.5 py-0.5 text-[11px] font-semibold text-white">{behind} new</span>}
+                    {behind > 0 && (
+                        <span className={cn("bg-brand px-1.5 py-0.5 text-[11px] font-semibold text-white", classic ? "rounded" : "rounded-md")}>{behind} new</span>
+                    )}
                     {!!localCount && localCount > 0 && (
-                        <span className="flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white tabular-nums">
+                        <span className={cn("flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium text-white tabular-nums", label)}>
                             <HardDrive className="size-3" />
                             {show && (downloaded?.length ?? localCount)}
                         </span>
@@ -66,7 +86,8 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
                 {score ? (
                     <span
                         className={cn(
-                            "absolute top-2 right-2 flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white tabular-nums opacity-0 transition-opacity group-hover/card:opacity-100",
+                            "absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium text-white tabular-nums opacity-0 transition-opacity group-hover/card:opacity-100 group-focus-within/card:opacity-100 [@media(pointer:coarse)]:opacity-100",
+                            label,
                             menu && "right-10", // next to the menu button
                         )}
                     >
@@ -75,14 +96,14 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
                     </span>
                 ) : null}
                 {nextAir && (
-                    <span className="absolute bottom-2.5 left-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white">
+                    <span className={cn("absolute bottom-2.5 left-2 px-1.5 py-0.5 text-[11px] font-medium text-white", label)}>
                         {formatKey(nextAir.episode)} {airsIn(nextAir.airingAt)}
                     </span>
                 )}
 
                 {showProgress && show && listEntry && total > 0 && watched > 0 && watched < total && (
                     <div className="absolute inset-x-0 bottom-0 h-[3px] bg-black/50">
-                        <div className="h-full bg-brand" style={{ width: `${Math.min(100, (watched / total) * 100)}%` }} />
+                        <div className={cn("h-full bg-brand", !classic && "rounded-r-full")} style={{ width: `${Math.min(100, (watched / total) * 100)}%` }} />
                     </div>
                 )}
             </div>
@@ -120,6 +141,7 @@ export function MediaCard({ media, listEntry, localCount, downloaded, className,
 function CardMenu({ menu, className, children }: { menu: React.ReactNode; className?: string; children: React.ReactNode }) {
     const [at, setAt] = useState<{ x: number; y: number } | null>(null) // in the card
     const focused = useRef<Element | null>(null)
+    const classic = useClassic()
     return (
         <div
             className={cn("group/card relative", className)}
@@ -158,7 +180,10 @@ function CardMenu({ menu, className, children }: { menu: React.ReactNode; classN
                     <IconButton
                         label="More options"
                         size="xs"
-                        className="absolute top-1.5 right-1.5 rounded-md bg-black/70 text-white opacity-0 group-hover/card:opacity-100 hover:bg-black/85 hover:text-white focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100"
+                        className={cn(
+                            "absolute top-1.5 right-1.5 text-white opacity-0 group-hover/card:opacity-100 hover:bg-black/85 hover:text-white focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100",
+                            classic ? "rounded-md bg-black/70" : "rounded-lg bg-black/65 backdrop-blur-sm",
+                        )}
                     >
                         <Ellipsis className="size-4" />
                     </IconButton>
@@ -203,7 +228,8 @@ export function cardMinWidth(size?: string) {
 // on up to two lines, then the year and status line).
 export const cardTextHeight = 66
 
-export function MediaGrid({ children, className, size = "md" }: { children: React.ReactNode; className?: string; size?: string }) {
+// start: a TV's remote starts on its first card when the page opens.
+export function MediaGrid({ children, className, size = "md", start }: { children: React.ReactNode; className?: string; size?: string; start?: boolean }) {
     const cols =
         size === "sm"
             ? "grid-cols-[repeat(auto-fill,minmax(130px,1fr))]"
@@ -213,7 +239,7 @@ export function MediaGrid({ children, className, size = "md" }: { children: Reac
     const items = Children.toArray(children)
     const { shown, sentinel } = useProgressive(items.length, 60, "y")
     return (
-        <div className={cn("relative grid gap-x-4 gap-y-6", cols, className)}>
+        <div className={cn("relative grid gap-x-4 gap-y-6", cols, className)} data-tv-autofocus={start || undefined}>
             {items.slice(0, shown)}
             {sentinel && <div ref={sentinel} aria-hidden className="pointer-events-none absolute bottom-0 left-0 h-px w-px" />}
         </div>
@@ -221,9 +247,10 @@ export function MediaGrid({ children, className, size = "md" }: { children: Reac
 }
 
 export function MediaCardSkeleton() {
+    const classic = useClassic()
     return (
         <div className="flex flex-col gap-2.5">
-            <div className="shimmer aspect-[2/3] rounded-lg" />
+            <div className={cn("shimmer aspect-[2/3]", classic ? "rounded-lg" : "rounded-[10px]")} />
             <div className="shimmer h-3.5 w-3/4 rounded" />
         </div>
     )

@@ -111,6 +111,10 @@ type AutoDownloader struct {
 	hub      *events.Hub
 	mu       sync.Mutex
 	now      func() time.Time
+	// Send, when set, sends a release where this KumoBox's downloads go (the
+	// computer a TV's go to), and reports whether it did; else it goes to
+	// the torrent client here.
+	Send func(ctx context.Context, mediaID int, uris []string) (bool, error)
 }
 
 func NewAutoDownloader(d *db.DB, t *Manager, p *catalog.Platform, f *library.Store, hub *events.Hub) *AutoDownloader {
@@ -727,11 +731,21 @@ func (a *AutoDownloader) grab(ctx context.Context, r *Rule, media *catalog.Media
 	if save == "" {
 		save = a.torrents.SavePath(media, season, files)
 	}
-	if err := a.torrents.Add(ctx, []string{magnet}, save); err != nil {
-		if !a.torrents.Status(ctx).Connected {
-			return fmt.Errorf("%w: %v", errClientDown, err)
+	// Where this KumoBox's downloads go, when it isn't here (a TV's go to
+	// the computer it uses).
+	sent := false
+	if a.Send != nil {
+		if sent, err = a.Send(ctx, media.ID, []string{magnet}); sent && err != nil {
+			return err
 		}
-		return err
+	}
+	if !sent {
+		if err := a.torrents.Add(ctx, []string{magnet}, save); err != nil {
+			if !a.torrents.Status(ctx).Connected {
+				return fmt.Errorf("%w: %v", errClientDown, err)
+			}
+			return err
+		}
 	}
 	a.record(r.ID, r.MediaID, key, res.Name)
 	what := catalog.FormatKey(key)

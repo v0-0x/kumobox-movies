@@ -11,7 +11,7 @@
 #
 # Programs that are already installed, with Scoop or otherwise, are left
 # alone, so it's safe to run again. The KumoBox installer offers to run it, and
-# KumoBox runs it from Settings > App > Programs.
+# KumoBox runs it from Settings > Desktop app & programs.
 #
 # Keep this file ASCII: Windows PowerShell reads a script without a byte
 # order mark in the computer's code page.
@@ -19,6 +19,9 @@
 param(
     # The GitHub repository KumoBox updates from.
     [string]$Repo = "v0-0x/kumobox-movies",
+    # The same repository by its number, as KumoBox's updater asks for it: it
+    # stays the same when the repository is renamed or moves.
+    [string]$RepoID = "1411506405",
     # Close the window at the end without waiting for Enter.
     [switch]$NoPause
 )
@@ -106,7 +109,7 @@ try {
     # would take a GitHub sign-in, which the GitHub CLI keeps.
     $public = $true
     try {
-        Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo" -Headers @{ "User-Agent" = "KumoBox-setup" } | Out-Null
+        Invoke-RestMethod -Uri "https://api.github.com/repositories/$RepoID" -Headers @{ "User-Agent" = "KumoBox-setup" } | Out-Null
     } catch {
         $public = $false
     }
@@ -139,7 +142,7 @@ if ($script:failed.Count -eq 0) {
     Write-Host "All done. KumoBox finds the new programs by itself." -ForegroundColor Green
 } else {
     Write-Host ("Not installed: " + ($script:failed -join ", ") + ".") -ForegroundColor Yellow
-    Write-Host "Run the setup again from KumoBox (Settings > App > Programs), or see"
+    Write-Host "Run the setup again from KumoBox (Settings > Desktop app & programs), or see"
     Write-Host "https://github.com/$Repo/blob/HEAD/packaging/windows/README.md"
 }
 if (-not $NoPause) {

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/stream"
 )
@@ -23,7 +24,7 @@ import (
 
 var errNotShared = errors.New("that library isn't shared with this KumoBox any more")
 
-// host is a KumoBox that shares its library with this one.
+// host is an KumoBox that shares its library with this one.
 func (s *Service) host(id string) *peer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -84,10 +85,10 @@ func (s *Service) forwardEdit(w http.ResponseWriter, r *http.Request, p *peer, m
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := s.media.Do(req)
+	resp, err := s.do(s.media, req)
 	if err != nil {
 		if r.Context().Err() == nil {
-			http.Error(w, fmt.Sprintf("%s doesn't answer: %v", s.nameOf(p), err), http.StatusBadGateway)
+			http.Error(w, fmt.Sprintf("%s doesn't answer: %v", s.nameOf(p), plainError(err)), http.StatusBadGateway)
 		}
 		return
 	}
@@ -112,24 +113,32 @@ func (s *Service) forwardEdit(w http.ResponseWriter, r *http.Request, p *peer, m
 		return
 	}
 	w.WriteHeader(resp.StatusCode)
-	copyFlushing(w, resp.Body)
+	if err := copyFlushing(w, resp.Body); err != nil && r.Context().Err() == nil {
+		// The host stopped answering midway: the player must see the
+		// stream broken, not ended (it would count the episode as watched).
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // copyFlushing copies a stream as it comes (a video being converted comes
-// slowly at first).
-func copyFlushing(w http.ResponseWriter, r io.Reader) {
+// slowly at first). It returns why the stream from the host stopped early
+// (nil at its end, or when the player went away).
+func copyFlushing(w http.ResponseWriter, r io.Reader) error {
 	rc := http.NewResponseController(w)
 	buf := make([]byte, 128<<10)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
+				return nil
 			}
 			_ = rc.Flush()
 		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
 		if err != nil {
-			return
+			return err
 		}
 	}
 }
@@ -140,8 +149,11 @@ func (s *Service) Probe(ctx context.Context, path string) (*stream.Probe, error)
 	if err != nil {
 		return nil, err
 	}
+	// A file read for the first time on a sleeping disk takes a while.
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
 	var pr stream.Probe
-	if err := s.getJSON(ctx, p, "/api/peer/local/probe?"+url.Values{"path": {onHost}}.Encode(), &pr); err != nil {
+	if err := s.getJSONWith(ctx, s.slow, p, "/api/peer/local/probe?"+url.Values{"path": {onHost}}.Encode(), &pr); err != nil {
 		return nil, err
 	}
 	return &pr, nil
@@ -153,8 +165,15 @@ func (s *Service) MediaURL(path string) (string, map[string]string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	req, err := s.request(context.Background(), p, http.MethodGet, "/api/peer/local/file?"+url.Values{"path": {onHost}}.Encode(), nil)
+	s.mu.Lock()
+	base, host, pub, off := p.baseURL(), p.id, p.pub, p.offset
+	s.mu.Unlock()
+	req, err := http.NewRequest(http.MethodGet, base+"/api/peer/local/file?"+url.Values{"path": {onHost}}.Encode(), nil)
 	if err != nil {
+		return "", nil, err
+	}
+	// mpv sends the same request again as it plays (a ticket: no nonce).
+	if _, err := s.id.sign(req, host, pub, s.Name(), s.settings.Get().Server.Port, s.user(), time.Now().Add(off), true); err != nil {
 		return "", nil, err
 	}
 	headers := map[string]string{}
@@ -191,9 +210,9 @@ func (s *Service) StartHLS(ctx context.Context, req stream.HLSRequest) (*stream.
 		return nil, err
 	}
 	hr.Header.Set("Content-Type", "application/json")
-	resp, err := s.media.Do(hr)
+	resp, err := s.do(s.media, hr)
 	if err != nil {
-		return nil, fmt.Errorf("%s doesn't answer: %w", s.nameOf(p), err)
+		return nil, fmt.Errorf("%s doesn't answer: %s", s.nameOf(p), plainError(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -237,18 +256,42 @@ func (s *Service) ForwardHLS(w http.ResponseWriter, r *http.Request, id, name st
 	s.forwardEdit(w, r, p, http.MethodGet, "/api/peer/local/hls/"+url.PathEscape(session)+"/"+url.PathEscape(name), nil, edit)
 }
 
-// StopHLS ends an HLS session on its host.
+// StopHLS ends an HLS session on its host, also when the player that asked
+// is gone already (closed): the host would go on converting.
 func (s *Service) StopHLS(ctx context.Context, id string) {
 	host, session, ok := remoteSession(id)
 	p := s.host(host)
 	if !ok || p == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	req, err := s.request(ctx, p, http.MethodDelete, "/api/peer/local/hls/"+url.PathEscape(session), nil)
 	if err != nil {
 		return
 	}
-	if resp, err := s.api.Do(req); err == nil {
+	if resp, err := s.do(s.api, req); err == nil {
 		resp.Body.Close()
 	}
+}
+
+// Note sends a line about a shared file's playback (what went wrong in the
+// player) to the file's host, for its log.
+func (s *Service) Note(ctx context.Context, path, text string) error {
+	p, _, err := s.hostOf(path)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(map[string]string{"text": text})
+	req, err := s.request(ctx, p, http.MethodPost, "/api/peer/note", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.do(s.api, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return answerError(resp)
 }

@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"golang.org/x/net/ipv4"
 )
 
 // KumoBoxes find each other with a small message (a beacon) sent every few
-// seconds to a multicast group on every network interface. A KumoBox that
+// seconds to a multicast group on every network interface. An KumoBox that
 // hears a new one answers it directly, so that one hears of it at once too,
 // and both are found even where only one way works.
 const discoveryPort = 43312
@@ -27,6 +28,8 @@ type beacon struct {
 	Port    int    `json:"port"`
 	Key     string `json:"key"` // public key (base64)
 	Version string `json:"version"`
+	// Platform: what it runs on ("android" on a TV), for the others' lists.
+	Platform string `json:"platform,omitempty"`
 	// Reply: an answer to a beacon, not to be answered.
 	Reply bool `json:"reply,omitempty"`
 	// Ask: what this KumoBox shares with the one it's sent to changed: ask
@@ -65,7 +68,7 @@ func interfaces() []net.Interface {
 	}
 	var out []net.Interface
 	for _, ifi := range all {
-		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagMulticast == 0 || ifi.Flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagMulticast == 0 || ifi.Flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 || virtual(ifi.Name) {
 			continue
 		}
 		addrs, _ := ifi.Addrs()
@@ -77,6 +80,19 @@ func interfaces() []net.Interface {
 		}
 	}
 	return out
+}
+
+// virtual reports a network of containers or virtual machines on this
+// computer (Docker's, libvirt's…): no other device is there, and Settings
+// would offer its address to add this computer by.
+func virtual(name string) bool {
+	n := strings.ToLower(name)
+	for _, p := range []string{"docker", "br-", "veth", "virbr", "vboxnet", "vmnet", "podman", "cni", "flannel", "lxcbr", "lxdbr", "tailscale", "zt"} {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	return strings.Contains(n, "vethernet") || strings.Contains(n, "virtualbox") || strings.Contains(n, "vmware")
 }
 
 // join joins the group on every interface, also those that came up since.

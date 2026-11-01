@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -196,6 +197,76 @@ func TestScanKeepsFilesOfMissingDrives(t *testing.T) {
 	sort.Strings(want)
 	if res.Removed != 1 || len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("removed=%d got %q\nwant %q", res.Removed, got, want)
+	}
+}
+
+// A folder taken out of the library, or the library turned off: its files
+// go from the index, also when its drive is gone (moved to an KumoBox Hub), but
+// not those in a folder still in it, and nothing on the disk.
+func TestForgetFoldersOutOfTheLibrary(t *testing.T) {
+	base := t.TempDir()
+	main := filepath.Join(base, "Anime")
+	usb := filepath.Join(base, "usb", "Anime")
+	a := filepath.Join(main, "Show A", "Show A - 01.mkv")
+	b := filepath.Join(main, "Show B", "Show B - 01.mkv")
+	c := filepath.Join(usb, "Show C", "Show C - 01.mkv")
+	for _, p := range []string{a, b, c} {
+		touch(t, p)
+	}
+	s, settings := newTestScanner(t, main, usb)
+	scan(t, s)
+	set := func(change func(*config.Settings)) {
+		cfg := settings.Get()
+		change(&cfg)
+		if _, err := settings.Save(cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The USB drive went to the hub, and out of the library.
+	if err := os.RemoveAll(filepath.Join(base, "usb")); err != nil {
+		t.Fatal(err)
+	}
+	set(func(c *config.Settings) { c.Library.ExtraDirs = nil })
+	s.Forget([]string{usb})
+	if got := paths(t, s); len(got) != 2 || got[0] != a || got[1] != b {
+		t.Fatalf("after the USB folder went: %q", got)
+	}
+	// Only one show's folder is the library now: the rest of the old one goes.
+	set(func(c *config.Settings) { c.Library.Dir = filepath.Join(main, "Show A") })
+	s.Forget([]string{main})
+	if got := paths(t, s); len(got) != 1 || got[0] != a {
+		t.Fatalf("after narrowing the folder: %q", got)
+	}
+	// The library off: nothing left, and the file is still on the disk.
+	set(func(c *config.Settings) { c.Library.Off = true })
+	if len(settings.Get().LibraryDirs()) != 0 {
+		t.Fatal("folders while the library is off")
+	}
+	s.Forget([]string{filepath.Join(main, "Show A")})
+	if got := paths(t, s); len(got) != 0 {
+		t.Fatalf("with the library off: %q", got)
+	}
+	if _, err := os.Stat(a); err != nil {
+		t.Fatalf("the file itself: %v", err)
+	}
+	if _, err := s.Scan(context.Background(), ScanOptions{SkipMatching: true}); !errors.Is(err, ErrLibraryOff) {
+		t.Fatalf("a scan with the library off: %v", err)
+	}
+
+	// Still indexed from before, outside every folder: one on a drive that
+	// went to the hub (kept so far, its drive being gone), and a download
+	// still on this computer. With the library off, the first goes.
+	moved := filepath.Join(base, "mnt", "big", "Media", "Show E - 01.mkv")
+	download := filepath.Join(base, "Downloads", "Show F - 01.mkv")
+	touch(t, download)
+	if err := s.Store.Save(&LocalFile{Path: moved, Dir: filepath.Dir(moved), Name: filepath.Base(moved), MediaID: 5, Episode: 1, Kind: "main"},
+		&LocalFile{Path: download, Dir: filepath.Dir(download), Name: filepath.Base(download), MediaID: 6, Episode: 1, Kind: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	s.ForgetGone()
+	if got := paths(t, s); len(got) != 1 || got[0] != download {
+		t.Fatalf("after forgetting what isn't there: %q", got)
 	}
 }
 
@@ -409,5 +480,48 @@ func TestScanReparsesOldFiles(t *testing.T) {
 	got, _ := s.Store.Get(path)
 	if got.Parsed.V != parseVersion || got.Parsed.Season != 2 || got.Parsed.Year != 2014 || got.MediaID != catalog.ShowID(60622) || got.Episode != 2005 || !got.Locked {
 		t.Errorf("reparsed: %+v", got)
+	}
+}
+
+// New files are told about, not on a library's first scan, and not those
+// moved (a folder renamed).
+func TestScanTellsNewFiles(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := newTestScanner(t, dir)
+	got := make(chan []string, 4)
+	s.OnNewFiles = func(fs []*LocalFile) {
+		var names []string
+		for _, f := range fs {
+			names = append(names, f.Name)
+		}
+		sort.Strings(names)
+		got <- names
+	}
+	next := func() []string {
+		select {
+		case n := <-got:
+			return n
+		case <-time.After(300 * time.Millisecond):
+			return nil
+		}
+	}
+	touch(t, filepath.Join(dir, "Show", "Show - 01.mkv"))
+	scan(t, s)
+	if n := next(); n != nil {
+		t.Fatalf("first scan told: %v", n)
+	}
+	touch(t, filepath.Join(dir, "Show", "Show - 02.mkv"))
+	scan(t, s)
+	if n := next(); len(n) != 1 || n[0] != "Show - 02.mkv" {
+		t.Fatalf("new file: %v", n)
+	}
+	// The folder renamed: its files aren't new.
+	if err := os.Rename(filepath.Join(dir, "Show"), filepath.Join(dir, "Show (2024)")); err != nil {
+		t.Fatal(err)
+	}
+	touch(t, filepath.Join(dir, "Show (2024)", "Show - 03.mkv"))
+	scan(t, s)
+	if n := next(); len(n) != 1 || n[0] != "Show - 03.mkv" {
+		t.Fatalf("after a rename: %v", n)
 	}
 }

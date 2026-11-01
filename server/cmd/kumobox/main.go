@@ -53,6 +53,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// An app's own window (Android's) proves itself with the token it gives
+	// (in a cookie): other apps on the device reach 127.0.0.1 too, so they
+	// mustn't count as this device's user.
+	appWindow := false
+	if t := config.Getenv("SHELL_TOKEN"); len(t) >= 32 {
+		a.ShellToken, appWindow = t, true
+	}
+	_ = os.Unsetenv("KUMOBOX_SHELL_TOKEN")
 	if *port > 0 {
 		cfg := a.Settings.Get()
 		cfg.Server.Port = *port
@@ -64,7 +72,8 @@ func main() {
 	srv := api.New(a, webui.FS())
 	// Without the desktop app nothing could reach the server if the web UI
 	// were off, so headless runs always serve it (on 127.0.0.1 by default).
-	srv.ForceWebUI = *webUI || !*desktop
+	srv.ForceWebUI = *webUI || (!*desktop && !appWindow)
+	srv.AppOnly = appWindow
 	if err := srv.Start(); err != nil {
 		log.Fatalf("could not start the server: %v (is KumoBox already running?)", err)
 	}

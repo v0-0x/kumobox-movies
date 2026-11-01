@@ -7,7 +7,7 @@
 # changes are picked up without committing them.
 
 pkgname=kumobox
-pkgver=1.0.0
+pkgver=2.0.0
 pkgrel=1
 pkgdesc="Movies & TV shows: local library with auto matching, TMDB metadata, Letterboxd tracking, mpv & in-app player, streaming providers, torrents, extensions"
 arch=('x86_64' 'aarch64')
@@ -28,10 +28,11 @@ _root="$(realpath "${startdir}/../..")"
 # The version and commit go into the server, which compares them with
 # GitHub's to offer updates (Home page). KumoBox's updater builds a downloaded
 # source, which has no .git: it passes them in KUMOBOX_COMMIT and KUMOBOX_VERSION.
-# In a git checkout they come from git (version 1.0.<number of commits>);
-# otherwise, e.g. in an extracted source zip, the defaults stay. pkgver
-# stays 1.0.0 on purpose: a pkgver() function would make makepkg rewrite
-# this file in your checkout, and git pull would then stop on it.
+# In a git checkout they come from git (version 2.0.<commits since 2.0.0's>,
+# see desktop/package.json); otherwise, e.g. in an extracted source zip, the
+# defaults stay. pkgver stays as it is on purpose: a pkgver() function would
+# make makepkg rewrite this file in your checkout, and git pull would then
+# stop on it.
 build() {
     cd "${_root}"
     export GOFLAGS="-trimpath -mod=readonly -modcacherw"
@@ -44,7 +45,12 @@ build() {
     elif command -v git >/dev/null; then
         [[ -n ${commit} ]] || commit="$(git -C "${_root}" rev-parse HEAD 2>/dev/null)" || commit=""
         if [[ -z ${version} ]] && count="$(git -C "${_root}" rev-list --count HEAD 2>/dev/null)"; then
-            version="1.0.${count}"
+            # Major.minor from desktop/package.json, and the commits since
+            # the one its kumoboxVersionBase counts (2.0.0's).
+            local pkg="${_root}/desktop/package.json" mm from
+            mm="$(sed -n 's/^ *"version": *"\([0-9]*\.[0-9]*\)\..*/\1/p' "${pkg}")"
+            from="$(sed -n 's/^ *"kumoboxVersionBase": *\([0-9]*\).*/\1/p' "${pkg}")"
+            version="${mm:-1.0}.$((count - ${from:-0}))"
         fi
     fi
     local config=github.com/v0-0x/kumobox-movies/server/internal/config
@@ -54,9 +60,12 @@ build() {
     make server GO_LDFLAGS="${ldflags}"
 }
 
+# The quick tests (KumoBox's own updater skips them: --nocheck): the file name
+# parser, the catalog, release names, Letterboxd, extensions, sharing between
+# KumoBoxes, the watch history they exchange, and the updater.
 check() {
     cd "${_root}/server"
-    go test ./internal/library/ ./internal/catalog/ ./internal/release/ ./internal/letterboxd/ ./internal/extensions/
+    go test ./internal/library/ ./internal/catalog/ ./internal/release/ ./internal/letterboxd/ ./internal/extensions/ ./internal/share/ ./internal/history/ ./internal/update/
 }
 
 package() {

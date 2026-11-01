@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,17 @@ type Server struct {
 	addr string
 	// loginMu lets one password attempt in at a time (serverLogin).
 	loginMu sync.Mutex
+	// Wrong server passwords, by address (serverLogin).
+	logins loginGuard
+	// One rebind at a time (Start).
+	rebindMu sync.Mutex
+	// The players' notes (POST /api/playback/note).
+	notes noteGuard
 	// ForceWebUI is set when no desktop shell can exist (headless mode).
 	ForceWebUI bool
+	// AppOnly: on this device other apps reach 127.0.0.1 too (Android), so
+	// only the app's own window (the shell token) is its user there.
+	AppOnly bool
 }
 
 func New(a *app.App, ui fs.FS) *Server {
@@ -63,12 +73,19 @@ func (s *Server) Start() error {
 	}
 	s.serve(ln, addr)
 	s.app.Settings.OnChange(func(old, cur config.Settings) {
-		next := ListenAddr(cur)
-		if next == ListenAddr(old) {
+		if ListenAddr(cur) == ListenAddr(old) {
+			return
+		}
+		time.Sleep(500 * time.Millisecond) // let the settings response reach the client
+		// Where the settings say now: listeners run apart, and two saves
+		// close together may arrive in either order.
+		s.rebindMu.Lock()
+		defer s.rebindMu.Unlock()
+		next := ListenAddr(s.app.Settings.Get())
+		if next == s.Addr() {
 			return
 		}
 		log.Printf("network settings changed, rebinding to %s", next)
-		time.Sleep(500 * time.Millisecond) // let the settings response reach the client
 		if err := s.rebind(next); err != nil {
 			log.Printf("rebind failed: %v", err)
 			s.app.Hub.Error("Could not listen on " + next + ": " + err.Error())
@@ -78,7 +95,9 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) serve(ln net.Listener, addr string) {
-	srv := &http.Server{Handler: s.middleware(s.mux), ReadHeaderTimeout: 15 * time.Second}
+	// Connections left open by phones and TVs on the network don't pile up;
+	// streams take as long as they take (no write timeout).
+	srv := &http.Server{Handler: s.middleware(s.mux), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 2 * time.Minute}
 	s.mu.Lock()
 	s.srv, s.addr = srv, addr
 	s.mu.Unlock()
@@ -186,23 +205,30 @@ func isLANIP(ip net.IP) bool {
 	return false
 }
 
+// hostAllowed checks a request's Host against the names this computer goes
+// by, against DNS rebinding (a website's own name, pointed at this computer,
+// must not reach it): an IP address, localhost, or this computer's name,
+// alone or as a home network or Tailscale names it (mypc, mypc.local,
+// mypc.lan, mypc.<tailnet>.ts.net…).
 func hostAllowed(host string) bool {
 	h := host
 	if hh, _, err := net.SplitHostPort(host); err == nil {
 		h = hh
 	}
-	h = strings.Trim(strings.ToLower(h), "[]")
+	h = strings.TrimSuffix(strings.Trim(strings.ToLower(h), "[]"), ".")
 	if h == "localhost" || net.ParseIP(h) != nil {
 		return true
 	}
-	// Local hostnames only: "mypc", "mypc.local", "nas.lan", "box.home.arpa"…
-	if !strings.Contains(h, ".") {
-		return true
+	name := machineName()
+	first, rest, _ := strings.Cut(h, ".")
+	if name == "" || first != name {
+		return false
 	}
-	for _, suf := range []string{".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain", ".ts.net"} {
-		if strings.HasSuffix(h, suf) {
-			return true
-		}
+	switch {
+	case rest == "", slices.Contains([]string{"local", "lan", "home", "internal", "home.arpa", "localdomain"}, rest):
+		return true
+	case strings.HasSuffix(rest, ".ts.net") && strings.Count(rest, ".") == 2:
+		return true
 	}
 	return false
 }
@@ -227,9 +253,20 @@ func loopbackHostAllowed(host string) bool {
 	return name != "" && h == name
 }
 
+// machineName is this computer's name, lowercase, without its domain.
+var machineName = sync.OnceValue(func() string {
+	n, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	n, _, _ = strings.Cut(strings.ToLower(strings.TrimSpace(n)), ".")
+	return n
+})
+
 func (s *Server) sessionToken() string {
 	cfg := s.app.Settings.Get()
-	mac := hmac.New(sha256.New, []byte(s.app.ShellToken+"|"+cfg.Server.Password))
+	key := s.app.ShellToken
+	mac := hmac.New(sha256.New, []byte(key+"|"+cfg.Server.Password))
 	mac.Write([]byte("kumobox-session"))
 	return hex.EncodeToString(mac.Sum(nil))
 }
@@ -270,6 +307,10 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		if kind == clientLocal && tok != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.app.ShellToken)) == 1 {
 			kind = clientShell
 		}
+		if kind == clientLocal && s.AppOnly {
+			http.Error(w, "KumoBox only answers its own app on this device.", http.StatusForbidden)
+			return
+		}
 
 		// Other websites may link to the app, but must not load or call the
 		// API (Fetch Metadata; browsers send it to 127.0.0.1 and HTTPS).
@@ -285,6 +326,15 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host && origin != "https://"+r.Host {
 				http.Error(w, "cross-origin request refused", http.StatusForbidden)
 				return
+			}
+			// A browser that sends neither (an old one) lets other websites
+			// post forms here: a POST that isn't JSON, which they can't send
+			// (the app always does), must be said to come from this site.
+			if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/") && !isJSON(r) {
+				if site := r.Header.Get("Sec-Fetch-Site"); site != "same-origin" && site != "none" {
+					http.Error(w, "cross-site request refused", http.StatusForbidden)
+					return
+				}
 			}
 		}
 
@@ -311,9 +361,15 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			// API responses (JSON, media, subtitles) are never pages.
 			w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+		} else {
+			// The app's pages: never in another website's frame, where it
+			// could get clicks on them (clickjacking).
+			w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; object-src 'none'; base-uri 'self'")
+			w.Header().Set("X-Frame-Options", "DENY")
 		}
 		ctx := context.WithValue(r.Context(), ctxKey{}, kind)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		r = r.WithContext(ctx)
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -336,7 +392,7 @@ const webUIDisabledPage = `<!doctype html><html><head><meta charset="utf-8"><tit
 .c{max-width:440px;padding:32px;border:1px solid #23232e;border-radius:16px;background:#12121a;text-align:center}
 h1{font-size:20px;margin:0 0 8px}p{color:#9a9ab0;line-height:1.5}</style></head>
 <body><div class="c"><h1>The KumoBox Web UI is turned off</h1>
-<p>Open the KumoBox desktop app and enable <b>Settings › App › Web UI</b> to use KumoBox from a browser.</p></div></body></html>`
+<p>Open the KumoBox desktop app and enable <b>Settings › Network & web UI</b> to use KumoBox from a browser.</p></div></body></html>`
 
 // ---------------------------------------------------------------------------
 // JSON helpers
@@ -392,13 +448,19 @@ func h(fn func(r *http.Request) (any, error)) http.HandlerFunc {
 	}
 }
 
+// isJSON reports a request with a JSON body (Content-Type).
+func isJSON(r *http.Request) bool {
+	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	return strings.HasPrefix(ct, "application/json")
+}
+
 func decode(r *http.Request, v any) error {
 	if r.Body == nil {
 		return badRequest("missing body")
 	}
 	// A JSON content type can't be sent cross-site without a CORS
 	// preflight (which is never granted), unlike text/plain form posts.
-	if ct := strings.ToLower(r.Header.Get("Content-Type")); !strings.HasPrefix(strings.TrimSpace(ct), "application/json") {
+	if !isJSON(r) {
 		return badRequest("expected a JSON body (Content-Type: application/json)")
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 8<<20))

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/config"
@@ -30,6 +33,10 @@ type Local struct {
 	settings *config.Store
 	files    *library.Store
 	db       *db.DB
+	// MaxTranscodes: how many videos may be converted at once (0: any). A
+	// KumoBox Hub's small computer converts one or two at most.
+	MaxTranscodes int
+	transcoding   atomic.Int32
 }
 
 func NewLocal(s *config.Store, f *library.Store, d *db.DB) *Local {
@@ -86,6 +93,11 @@ type Probe struct {
 
 var ErrNotInLibrary = errors.New("file is not part of the library")
 
+// ErrFileGone is (wrapped in) the error for a library file that isn't on
+// the disk: moved or deleted, or on a drive that isn't connected (its files
+// are kept until it is, see library.Scanner).
+var ErrFileGone = errors.New("the video file isn't there")
+
 // resolve makes sure only indexed library files can be read, and gives
 // what ffmpeg reads: the file, or for an online stream (a "remote:" path,
 // see remote.go) the relay's URL.
@@ -99,9 +111,28 @@ func (l *Local) resolve(path string) (string, error) {
 		return "", ErrNotInLibrary
 	}
 	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", goneError(path)
+		}
 		return "", err
 	}
 	return path, nil
+}
+
+// goneError says why an indexed file isn't on the disk.
+func goneError(path string) error {
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(dir); err == nil {
+		return fmt.Errorf("%w: it was moved or deleted (scan the library again)", ErrFileGone)
+	}
+	// Its folder is gone too: the topmost one missing is the drive's.
+	for parent := filepath.Dir(dir); parent != dir; parent = filepath.Dir(dir) {
+		if _, err := os.Stat(parent); err == nil {
+			break
+		}
+		dir = parent
+	}
+	return fmt.Errorf("%w: %s is missing (is its drive connected?)", ErrFileGone, dir)
 }
 
 func (l *Local) Probe(ctx context.Context, path string) (*Probe, error) {
@@ -414,6 +445,18 @@ type plan struct {
 	audioCopy bool
 	hevc      bool // copied HEVC: tagged so Apple devices play it
 	audio     int  // the audio track, among the file's audio tracks
+	// The video converted by ffmpeg's own (software) encoder, not this
+	// computer's: a player that showed no picture of the other (see
+	// WithSoftware).
+	software bool
+}
+
+// WithSoftware is the plan with the video converted in software (libx264),
+// whatever the player could play or the computer's encoder is: the last
+// thing a player that showed no picture tries (?encoder=software).
+func (pl plan) WithSoftware() plan {
+	pl.software, pl.videoCopy, pl.hevc, pl.method = true, false, false, "transcode"
+	return pl
 }
 
 // plan works out the conversion for method (direct or "" means decide),
@@ -452,7 +495,7 @@ func (l *Local) plan(p *Probe, method string, audio int, caps Caps, hls bool) pl
 func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) []string {
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
 	hw := cfg.Transcode.HwAccel
-	if !pl.videoCopy && hw == "vaapi" {
+	if !pl.videoCopy && !pl.software && hw == "vaapi" {
 		args = append(args, "-vaapi_device", cfg.Transcode.VaapiNode)
 	}
 	if start > 0 {
@@ -475,6 +518,13 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 		if pl.hevc {
 			args = append(args, "-tag:v", "hvc1")
 		}
+	} else if pl.software {
+		if hw == "v4l2m2m" {
+			// A Raspberry Pi's CPU: as fast as it goes, at 720p.
+			args = append(args, "-vf", "scale='min(1280,iw)':-2,format=yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-profile:v", "high", "-g", "48")
+		} else {
+			args = append(args, "-c:v", "libx264", "-preset", cfg.Transcode.Preset, "-crf", "21", "-pix_fmt", "yuv420p", "-profile:v", "high")
+		}
 	} else {
 		switch hw {
 		case "vaapi":
@@ -483,6 +533,10 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 			args = append(args, "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23")
 		case "qsv":
 			args = append(args, "-c:v", "h264_qsv", "-global_quality", "23")
+		case "v4l2m2m":
+			// A Raspberry Pi's encoder: 8-bit 4:2:0 up to 1080p, by bitrate.
+			args = append(args, "-vf", "scale='min(1920,iw)':-2,format=yuv420p", "-c:v", "h264_v4l2m2m",
+				"-b:v", "6M", "-maxrate", "8M", "-bufsize", "12M", "-g", "48")
 		default:
 			args = append(args, "-c:v", "libx264", "-preset", cfg.Transcode.Preset, "-crf", "21", "-pix_fmt", "yuv420p", "-profile:v", "high")
 		}
@@ -502,6 +556,45 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 	return append(args, "-sn", "-dn")
 }
 
+// describe says what the plan does, for the log: "video copied (hevc-10),
+// audio converted".
+func (pl plan) describe(cfg config.Settings, p *Probe) string {
+	video := "no video"
+	if len(p.Video) > 0 {
+		f := videoFormat(p.Video[0])
+		switch {
+		case pl.videoCopy:
+			video = "video copied (" + f + ")"
+		case pl.software:
+			video = "video converted in software (" + f + " to h264, libx264)"
+		default:
+			video = "video converted (" + f + " to h264, " + encoderName(cfg) + ")"
+		}
+	}
+	audio := "audio converted"
+	if pl.audioCopy {
+		audio = "audio copied"
+	}
+	if len(p.Audio) == 0 {
+		audio = "no audio"
+	}
+	return video + ", " + audio
+}
+
+// movflags make the MP4 a stream players start on before it's done
+// (fragments, the header first). A Raspberry Pi's encoder (h264_v4l2m2m)
+// gives the video's header (SPS/PPS) only with its first frame, not when
+// it starts as other encoders do: written first, the MP4's header had none,
+// and a TV played the sound under a grey picture. delay_moov writes it once
+// the first frame is there.
+func (pl plan) movflags(cfg config.Settings) string {
+	flags := "frag_keyframe+empty_moov+default_base_moof"
+	if !pl.videoCopy && !pl.software && cfg.Transcode.HwAccel == "v4l2m2m" {
+		flags += "+delay_moov"
+	}
+	return flags
+}
+
 // SeekPoint returns where a stream asked to start at t really starts, which
 // the player needs to keep subtitles and the position right after seeking.
 // Converted video starts at t exactly. Copied video can only start at a
@@ -513,15 +606,29 @@ func (pl plan) args(cfg config.Settings, p *Probe, path string, start float64) [
 // keyframe + seekMargin, and a keyframe followed that closely by another
 // one (a scene cut) is passed over for the next.
 func (l *Local) SeekPoint(ctx context.Context, path string, t float64, audio int, method string, caps Caps, hls bool) (float64, error) {
+	start, _, err := l.Seek(ctx, path, t, audio, method, caps, hls)
+	return start, err
+}
+
+// Seek is SeekPoint, and the method to ask the stream with: "transcode"
+// when the video would be copied but its keyframe at t isn't known (the
+// file couldn't be read in time), as a copy would then start at an unknown
+// frame (a grey picture until the next keyframe, its times off), where
+// converted video starts at t exactly. Otherwise the method asked for.
+func (l *Local) Seek(ctx context.Context, path string, t float64, audio int, method string, caps Caps, hls bool) (float64, string, error) {
 	input, err := l.resolve(path)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	p, err := l.Probe(ctx, path)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return l.startFor(ctx, input, p.Start, l.plan(p, method, audio, caps, hls), t), nil
+	start, known := l.startFor(ctx, input, p.Start, l.plan(p, method, audio, caps, hls), t)
+	if !known {
+		return t, "transcode", nil
+	}
+	return start, method, nil
 }
 
 const seekMargin = 0.4
@@ -533,18 +640,20 @@ const seekMargin = 0.4
 const seekAhead = 1.5
 
 // startFor is where a conversion of the file at path (whose timestamps
-// start at offset, Probe.Start) asked to start at t starts.
-func (l *Local) startFor(ctx context.Context, path string, offset float64, pl plan, t float64) float64 {
+// start at offset, Probe.Start) with this plan asked to start at t starts,
+// and whether that's known: for copied video, whether its keyframe could
+// be found (see Seek).
+func (l *Local) startFor(ctx context.Context, path string, offset float64, pl plan, t float64) (float64, bool) {
 	if t <= 0 {
-		return 0
+		return 0, true
 	}
 	if !pl.videoCopy {
-		return t
+		return t, true
 	}
 	if k, ok := l.seekKeyframe(ctx, path, offset, t); ok {
-		return k
+		return k, true
 	}
-	return t
+	return t, false
 }
 
 // seekKeyframe finds the keyframe a copy asked to start at t starts at: the
@@ -553,7 +662,10 @@ func (l *Local) startFor(ctx context.Context, path string, offset float64, pl pl
 // file, as ffmpeg's -ss does; ffprobe's intervals and packet times are the
 // timestamps themselves, which start at offset.
 func (l *Local) seekKeyframe(ctx context.Context, path string, offset, t float64) (float64, bool) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// A disk waking up, or a file read for the first time, takes a while:
+	// without its keyframe, a copy would start mid-picture (grey until the
+	// next keyframe).
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 	cfg := l.settings.Get()
 	for _, window := range []float64{20, 120} {
@@ -648,8 +760,22 @@ func (l *Local) ServeTranscode(w http.ResponseWriter, r *http.Request, path stri
 		return
 	}
 	pl := l.plan(p, method, audio, caps, false)
+	if r.URL.Query().Get("encoder") == "software" {
+		pl = pl.WithSoftware()
+	}
 	method = pl.method
-	args := append(pl.args(cfg, p, input, start), "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1")
+	if method == "transcode" {
+		release, ok := l.TranscodeSlot()
+		if !ok {
+			http.Error(w, "this computer is converting as many videos as it can already: try again when one stops", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+	}
+	args := append(pl.args(cfg, p, input, start), "-movflags", pl.movflags(cfg), "-f", "mp4", "pipe:1")
+	// What each stream is, for the log: why a player shows no picture
+	// starts there.
+	log.Printf("stream: %s from %.0fs: %s", filepath.Base(path), start, pl.describe(cfg, p))
 
 	// ffmpeg is stopped when the request ends, or as soon as the player stops
 	// reading (see below).
@@ -714,8 +840,13 @@ func (l *Local) ServeSubtitle(w http.ResponseWriter, r *http.Request, path strin
 	}
 	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
 	if external != "" {
+		// One of the video's own subtitle files (externalSubs): next to
+		// it, named after it, and a file, not a link to elsewhere.
 		ext := filepath.Clean(external)
-		if filepath.Dir(ext) != filepath.Dir(path) || !library.SubtitleExtensions[strings.ToLower(filepath.Ext(ext))] {
+		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		fi, err := os.Lstat(ext)
+		if filepath.Dir(ext) != filepath.Dir(path) || !library.SubtitleExtensions[strings.ToLower(filepath.Ext(ext))] ||
+			!strings.HasPrefix(filepath.Base(ext), base) || err != nil || !fi.Mode().IsRegular() {
 			http.Error(w, "invalid subtitle", http.StatusForbidden)
 			return
 		}
@@ -744,4 +875,58 @@ func (l *Local) ServeSubtitle(w http.ResponseWriter, r *http.Request, path strin
 	}
 	l.db.SetCache(key, string(out), 7*24*time.Hour)
 	_, _ = w.Write(out)
+}
+
+// TranscodeSlot takes one of the conversions allowed at once (see
+// MaxTranscodes): release gives it back; false when none is free.
+func (l *Local) TranscodeSlot() (release func(), ok bool) {
+	if l.MaxTranscodes <= 0 {
+		return func() {}, true
+	}
+	if n := l.transcoding.Add(1); int(n) > l.MaxTranscodes {
+		l.transcoding.Add(-1)
+		return nil, false
+	}
+	var once sync.Once
+	return func() { once.Do(func() { l.transcoding.Add(-1) }) }, true
+}
+
+// Transcoding is how many videos are being converted now.
+func (l *Local) Transcoding() int { return int(l.transcoding.Load()) }
+
+// Encoder is what converts video that can't be played as it is: the
+// encoder ffmpeg is told to use, "" when ffmpeg isn't there.
+func (l *Local) Encoder() string {
+	cfg := l.settings.Get()
+	if _, ok := util.LookPath(cfg.Transcode.FfmpegPath); !ok {
+		return ""
+	}
+	return encoderName(cfg)
+}
+
+// encoderName is the H.264 encoder the settings pick.
+func encoderName(cfg config.Settings) string {
+	switch cfg.Transcode.HwAccel {
+	case "vaapi":
+		return "h264_vaapi"
+	case "nvenc":
+		return "h264_nvenc"
+	case "qsv":
+		return "h264_qsv"
+	case "v4l2m2m":
+		return "h264_v4l2m2m"
+	}
+	return "libx264"
+}
+
+// HasV4L2Encoder reports a Raspberry Pi's video encoder, as ffmpeg can use
+// it (h264_v4l2m2m, and the Pi's encoder device).
+func HasV4L2Encoder(ffmpeg string) bool {
+	if _, err := os.Stat("/dev/video11"); err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-encoders").Output()
+	return err == nil && strings.Contains(string(out), "h264_v4l2m2m")
 }

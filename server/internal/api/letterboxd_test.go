@@ -278,6 +278,7 @@ func multipartBody(t *testing.T, files map[string]string) (*bytes.Buffer, string
 func upload(s *Server, remote string, body *bytes.Buffer, contentType string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("POST", "http://127.0.0.1:43311/api/letterboxd/import", body)
 	r.Header.Set("Content-Type", contentType)
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	r.RemoteAddr = remote
 	w := httptest.NewRecorder()
 	s.middleware(s.mux).ServeHTTP(w, r)

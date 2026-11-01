@@ -380,10 +380,15 @@ export type CollectionView = {
     ignoredCount: number
     localOnly: CollectionItem[] | null
     genres: string[] | null
+    // Movies and shows in the library left out for now (TMDB didn't say
+    // what they are yet): the collection is asked for again.
+    incomplete?: number
 }
 
 export type Settings = {
     library: {
+        // This computer has no library of its own (it plays the shared ones).
+        off?: boolean
         dir: string
         extraDirs: string[]
         autoRefresh: boolean
@@ -429,7 +434,13 @@ export type Settings = {
     qbittorrent: TorrentClientConfig
     transmission: TorrentClientConfig
     server: { host: string; port: number; allowLan: boolean; password: string; webUi: boolean }
-    sharing: { enabled: boolean; name: string }
+    // downloadTo: the KumoBox this one's downloads go to (its ID; "" here).
+    // keepAwake: don't let this computer sleep while another device plays its
+    // files. autoSync: sync watch history when a paired device comes back.
+    sharing: { enabled: boolean; name: string; downloadTo?: string; keepAwake?: boolean; autoSync?: boolean }
+    notify?: { newEpisodes: boolean; downloads: boolean }
+    // Which releases KumoBox updates to: stable ones, or betas too.
+    updates?: { channel: "stable" | "beta" }
     ui: {
         accentColor: string
         showAdult: boolean
@@ -439,6 +450,12 @@ export type Settings = {
         showEpisodeTitle: boolean
         blurUnwatched: boolean
         homeSections: string[]
+        // lib/themes.ts: a COLOR_THEMES id; "auto", "off" or a HOLIDAYS id.
+        colorTheme?: string
+        seasonal?: string
+        seasonalEffects?: boolean
+        // KumoBox's look from before 2.0.
+        classicLook?: boolean
     }
     discord: { richPresence: boolean; clientId: string }
     extensions: { marketplaceUrl: string; autoUpdate: boolean }
@@ -532,6 +549,15 @@ export type Status = {
     dataDir: string
     listenAddr: string
     lanUrls?: string[] | null // where devices on the home network open KumoBox
+    paired?: string[] | null // the KumoBoxes this one is paired with (library sharing): Home's Sync
+    // The computers sharing their library with this one that don't answer
+    // (asleep or off), and whether they can be woken up from here.
+    asleep?: { id: string; name: string; canWake: boolean; waking: boolean }[] | null
+    // Home's questions about the other KumoBox apps (only for this computer):
+    // share with a new one ("new"), or update one of the two ("older": its
+    // KumoBox is older than this one, "newer": this one is).
+    devicePrompts?: DevicePrompt[] | null
+    keptAwake?: boolean // another device is playing this computer's files, so it stays awake
     webUiForced: boolean
     setupRunning?: boolean // Windows: the window installing KumoBox's programs is open
     settings: Settings
@@ -540,6 +566,8 @@ export type Status = {
 // A part of a video its chapters name as an intro, a recap, the credits or a
 // preview of the next episode (GET /api/playback/skips).
 export type SkipInterval = { type: string; start: number; end: number }
+
+export type DevicePrompt = { kind: "new" | "older" | "newer"; id: string; name: string; platform?: string; version: string }
 
 export type PlaybackSession = {
     id: string
@@ -582,6 +610,8 @@ export type ProbeStream = {
     channels?: number
     width?: number
     height?: number
+    profile?: string
+    pixFmt?: string
     bitmap?: boolean
 }
 
@@ -794,6 +824,8 @@ export type DownloadItem = {
     progress: number
     speed: string
     eta: string
+    // How much video is downloaded when the length isn't known ("12:30").
+    done?: string
     error?: string
     output?: string
     createdAt: number
@@ -996,7 +1028,8 @@ export type FolderInfo = {
 }
 
 // KumoBox's own updates (GET /api/update, and the "update-status" event).
-export type UpdateVersion = { version: string; commit: string; date?: string; url?: string }
+// beta: a pre-release (or, on Linux, the default branch's head).
+export type UpdateVersion = { version: string; commit: string; date?: string; url?: string; beta?: boolean }
 
 export type UpdateState = "idle" | "downloading" | "building" | "installing" | "ready" | "failed"
 
@@ -1018,6 +1051,7 @@ export type UpdateStatus = {
     message?: string
     log: string[] | null // the last output lines
     manualCommand?: string // a command to run in a terminal
+    installFile?: string // Android: the downloaded APK the app installs
 }
 
 // Library sharing with other KumoBox apps on the network.
@@ -1033,6 +1067,16 @@ export type SharingPeer = {
     files: number
     manual: boolean
     error?: string
+    // Granted to it (with allowed): downloading here; granted by it (it
+    // shares): downloading there.
+    downloads: boolean
+    takesDownloads: boolean
+    // It shares with this KumoBox and has said how to wake it up (Wake-on-LAN);
+    // waking: a wake-up was just sent.
+    canWake?: boolean
+    waking?: boolean
+    platform?: string // what it runs on ("android": a TV)
+    declined?: boolean // asked on Home whether to share with it: "not now"
 }
 
 export type SharingStatus = { enabled: boolean; id: string; name: string; listening: boolean; peers: SharingPeer[]; addresses: string[] }
