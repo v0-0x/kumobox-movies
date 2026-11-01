@@ -32,7 +32,7 @@ func TestTorrentThroughTheRelay(t *testing.T) {
 		t.Skip("no ffprobe")
 	}
 	s := newTestServer(t)
-	dir := t.TempDir()
+	dir := seedDir(t)
 	name := "Test.Movie.2020.mkv"
 	video := filepath.Join(dir, name)
 	cmd := exec.Command(ffmpeg, "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=24", "-f", "lavfi", "-i", "sine=duration=4",
@@ -90,7 +90,7 @@ func TestTorrentThroughTheRelay(t *testing.T) {
 // the "remote:" path to convert it.
 func TestTorrentStreamPlay(t *testing.T) {
 	s := newProvidersServer(t)
-	dir := t.TempDir()
+	dir := seedDir(t)
 	name := "The.Dark.Knight.2008.1080p.mp4"
 	data := make([]byte, 700<<10)
 	for i := range data {
@@ -154,4 +154,21 @@ func TestTorrentStreamPlay(t *testing.T) {
 	if w := do(s, "GET", played.Sources[0].URL, local, "", nil); w.Code != http.StatusNotFound {
 		t.Fatalf("after stop: %d", w.Code)
 	}
+}
+
+// seedDir is a temporary folder for a seeder's files, removed after the
+// test as well as it can be: on Windows, a file a client has just closed
+// can't be removed at once (t.TempDir would fail the test).
+func seedDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "seed-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 50 && os.RemoveAll(dir) != nil; i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	return dir
 }

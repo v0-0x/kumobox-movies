@@ -25,7 +25,7 @@ import (
 // computer, and returns its magnet link (its address in it).
 func seed(t *testing.T, name string, data []byte) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := tempDir(t)
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestStreamFromAPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	magnet := seed(t, "Test.Movie.2020.1080p.mkv", data)
-	e := New(filepath.Join(t.TempDir(), "cache"))
+	e := New(filepath.Join(tempDir(t), "cache"))
 	t.Cleanup(e.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -108,6 +108,20 @@ func TestStreamFromAPeer(t *testing.T) {
 	if !bytes.Equal(got, data) {
 		t.Fatalf("the whole file: %d of %d bytes, equal %v", len(got), len(data), bytes.Equal(got, data))
 	}
+	// From the loopback address too (ffmpeg's, mpv's).
+	loop, err := e.URL(st.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := http.Get(loop); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("loopback: %v %v", resp, err)
+	} else {
+		got, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if !bytes.Equal(got, data) {
+			t.Fatal("loopback: not the file")
+		}
+	}
 	if st, _ := e.Status(st.ID); st.Done != int64(len(data)) {
 		t.Fatalf("status after: %+v", st)
 	}
@@ -125,8 +139,16 @@ func TestStreamFromAPeer(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("served after Stop: %d", resp.StatusCode)
 	}
-	if entries, _ := os.ReadDir(e.dir); len(entries) != 0 {
-		t.Fatalf("files left in the cache: %v", entries)
+	// Removed (on Windows once the client has let go of them).
+	for i := 0; ; i++ {
+		entries, _ := os.ReadDir(e.dir)
+		if len(entries) == 0 {
+			break
+		}
+		if i == 100 {
+			t.Fatalf("files left in the cache: %v", entries)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -145,4 +167,21 @@ func TestMagnet(t *testing.T) {
 	if _, err := Magnet("https://example.com/x.torrent", "", ""); err == nil {
 		t.Fatal("not a magnet, taken")
 	}
+}
+
+// tempDir is a temporary folder removed after the test as well as it can
+// be: on Windows, a file a client has just closed can't be removed at
+// once (t.TempDir would fail the test).
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "torrentstream-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 50 && os.RemoveAll(dir) != nil; i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	return dir
 }

@@ -19,6 +19,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -86,6 +87,12 @@ type Engine struct {
 	client   client
 	sessions map[string]*session
 	stop     chan struct{}
+
+	// The loopback address the sessions are read from by ffmpeg and mpv
+	// (URL), started once.
+	loopOnce sync.Once
+	loopAddr string
+	loopErr  error
 }
 
 // session is a torrent being played: the file played of it.
@@ -268,8 +275,25 @@ func (e *Engine) dropLocked(s *session) {
 		}
 	}
 	s.t.drop()
-	_ = os.RemoveAll(filepath.Join(e.dir, s.t.infoHash()))
+	removeDir(filepath.Join(e.dir, s.t.infoHash()))
 	log.Printf("torrent stream: done with %s", s.name)
+}
+
+// removeDir removes a dropped torrent's files: again for a while when they
+// can't be yet (on Windows, a file the client hasn't closed yet can't be).
+func removeDir(dir string) {
+	if os.RemoveAll(dir) == nil {
+		return
+	}
+	go func() {
+		for range 30 {
+			time.Sleep(time.Second)
+			if os.RemoveAll(dir) == nil {
+				return
+			}
+		}
+		log.Printf("torrent stream: couldn't remove %s", dir)
+	}()
 }
 
 // Status is how a session is doing.
@@ -347,6 +371,44 @@ type touching struct {
 func (t *touching) Read(p []byte) (int, error) {
 	t.s.lastRead.Store(time.Now().UnixNano())
 	return t.ReadSeeker.Read(p)
+}
+
+// URL is where a session's file is read from on this computer (by ffmpeg,
+// mpv): a loopback address only this computer reaches, the session's
+// unguessable ID in it.
+func (e *Engine) URL(id string) (string, error) {
+	e.loopOnce.Do(func() {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			e.loopErr = err
+			return
+		}
+		e.loopAddr = ln.Addr().String()
+		srv := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id, ok := strings.CutPrefix(r.URL.Path, "/t/")
+			if !ok || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+				http.NotFound(w, r)
+				return
+			}
+			e.Serve(w, r, id)
+		})}
+		go func() { _ = srv.Serve(ln) }()
+	})
+	if e.loopErr != nil {
+		return "", e.loopErr
+	}
+	return "http://" + e.loopAddr + "/t/" + id, nil
+}
+
+// Size is the size of a session's file.
+func (e *Engine) Size(id string) (int64, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.sessions[id]
+	if !ok {
+		return 0, false
+	}
+	return s.size, true
 }
 
 // Handler serves a session's file (see Serve), for the stream relay.
