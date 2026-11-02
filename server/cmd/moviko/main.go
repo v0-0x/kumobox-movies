@@ -1,4 +1,4 @@
-// Command kumobox is the KumoBox server, for movies and TV shows. It serves the
+// Command moviko is the Moviko server, for movies and TV shows. It serves the
 // API and the web UI on 127.0.0.1 (and optionally your LAN) and is started by
 // the desktop app.
 package main
@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/v0-0x/kumobox-movies/server/internal/api"
@@ -24,7 +25,7 @@ import (
 
 func main() {
 	var (
-		dataDir = flag.String("data-dir", config.DataDir(), "where KumoBox stores its database")
+		dataDir = flag.String("data-dir", config.DataDir(), "where Moviko stores its database")
 		port    = flag.Int("port", 0, "override the port (default from settings, 43311)")
 		webUI   = flag.Bool("web-ui", false, "force-enable the browser web UI for this run")
 		desktop = flag.Bool("desktop", false, "started by the desktop app")
@@ -38,11 +39,12 @@ func main() {
 		fmt.Println(config.AppName, config.AppVersion)
 		return
 	}
-	limitMemory(os.Getenv)
-	// Whatever KumoBox starts (ffmpeg, mpv, yt-dlp) ends with it, even when
+	// MOVIKO_MEMORY_LIMIT_MB, or KUMOBOX_ as it was set before the rename.
+	limitMemory(func(k string) string { return config.Getenv(strings.TrimPrefix(k, "MOVIKO_")) })
+	// Whatever Moviko starts (ffmpeg, mpv, yt-dlp) ends with it, even when
 	// it's killed.
 	if err := util.BindChildren(); err != nil {
-		log.Printf("child processes won't end with KumoBox: %v", err)
+		log.Printf("child processes won't end with Moviko: %v", err)
 	}
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatal(err)
@@ -60,7 +62,7 @@ func main() {
 	if t := config.Getenv("SHELL_TOKEN"); len(t) >= 32 {
 		a.ShellToken, appWindow = t, true
 	}
-	_ = os.Unsetenv("KUMOBOX_SHELL_TOKEN")
+	_ = os.Unsetenv("MOVIKO_SHELL_TOKEN")
 	if *port > 0 {
 		cfg := a.Settings.Get()
 		cfg.Server.Port = *port
@@ -75,7 +77,7 @@ func main() {
 	srv.ForceWebUI = *webUI || (!*desktop && !appWindow)
 	srv.AppOnly = appWindow
 	if err := srv.Start(); err != nil {
-		log.Fatalf("could not start the server: %v (is KumoBox already running?)", err)
+		log.Fatalf("could not start the server: %v (is Moviko already running?)", err)
 	}
 	a.Start()
 	cfg := a.Settings.Get()
@@ -100,7 +102,7 @@ func main() {
 			sig <- syscall.SIGTERM
 		}()
 	}
-	// A signal, or a request from inside KumoBox (the updater restarting it
+	// A signal, or a request from inside Moviko (the updater restarting it
 	// into a new version): both shut down the same way.
 	var exit lifecycle.Exit
 	select {
@@ -115,12 +117,12 @@ func main() {
 	end(exit, *desktop)
 }
 
-// end finishes the process the way exit asks, once KumoBox has shut down.
+// end finishes the process the way exit asks, once Moviko has shut down.
 func end(exit lifecycle.Exit, desktop bool) {
 	restart := exit.Restart
 	if exit.Before != nil {
 		if err := exit.Before(); err != nil {
-			log.Printf("%v; starting KumoBox again", err)
+			log.Printf("%v; starting Moviko again", err)
 			restart = true
 		}
 	}
@@ -135,7 +137,7 @@ func end(exit lifecycle.Exit, desktop bool) {
 	// runs itself again, in place, where the system can.
 	if !desktop && canReexec {
 		err := reexec()
-		log.Printf("could not start KumoBox again: %v", err)
+		log.Printf("could not start Moviko again: %v", err)
 	}
 	os.Exit(lifecycle.CodeRestart)
 }

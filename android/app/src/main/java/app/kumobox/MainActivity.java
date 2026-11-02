@@ -44,8 +44,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * KumoBox for Android, made for TVs (a Fire TV Stick) and the libraries the
- * computers at home share: it runs KumoBox's server (KumoBoxServer) and shows its
+ * Moviko for Android, made for TVs (a Fire TV Stick) and the libraries the
+ * computers at home share: it runs Moviko's server (KumoBoxServer) and shows its
  * web UI, which on a TV is driven by the remote (TV mode, web/src/lib/tv.ts).
  */
 public class MainActivity extends Activity {
@@ -65,11 +65,11 @@ public class MainActivity extends Activity {
     private boolean loaded;
     private boolean starting;
     private boolean resumed;
-    // Checks the server runs, while KumoBox shows (see watch).
+    // Checks the server runs, while Moviko shows (see watch).
     private final Runnable watcher = this::watch;
 
     // The window's color: the page's (its --frame), so nothing flashes a
-    // different black between the start and KumoBox showing.
+    // different black between the start and Moviko showing.
     static final int FRAME = Color.rgb(10, 10, 11);
 
     @Override
@@ -80,7 +80,7 @@ public class MainActivity extends Activity {
         web = newWebView();
         root.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         // The starting screen: the logo, a spinner and what's happening;
-        // or why KumoBox didn't start (scrolling, with the server's last lines).
+        // or why Moviko didn't start (scrolling, with the server's last lines).
         float dp = getResources().getDisplayMetrics().density;
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -100,7 +100,7 @@ public class MainActivity extends Activity {
         message.setGravity(Gravity.CENTER);
         int pad = (int) (32 * dp);
         message.setPadding(pad, (int) (16 * dp), pad, pad);
-        message.setText("Starting KumoBox…");
+        message.setText("Starting Moviko…");
         // A tap tries again (phones have no OK key).
         message.setOnClickListener(v -> retry());
         box.addView(message, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -111,7 +111,7 @@ public class MainActivity extends Activity {
         root.addView(messageScroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
 
-        // The other KumoBox apps announce themselves by multicast, which Wi-Fi
+        // The other Moviko apps announce themselves by multicast, which Wi-Fi
         // drops for apps without this.
         WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wifi != null) {
@@ -148,8 +148,8 @@ public class MainActivity extends Activity {
         // A TV has its own text size (tv.ts): Android's font size setting
         // would only make the labels overflow their buttons.
         if (isTV()) s.setTextZoom(100);
-        s.setUserAgentString(s.getUserAgentString() + " KumoBoxAndroid/" + versionName() + (isTV() ? " KumoBoxTV" : ""));
-        web.addJavascriptInterface(new Bridge(), "KumoBoxAndroid");
+        s.setUserAgentString(s.getUserAgentString() + " MovikoAndroid/" + versionName() + (isTV() ? " MovikoTV" : ""));
+        web.addJavascriptInterface(new Bridge(), "MovikoAndroid");
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
@@ -164,7 +164,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                // Not the WebView's own error page, if KumoBox's didn't load.
+                // Not the WebView's own error page, if Moviko's didn't load.
                 if (!loaded && !pageFailed && url.startsWith(KumoBoxServer.URL)) {
                     loaded = true;
                     web.setVisibility(View.VISIBLE);
@@ -177,12 +177,12 @@ public class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
                 if (!req.isForMainFrame() || loaded) return;
                 pageFailed = true;
-                if (!KumoBoxServer.get(MainActivity.this).running()) restartServer("Starting KumoBox…");
-                else failed("KumoBox's page didn't open: " + err.getDescription());
+                if (!KumoBoxServer.get(MainActivity.this).running()) restartServer("Starting Moviko…");
+                else failed("Moviko's page didn't open: " + err.getDescription());
             }
 
             // The page's process crashed (or Android ended it for memory):
-            // a new WebView, the page opened again, rather than KumoBox closing.
+            // a new WebView, the page opened again, rather than Moviko closing.
             @TargetApi(26)
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
@@ -196,7 +196,7 @@ public class MainActivity extends Activity {
                 root.addView(MainActivity.this.web, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 loaded = false;
                 messageScroll.setVisibility(View.VISIBLE);
-                showMessage("Opening KumoBox again…", false);
+                showMessage("Opening Moviko again…", false);
                 if (KumoBoxServer.get(MainActivity.this).running()) openPage(KumoBoxServer.get(MainActivity.this));
                 else startServer();
                 return true;
@@ -234,7 +234,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** Only KumoBox's pages show here: anything else (TMDB, Letterboxd, GitHub…) opens in a browser, if there's one, so the bridge stays KumoBox's own. */
+    /** Only Moviko's pages show here: anything else (TMDB, Letterboxd, GitHub…) opens in a browser, if there's one, so the bridge stays Moviko's own. */
     private boolean leave(Uri u) {
         if ("127.0.0.1".equals(u.getHost()) && u.getPort() == KumoBoxServer.PORT) return false;
         try {
@@ -267,7 +267,7 @@ public class MainActivity extends Activity {
                 : 0);
     }
 
-    /** Starts the server if needed, and shows KumoBox once it answers. */
+    /** Starts the server if needed, and shows Moviko once it answers. */
     private void startServer() {
         if (starting) return;
         starting = true;
@@ -279,18 +279,18 @@ public class MainActivity extends Activity {
                 long until = System.currentTimeMillis() + 40_000;
                 while (!server.ready()) {
                     if (!server.running()) {
-                        failure = "KumoBox's server stopped.\n\n" + server.whyStopped();
+                        failure = "Moviko's server stopped.\n\n" + server.whyStopped();
                         break;
                     }
                     if (System.currentTimeMillis() > until) {
                         String lines = server.lastLines();
-                        failure = "KumoBox's server doesn't answer." + (lines.isEmpty() ? "" : "\n\n" + lines);
+                        failure = "Moviko's server doesn't answer." + (lines.isEmpty() ? "" : "\n\n" + lines);
                         break;
                     }
                     Thread.sleep(250);
                 }
             } catch (Exception e) {
-                failure = "KumoBox's server couldn't start: " + e.getMessage();
+                failure = "Moviko's server couldn't start: " + e.getMessage();
             }
             final String error = failure;
             main.post(() -> {
@@ -299,7 +299,7 @@ public class MainActivity extends Activity {
                     failed(error);
                     return;
                 }
-                showMessage("Starting KumoBox…", false);
+                showMessage("Starting Moviko…", false);
                 openPage(server);
             });
         }, "kumobox-start").start();
@@ -312,25 +312,25 @@ public class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
-    /** Why KumoBox didn't open, and how to try again: first, then the details. */
+    /** Why Moviko didn't open, and how to try again: first, then the details. */
     private void failed(String why) {
         Log.e("kumobox", why);
         String how = isTV() ? "Press OK to try again, or Back to close." : "Tap here to try again, or go back to close.";
-        showMessage("KumoBox couldn't start.\n" + how + "\n\n" + why, true);
+        showMessage("Moviko couldn't start.\n" + how + "\n\n" + why, true);
     }
 
-    /** OK, or a tap, on why KumoBox didn't start: again. */
+    /** OK, or a tap, on why Moviko didn't start: again. */
     private void retry() {
         if (loaded || starting) return;
-        showMessage("Starting KumoBox…", false);
+        showMessage("Starting Moviko…", false);
         startServer();
     }
 
-    /** Opens KumoBox's page (the server answers). */
+    /** Opens Moviko's page (the server answers). */
     private void openPage(KumoBoxServer server) {
         pageFailed = false;
         letScreenSleep();
-        // The cookie that proves the WebView is KumoBox's (KumoBoxServer.token).
+        // The cookie that proves the WebView is Moviko's (KumoBoxServer.token).
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
         cookies.setCookie(KumoBoxServer.URL, "kumobox_shell=" + server.token() + "; Path=/; HttpOnly; SameSite=Strict");
@@ -348,18 +348,18 @@ public class MainActivity extends Activity {
         startServer();
     }
 
-    /** While KumoBox shows: the server stopped (crashed, or Android ended it), it's started again. */
+    /** While Moviko shows: the server stopped (crashed, or Android ended it), it's started again. */
     private void watch() {
         main.removeCallbacks(watcher);
         if (!resumed) return;
         if (loaded && !starting && !KumoBoxServer.get(this).running()) {
             Log.e("kumobox", "the server stopped: starting it again");
-            restartServer("KumoBox's server stopped: starting it again…");
+            restartServer("Moviko's server stopped: starting it again…");
         }
         main.postDelayed(watcher, 5000);
     }
 
-    /** The screen before KumoBox shows: starting, or why it didn't. */
+    /** The screen before Moviko shows: starting, or why it didn't. */
     private void showMessage(String text, boolean error) {
         message.setText(text);
         // An error has the details (the server's last lines): smaller, from the top, scrolling.
@@ -380,8 +380,8 @@ public class MainActivity extends Activity {
         web.onResume();
         // Back from the home screen: the page syncs with the computers (Auto-Sync).
         js("window.kumoboxResumed&&window.kumoboxResumed()");
-        // Android may have stopped it while KumoBox was in the background.
-        if (!starting && !KumoBoxServer.get(this).running()) restartServer("Starting KumoBox…");
+        // Android may have stopped it while Moviko was in the background.
+        if (!starting && !KumoBoxServer.get(this).running()) restartServer("Starting Moviko…");
         main.postDelayed(watcher, 5000);
     }
 
@@ -453,7 +453,7 @@ public class MainActivity extends Activity {
                 return true;
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
-                // KumoBox didn't start: OK tries again.
+                // Moviko didn't start: OK tries again.
                 if (!loaded && !starting && down) {
                     retry();
                     return true;
@@ -468,7 +468,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Back: the page closes what's open or goes back; at Home, KumoBox goes to
+     * Back: the page closes what's open or goes back; at Home, Moviko goes to
      * the background (to the TV's home), its server still there: opened
      * again, it's as it was, and the other devices still reach it.
      */
@@ -492,7 +492,7 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------ the bridge
 
-    /** What the page asks of the app (window.KumoBoxAndroid). */
+    /** What the page asks of the app (window.MovikoAndroid). */
     private final class Bridge {
         /** Keeps the screen on while a video plays. */
         @JavascriptInterface
@@ -515,7 +515,7 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (intent == null || !Installer.ACTION.equals(intent.getAction())) return;
-        // Only the answer to an install KumoBox asked for: any app may start
+        // Only the answer to an install Moviko asked for: any app may start
         // this activity, and have it start what it gives (EXTRA_INTENT).
         if (!Installer.isOurs(this, intent)) return;
         int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);

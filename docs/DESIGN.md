@@ -1,6 +1,6 @@
-# KumoBox design notes
+# Moviko design notes
 
-KumoBox is Kumo (the anime app, github.com/v0-0x/kumo-anime) turned into an
+Moviko is Kumo (the anime app, github.com/v0-0x/kumo-anime) turned into an
 app for **movies and TV shows**. It keeps Kumo's architecture and features —
 Go server + React web UI embedded in the binary + Electron shell, local
 library with automatic matching, mpv and in-app player, online streaming
@@ -9,7 +9,7 @@ extensions and UI plugins, library sharing between computers, Discord
 presence, self-updates on Windows/macOS/Arch — and swaps the anime-specific
 parts:
 
-| Kumo (anime)                         | KumoBox (movies & shows)                                                |
+| Kumo (anime)                         | Moviko (movies & shows)                                                |
 |--------------------------------------|-------------------------------------------------------------------------|
 | AniList (metadata + list)            | **TMDB** metadata (`internal/catalog`) + local list                     |
 | AniList account sync                 | **Letterboxd** sync (`internal/letterboxd`): RSS diary, export import, CSV export, optional API |
@@ -62,7 +62,7 @@ parts:
 
 ## Settings (server/internal/config)
 
-New blocks (see `config/kumobox.go`): `tmdb` (apiKey, language, region),
+New blocks (see `config/moviko.go`): `tmdb` (apiKey, language, region),
 `letterboxd` (username, autoSync, syncMinutes, logWatched,
 importWatchlist, apiClientId, apiClientSecret), `providers` (archive,
 stremioCatalogs, nuvioRepos, preferredQuality, timeoutSeconds,
@@ -73,7 +73,7 @@ Kumo's `aniCli`, `manga` and `anilist` blocks are gone.
 
 Without a TMDB key the app still runs (library scan, players, settings)
 and the UI asks for a key (first-run banner + Settings › Metadata).
-`KUMOBOX_TMDB_URL` / `KUMOBOX_TMDB_IMAGE_URL` override the API and image
+`MOVIKO_TMDB_URL` / `MOVIKO_TMDB_IMAGE_URL` override the API and image
 hosts (tests, offline demos).
 
 ## Playback (`internal/player`)
@@ -118,13 +118,13 @@ hosts (tests, offline demos).
   "Show — S01E02 · Episode title" and movies "Title (Year)".
 * **Discord** (`discord.Presence`): "Watching <title>", the episode
   ("S01E02 · Episode title") or the year, the TMDB poster as the large
-  image (an https URL), the application's `kumobox` art asset as the
-  small one ("KumoBox"), and the time bar while playing. It needs a
+  image (an https URL), the application's `moviko` art asset as the
+  small one ("Moviko"), and the time bar while playing. It needs a
   Discord application id in Settings › Discord.
 
 ## HTTP API (renamed from Kumo's anime routes)
 
-| Kumo | KumoBox |
+| Kumo | Moviko |
 |---|---|
 | `GET /api/anime/collection` | `GET /api/media/collection?type=` |
 | `GET /api/anime/{id}` | `GET /api/media/{id}`; fetched from TMDB again: `POST /api/media/{id}/refresh` |
@@ -156,7 +156,7 @@ becomes Watched (played to the end, marked watched, or put on the Watched
 list: `App.UpdateEntry`) is logged in the diary once a day
 (`app/letterboxd.go`), and a rating given afterwards goes to that entry
 while it isn't on Letterboxd yet; shows aren't logged, nor what another
-KumoBox on the account finished. A diary entry Letterboxd has (imported,
+Moviko on the account finished. A diary entry Letterboxd has (imported,
 or sent) that the user deletes is remembered (`diary_deleted`): syncing
 doesn't import it again, by its id or as the same film the same day.
 Events: `letterboxd-status` (with the
@@ -166,12 +166,12 @@ status), `diary-updated`, `collection-updated`.
 
 * **GET requests only read** (filling a cache when it misses). Whatever
   fetches again, syncs, installs, tests or changes something is a POST,
-  PUT, PATCH or DELETE, which the middleware only takes from KumoBox's own
+  PUT, PATCH or DELETE, which the middleware only takes from Moviko's own
   pages (Origin, Fetch Metadata and Host checks): a link or an image on
   another website can't trigger it. Fetching again: `POST
   /api/media/{id}/refresh`, `POST /api/providers/streams/refresh`, `POST
   /api/providers/stremio/catalog/refresh`, `POST
-  /api/extensions/marketplace/refresh`; asking the KumoBoxes sharing their
+  /api/extensions/marketplace/refresh`; asking the Movikos sharing their
   libraries again: `POST /api/sharing/refresh`.
 * **Devices on the LAN** (`isTrusted` false) browse, play, download and
   change the list, but never get secrets (`settingsFor`, `eventFor`,

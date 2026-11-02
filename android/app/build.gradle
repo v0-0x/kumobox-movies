@@ -1,5 +1,5 @@
-// KumoBox for Android (a TV's, mainly). Built by .github/workflows/android.yml,
-// which first builds KumoBox's server for Android into src/main/jniLibs (see
+// Moviko for Android (a TV's, mainly). Built by .github/workflows/android.yml,
+// which first builds Moviko's server for Android into src/main/jniLibs (see
 // README.md here).
 plugins {
     id 'com.android.application'
@@ -19,19 +19,19 @@ android {
         targetSdk 34
         // 2.0.<commits since 2.0.0's>, like the other releases; the number
         // of commits is the version code.
-        versionName env('KUMOBOX_VERSION', '1.0.0')
-        versionCode env('KUMOBOX_VERSION_CODE', '1') as int
+        versionName env('MOVIKO_VERSION', '1.0.0')
+        versionCode env('MOVIKO_VERSION_CODE', '1') as int
     }
 
-    // KumoBox's key (KUMOBOX_KEYSTORE and its passwords, see README.md), or
+    // Moviko's key (MOVIKO_KEYSTORE and its passwords, see README.md), or
     // else the debug key: a build of your own, for your own devices.
     signingConfigs {
         release {
-            if (System.getenv('KUMOBOX_KEYSTORE')) {
-                storeFile file(System.getenv('KUMOBOX_KEYSTORE'))
-                storePassword env('KUMOBOX_KEYSTORE_PASSWORD', '')
-                keyAlias env('KUMOBOX_KEY_ALIAS', 'kumobox')
-                keyPassword env('KUMOBOX_KEY_PASSWORD', env('KUMOBOX_KEYSTORE_PASSWORD', ''))
+            if (System.getenv('MOVIKO_KEYSTORE')) {
+                storeFile file(System.getenv('MOVIKO_KEYSTORE'))
+                storePassword env('MOVIKO_KEYSTORE_PASSWORD', '')
+                keyAlias env('MOVIKO_KEY_ALIAS', 'kumobox')
+                keyPassword env('MOVIKO_KEY_PASSWORD', env('MOVIKO_KEYSTORE_PASSWORD', ''))
             }
         }
     }
@@ -39,7 +39,7 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig System.getenv('KUMOBOX_KEYSTORE') ? signingConfigs.release : signingConfigs.debug
+            signingConfig System.getenv('MOVIKO_KEYSTORE') ? signingConfigs.release : signingConfigs.debug
         }
     }
 

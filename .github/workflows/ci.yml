@@ -1,4 +1,4 @@
-# Checks KumoBox on Linux, quickly, for every push to any branch and for pull
+# Checks Moviko on Linux, quickly, for every push to any branch and for pull
 # requests: Go formatting, go vet (for Linux, and for Windows and macOS
 # without their machines), the Go tests, and the web UI's build (which type
 # checks it with tsc). The Windows and macOS workflows build, test and

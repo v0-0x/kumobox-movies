@@ -1,6 +1,6 @@
 # Streaming providers
 
-KumoBox finds something to watch for a movie or an episode by asking
+Moviko finds something to watch for a movie or an episode by asking
 **providers**. Each one answers with streams: direct links (played in the
 app or in mpv), torrents (streamed through the torrent client), YouTube
 videos or web pages to open. All enabled providers are asked at once, each
@@ -18,8 +18,8 @@ with the direct links. What the providers answered is kept five minutes.
 | luffy's site (built in, off by default) | `cinejoy` | Cinejoy, the source of the [luffy](https://github.com/DemonKingSwarn/luffy) command-line app: HLS (or MP4) from its servers | TMDB id |
 | FreeFlix's sites (built in, off by default) | `vidlink`, `hexa`, `xpass`, `mapple`, `videasy` | the movie and show resolvers of the [FreeFlix](https://github.com/freedy237/freeflix-cli) command-line app ("GoldenMS") | TMDB id (Videasy: title too) |
 | Stremio addons | `stremio:<addon id>` | any addon serving `stream` (or `subtitles`) for `movie`/`series` | IMDb id (or `tmdb:` for addons that only take it) |
-| Nuvio providers | `nuvio:<id>` | JavaScript scrapers from Nuvio provider repositories, run in KumoBox's extension sandbox | TMDB id |
-| Extensions | `ext:<extension id>` | KumoBox/Seanime-style `onlinestream-provider` extensions: searched by title (+ year), the best match kept (wrong match? pick it by hand in Watch online), episodes numbered from the show's first one | title |
+| Nuvio providers | `nuvio:<id>` | JavaScript scrapers from Nuvio provider repositories, run in Moviko's extension sandbox | TMDB id |
+| Extensions | `ext:<extension id>` | Moviko/Seanime-style `onlinestream-provider` extensions: searched by title (+ year), the best match kept (wrong match? pick it by hand in Watch online), episodes numbered from the show's first one | title |
 
 On a title's page, **Watch online** lists the streams of the movie, or of
 the episode picked (the next one to watch by default): play a direct link
@@ -40,7 +40,7 @@ in the browser. They show even without any provider enabled.
 
 ### Health
 
-KumoBox keeps how each provider's searches went (in the database, so it
+Moviko keeps how each provider's searches went (in the database, so it
 lasts across restarts): answers and failures, failures in a row, the last
 error (the links it names cut down to their host: addon links can carry
 the addon's settings) and the last ten answers' times. An answer with no
@@ -113,7 +113,7 @@ found for the title are listed in the player's subtitle menu (by
 language) as WebVTT, fetched through the proxy and converted from SubRip
 or ASS/SSA (UTF-8, UTF-16 or Windows-1252, gzipped or not). Once a
 link's way of playing is decided, the player asks the subtitle addons
-again for the very file (`GET /api/providers/subtitles`): KumoBox reads
+again for the very file (`GET /api/providers/subtitles`): Moviko reads
 its size and OpenSubtitles hash (the size plus the sum of the
 little-endian 64-bit words of its first and last 64 KiB) with two byte
 ranges, fetched like the stream, and sends them as Stremio does
@@ -134,7 +134,7 @@ included (the addresses of Stremio addons installed as local ones
 excepted), by what the link answers with
 (`server/internal/downloads/fetch.go`):
 
-* **A video file** is fetched by KumoBox itself, with the stream's
+* **A video file** is fetched by Moviko itself, with the stream's
   headers. When the connection breaks it picks up where it stopped (a byte
   range from there, `If-Range` so a changed file starts over), and the
   file is named after what it holds (a Matroska file a provider calls an
@@ -190,7 +190,7 @@ codecs and container; files a browser can't play as they are (Matroska,
 HEVC, AC-3/DTS...) are converted by the in-app player, mpv plays them all.
 
 The token is a secret: devices on the LAN get the settings without it, the
-links listed and handed to players carry none, and it isn't logged. KumoBox
+links listed and handed to players carry none, and it isn't logged. Moviko
 adds it when it fetches a server's video itself (stream proxy, relay, mpv,
 downloads), and only for the video paths above: the stream proxy can't be
 used to call a server's API with it. The servers' addresses are trusted
@@ -204,7 +204,7 @@ The streaming sites of two command-line apps are built in, ported to Go:
 default source) and **Vidlink, Hexa, Xpass, Mapple and Videasy** from
 [FreeFlix](https://github.com/freedy237/freeflix-cli) (its "GoldenMS"
 movies & series source; FreeFlix's other sources are anime or French
-sites, and its YTS/EZTV torrents are already KumoBox torrent sources).
+sites, and its YTS/EZTV torrents are already Moviko torrent sources).
 They're unofficial sites: each is off until turned on, on the Providers &
 extensions page (Built-in) or in Settings › Providers, which also takes a
 mirror's address for each (`providers.sites`: `{cinejoy, vidlink, hexa,
@@ -217,9 +217,9 @@ proxy and mpv send it.
 * **Cinejoy** (`url`: the resolver, `https://api.shegu.st`): the resolver
   only takes requests sealed by Cinejoy's own encoder, `crush.wasm`
   (an ephemeral key; the answer comes back AES-256-GCM encrypted).
-  KumoBox downloads it from the resolver, checks its SHA-256 against the
+  Moviko downloads it from the resolver, checks its SHA-256 against the
   build luffy pins (`cinejoy.EncoderSHA256`: a changed encoder is refused
-  until KumoBox is updated), refuses it if it imports anything from its
+  until Moviko is updated), refuses it if it imports anything from its
   host, and runs it in [wazero](https://wazero.io) with nothing but its own
   memory (32 MiB at most, 5 seconds a request). Like luffy, it asks the
   servers proven to work (Lisbon, Nebula, Solara) that `/servers` says are
@@ -227,7 +227,7 @@ proxy and mpv send it.
   first segment (or the file's first bytes) load; once one has, the others
   get 3 more seconds. The best quality comes from the master playlist.
 * **Vidlink**, **Hexa** and **Videasy** encrypt requests or answers with
-  keys their web players work out: like FreeFlix, KumoBox has
+  keys their web players work out: like FreeFlix, Moviko has
   [enc-dec.app](https://enc-dec.app)'s API do it (`decryptUrl` to use
   another one), which is sent what they're asked for. Vidlink answers an
   HLS playlist or MP4 files per quality with subtitles; Hexa, HLS from its
@@ -264,12 +264,12 @@ Providers & extensions › Stremio addons:
   `{"addons": [...]}`, works too).
 
 The browser lists each addon's name, description, version, types and
-resources (those KumoBox uses — streams, subtitles — as badges), whether
+resources (those Moviko uses — streams, subtitles — as badges), whether
 it's installed (with Uninstall), and a **Configure** button opening the
 addon's `/configure` page in the browser when it's `configurable`; it
 searches names, descriptions and ids.
 
-* **Import from a Stremio account** (this computer only): KumoBox signs in
+* **Import from a Stremio account** (this computer only): Moviko signs in
   to Stremio's API (`POST /api/login` `{type: "Login", email, password}`,
   then `POST /api/addonCollectionGet` `{type: "AddonCollectionGet",
   authKey, update: true}`), installs the account's addons it can use and
@@ -278,9 +278,9 @@ searches names, descriptions and ids.
   LAN, adult, to configure, or of no use (catalogs, metadata). Those that
   need a confirmation are installed by their URL. The password and the
   session's key are used for those two requests only: never saved nor
-  logged. `KUMOBOX_STREMIO_API_URL` overrides the API's address (tests).
+  logged. `MOVIKO_STREMIO_API_URL` overrides the API's address (tests).
 
-KumoBox refuses addons it can't use (catalog- or metadata-only addons such
+Moviko refuses addons it can't use (catalog- or metadata-only addons such
 as Cinemeta), asks for confirmation for addons flagged `adult` and for
 addons running on this computer or the local network (a private address,
 `localhost`, a single-label host name like `nas`, or `.local`, `.lan`,
@@ -291,7 +291,7 @@ an addon replaces the installed one, in place. Addons can be disabled,
 reordered (they're asked, and their streams listed, in that order),
 refreshed (manifests downloaded again) and removed.
 
-Public addons are reached through KumoBox's guarded HTTP client, which
+Public addons are reached through Moviko's guarded HTTP client, which
 refuses to connect to the LAN even when a public host name resolves there.
 Answers are limited in size (2 MB for a manifest, 8 MB for streams and
 collections) and time (30 s per request, less within the provider
@@ -302,12 +302,12 @@ timeout).
 Providers & extensions › Nuvio providers: paste a repository's manifest
 URL, for example
 `https://raw.githubusercontent.com/<user>/<repo>/refs/heads/main/manifest.json`
-(kept in `providers.nuvioRepos`). KumoBox lists the repository's
+(kept in `providers.nuvioRepos`). Moviko lists the repository's
 providers; install the ones you want, or all those the repository enables
 by default. Installed providers are extensions of type `nuvio-provider`
 (id `nuvio.<provider id>`): they're enabled, disabled, updated and removed
 there (or with the extension API), with their logs, and their updates come
-with the other extension updates (KumoBox compares the versions in the
+with the other extension updates (Moviko compares the versions in the
 repository).
 
 ## HTTP API
@@ -351,9 +351,9 @@ manifest's `types` and `idPrefixes`, or `{name, types, idPrefixes}`
 objects), `idPrefixes`, `behaviorHints` (`adult`, `p2p`, `configurable`,
 `configurationRequired`).
 
-Stream objects, and what KumoBox makes of them:
+Stream objects, and what Moviko makes of them:
 
-| Stremio | KumoBox stream |
+| Stremio | Moviko stream |
 |---|---|
 | `url` (http/https) | direct link; a `magnet:` URL becomes a torrent |
 | `infoHash`, `fileIdx`, `sources` (`tracker:` entries) | torrent: info hash, file index (-1 = largest file), magnet link with those trackers (public trackers otherwise) |
@@ -396,7 +396,7 @@ too). A missing `id` is taken from the file name, a missing
 `supportedTypes` means both, a missing `enabled` means enabled (`enabled`
 only says whether "install all" picks the provider).
 
-## Writing a Nuvio provider for KumoBox
+## Writing a Nuvio provider for Moviko
 
 A provider is one CommonJS file exporting `getStreams`:
 
@@ -467,7 +467,7 @@ Differences with the Nuvio app:
   its generator-based output works too), and files using `import`/`export`
   are converted to CommonJS. A provider is still one file: bundle
   multi-file sources (`node build.js myprovider`).
-* Providers run in KumoBox's extension sandbox: they can't reach this
+* Providers run in Moviko's extension sandbox: they can't reach this
   computer or the local network (`localhost`, `192.168.x.x`... are
   refused, for the repository and the code too), a call to `getStreams`
   gets the provider timeout of Settings › Providers, loading the file
@@ -478,8 +478,8 @@ Differences with the Nuvio app:
   `fetch` reads answers up to 8 MB (HTML, JSON, JavaScript, XML, text;
   16 MB for other types) and rejects larger ones; at most 8 providers run
   at once (the others wait their turn, within their timeout); a call during
-  which KumoBox's memory grows by more than half its soft limit (128 MB by
-  default, see `KUMOBOX_MEMORY_LIMIT_MB`) is stopped with "the provider
+  which Moviko's memory grows by more than half its soft limit (128 MB by
+  default, see `MOVIKO_MEMORY_LIMIT_MB`) is stopped with "the provider
   used too much memory and was stopped", and the provider starts afresh on
   its next call. `String.prototype.repeat`/`padStart`/`padEnd` refuse
   results over 32 M characters (a `RangeError`, as V8 does past its own

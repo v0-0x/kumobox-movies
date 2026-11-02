@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <!-- The other KumoBox apps announce themselves by multicast. -->
+    <!-- The other Moviko apps announce themselves by multicast. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- Updates: Android asks before installing them. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -19,7 +19,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:theme="@style/KumoBox"
+        android:theme="@style/Moviko"
         android:usesCleartextTraffic="true">
 
         <activity

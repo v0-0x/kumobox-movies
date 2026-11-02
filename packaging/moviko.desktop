@@ -1,13 +1,13 @@
 [Desktop Entry]
 Type=Application
-Name=KumoBox
+Name=Moviko
 GenericName=Movie & TV Player
 Comment=Watch, stream and track your movies and TV shows
-Exec=kumobox %U
-Icon=kumobox
+Exec=moviko %U
+Icon=moviko
 Terminal=false
 Categories=AudioVideo;Video;Player;
 Keywords=movies;tv;shows;series;player;tmdb;letterboxd;torrent;
-StartupWMClass=KumoBox
+StartupWMClass=Moviko
 StartupNotify=true
 SingleMainWindow=true

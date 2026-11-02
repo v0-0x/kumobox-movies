@@ -15,13 +15,13 @@ const ARCHS = { 1: ["x64"], 3: ["arm64"], 4: ["x64", "arm64"] }
 exports.default = async function checkServer(context) {
     const platform = context.electronPlatformName
     if (platform === "win32") {
-        const server = path.join(dist, "windows", "kumobox.exe")
+        const server = path.join(dist, "windows", "moviko.exe")
         if (!fs.existsSync(server)) {
             throw new Error(`${server} is missing: build the Windows server first (packaging/windows/build.ps1, or make windows on Linux)`)
         }
     } else if (platform === "darwin") {
         for (const arch of ARCHS[context.arch] ?? [String(context.arch)]) {
-            const server = path.join(dist, "macos", `kumobox-${arch}`)
+            const server = path.join(dist, "macos", `moviko-${arch}`)
             if (!fs.existsSync(server)) {
                 throw new Error(`${server} is missing: build the macOS servers first (make macos)`)
             }

@@ -26,7 +26,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * KumoBox's server, the same as on a computer, built for Android and shipped as
+ * Moviko's server, the same as on a computer, built for Android and shipped as
  * the app's "native library" libkumobox.so (Android extracts those somewhere it
  * may run them). The app shows the web UI it serves on 127.0.0.1.
  */
@@ -78,7 +78,7 @@ final class KumoBoxServer {
         }
         // The one this app started before it was ended may still be
         // stopping (saving where a video was): this one waits for its port.
-        // One that doesn't stop by itself (started by an older KumoBox, which
+        // One that doesn't stop by itself (started by an older Moviko, which
         // didn't ask that) is asked to.
         waitForPort(40);
         if (portTaken()) {
@@ -100,9 +100,9 @@ final class KumoBoxServer {
         cmd.add("--exit-with-stdin");
         ProcessBuilder pb = new ProcessBuilder(cmd).directory(files).redirectErrorStream(true);
         environment(pb.environment());
-        // The app's WebView proves it's KumoBox's with it (a cookie): other
+        // The app's WebView proves it's Moviko's with it (a cookie): other
         // apps reach 127.0.0.1 too, and get nothing.
-        pb.environment().put("KUMOBOX_SHELL_TOKEN", token());
+        pb.environment().put("MOVIKO_SHELL_TOKEN", token());
         synchronized (last) {
             last.clear();
         }
@@ -127,7 +127,7 @@ final class KumoBoxServer {
     }
 
     /**
-     * The server's data: files/kumobox. KumoBox was called KumoBox before 2.0.37, and
+     * The server's data: files/kumobox. Moviko was called Moviko before 2.0.37, and
      * kept it in files/kumobox, which moves there the first time (or stays in
      * use while it can't be).
      */
@@ -147,9 +147,9 @@ final class KumoBoxServer {
         env.put("XDG_RUNTIME_DIR", new File(cache, "run").getAbsolutePath());
         env.put("XDG_CACHE_HOME", cache.getAbsolutePath());
         env.put("XDG_CONFIG_HOME", new File(files, "config").getAbsolutePath());
-        env.put("KUMOBOX_DATA_DIR", dataDir().getAbsolutePath());
+        env.put("MOVIKO_DATA_DIR", dataDir().getAbsolutePath());
         env.put("TZ", TimeZone.getDefault().getID());
-        env.put("KUMOBOX_DEVICE_NAME", deviceName());
+        env.put("MOVIKO_DEVICE_NAME", deviceName());
     }
 
     /**
@@ -216,7 +216,7 @@ final class KumoBoxServer {
             } catch (IOException e) {
                 continue; // another app's: not readable
             }
-            // KumoBox's server, wherever an older install put it (libkumobox.so:
+            // Moviko's server, wherever an older install put it (libkumobox.so:
             // its name before the rename).
             if (cmd.contains("/libkumobox.so") || cmd.contains("/libkumobox.so")) {
                 Log.i(TAG, "stopping the server left from before (" + pid + ")");
@@ -236,7 +236,7 @@ final class KumoBoxServer {
     }
 
     /**
-     * What the app's WebView proves it's KumoBox's with (in a cookie, see
+     * What the app's WebView proves it's Moviko's with (in a cookie, see
      * MainActivity): made once, kept where only this app can read it.
      */
     synchronized String token() {
@@ -442,7 +442,7 @@ final class KumoBoxServer {
                 + ", " + TextUtils.join("/", Build.SUPPORTED_ABIS) + ", program: " + abi + ", " + (binary().length() / (1024 * 1024)) + " MB";
     }
 
-    /** What the other KumoBox apps call this one: the device's name. */
+    /** What the other Moviko apps call this one: the device's name. */
     private String deviceName() {
         String name = null;
         if (Build.VERSION.SDK_INT >= 25) {
@@ -452,6 +452,6 @@ final class KumoBoxServer {
             name = Settings.Secure.getString(ctx.getContentResolver(), "bluetooth_name");
         }
         if (name == null || name.trim().isEmpty()) name = Build.MODEL;
-        return name == null ? "KumoBox" : name.trim();
+        return name == null ? "Moviko" : name.trim();
     }
 }

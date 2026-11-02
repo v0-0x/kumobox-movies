@@ -2,7 +2,7 @@
 <resources>
     <!-- The page's own black (its frame color) from the first moment, and the phone's
          bars in it too (a TV has none). -->
-    <style name="KumoBox" parent="@android:style/Theme.Material.NoActionBar">
+    <style name="Moviko" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/frame</item>
         <item name="android:colorAccent">#7C6CF2</item>
         <item name="android:statusBarColor">@color/frame</item>

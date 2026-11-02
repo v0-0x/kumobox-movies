@@ -1,19 +1,19 @@
-# KumoBox for Android
+# Moviko for Android
 
 Made for TVs (a Fire TV Stick, Android TV), mainly to watch the libraries
 the computers at home share; it works on phones and tablets too.
 
-The app runs KumoBox's server, the same as on a computer, built for Android
+The app runs Moviko's server, the same as on a computer, built for Android
 (`libkumobox.so`, which Android extracts somewhere it may run it), and shows its
 web UI full screen. On a TV the web UI is in TV mode (`web/src/lib/tv.ts`):
 the remote's arrows move the focus, OK presses, Back closes what's open or
-goes back (at Home, KumoBox goes to the background: its server stays, so the
+goes back (at Home, Moviko goes to the background: its server stays, so the
 computers still reach it), ☰ lists what a right-click would, and the media
 keys drive the player (Play, Pause, Play/Pause, rewind, fast-forward, Next
 for the next episode).
 
 - `app/src/main/java/app/kumobox/MainActivity.java`: the screen, the remote's
-  keys, and what the page asks of the app (`window.KumoBoxAndroid`: keeping the
+  keys, and what the page asks of the app (`window.MovikoAndroid`: keeping the
   screen on while a video plays, installing an update).
 - `KumoBoxServer.java`: starts the server (data in the app's files) and waits for
   it to answer. The server stops by itself when the app is gone (its standard
@@ -35,22 +35,22 @@ rm -rf server/internal/webui/dist && cp -R web/dist server/internal/webui/dist
 cd server
 tc=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
 CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 CC=$tc/armv7a-linux-androideabi21-clang \
-  go build -ldflags "-s -w" -o ../android/app/src/main/jniLibs/armeabi-v7a/libkumobox.so ./cmd/kumobox
+  go build -ldflags "-s -w" -o ../android/app/src/main/jniLibs/armeabi-v7a/libkumobox.so ./cmd/moviko
 CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=$tc/aarch64-linux-android21-clang \
-  go build -ldflags "-s -w" -o ../android/app/src/main/jniLibs/arm64-v8a/libkumobox.so ./cmd/kumobox
+  go build -ldflags "-s -w" -o ../android/app/src/main/jniLibs/arm64-v8a/libkumobox.so ./cmd/moviko
 cd ../android && gradle assembleRelease
 ```
 
 ## Signing
 
-Android installs an update over KumoBox only when it's signed with the same
-key as the installed app. The releases are signed with KumoBox's key, in the
+Android installs an update over Moviko only when it's signed with the same
+key as the installed app. The releases are signed with Moviko's key, in the
 repository's secrets.
 
 Make that key once, on your computer, with
 [`packaging/android/new-signing-key.sh`](../packaging/android/new-signing-key.sh):
-it makes it in `~/.local/share/kumobox-android-key` (keep a backup: without it,
-an installed KumoBox can't update and must be reinstalled) and puts it in the
+it makes it in `~/.local/share/moviko-android-key` (keep a backup: without it,
+an installed Moviko can't update and must be reinstalled) and puts it in the
 secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
 `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` with the GitHub CLI (or says
 what to paste where). Until then, the release workflow signs each build with

@@ -1,11 +1,11 @@
 [Unit]
-Description=KumoBox movies & TV server (headless, web UI on 127.0.0.1:43311)
+Description=Moviko movies & TV server (headless, web UI on 127.0.0.1:43311)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/lib/kumobox/kumobox --web-ui
+ExecStart=/usr/lib/moviko/moviko --web-ui
 Restart=on-failure
 RestartSec=5
 

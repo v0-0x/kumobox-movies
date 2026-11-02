@@ -1,15 +1,15 @@
-# Builds, tests and packages KumoBox (movies and TV shows) for Windows on a real
+# Builds, tests and packages Moviko (movies and TV shows) for Windows on a real
 # Windows machine, then publishes the installer and the portable zip as the
-# GitHub Release "KumoBox <version> for Windows", tagged windows-v<version> on
+# GitHub Release "Moviko <version> for Windows", tagged windows-v<version> on
 # the commit it built.
 #
 # The version is 2.0.<commits since 2.0.0's> (the first two numbers come
-# from desktop/package.json, where kumoboxVersionBase is 2.0.0's number of
+# from desktop/package.json, where movikoVersionBase is 2.0.0's number of
 # commits; 1.0.<number of commits> before it): each commit has its own,
 # later commits higher ones.
-# Installed copies of KumoBox look for the release with the highest version and
+# Installed copies of Moviko look for the release with the highest version and
 # offer it on the Home page (server/internal/update), so the version is also
-# built into kumobox.exe, with the commit.
+# built into moviko.exe, with the commit.
 #
 # Builds, tests and packages on every push to any branch and for pull
 # requests (except changes to docs or to the other systems' packaging only),
@@ -20,7 +20,7 @@
 # "publish" decides. Running it again on the same commit updates that
 # commit's release.
 #
-# Channels: each release is a beta, the pre-release "KumoBox <version> beta
+# Channels: each release is a beta, the pre-release "Moviko <version> beta
 # for Windows", which only copies with Settings › Updates & about › Beta
 # updates on are offered, unless the pushed commit's message has [stable] in
 # it or the workflow is run by hand with channel "stable": then it's a
@@ -130,16 +130,16 @@ jobs:
           if (-not ($base -match '^(\d+)\.(\d+)\.')) { throw "desktop/package.json has no version like 1.0.0 (it says '$base')" }
           $count = git rev-list --count HEAD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # The commits since the one kumoboxVersionBase counts (2.0.0's).
-          $from = if ($pkg.kumoboxVersionBase) { [int]$pkg.kumoboxVersionBase } else { 0 }
+          # The commits since the one movikoVersionBase counts (2.0.0's).
+          $from = if ($pkg.movikoVersionBase) { [int]$pkg.movikoVersionBase } else { 0 }
           $patch = [int]"$count".Trim() - $from
-          if ($patch -lt 0) { throw "This commit is before kumoboxVersionBase ($from) in desktop/package.json" }
+          if ($patch -lt 0) { throw "This commit is before movikoVersionBase ($from) in desktop/package.json" }
           $version = "$($Matches[1]).$($Matches[2]).$patch"
           "version=$version" >> $env:GITHUB_OUTPUT
           "tag=windows-v$version" >> $env:GITHUB_OUTPUT
-          "installer=KumoBox-Setup-$version-windows-x64.exe" >> $env:GITHUB_OUTPUT
-          "portable=KumoBox-$version-windows-x64-portable.zip" >> $env:GITHUB_OUTPUT
-          "Building KumoBox $version for Windows"
+          "installer=Moviko-Setup-$version-windows-x64.exe" >> $env:GITHUB_OUTPUT
+          "portable=Moviko-$version-windows-x64-portable.zip" >> $env:GITHUB_OUTPUT
+          "Building Moviko $version for Windows"
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -181,7 +181,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ffmpeg -hide_banner -version
 
-      # The setup that installs the programs KumoBox uses (ffmpeg, mpv and
+      # The setup that installs the programs Moviko uses (ffmpeg, mpv and
       # yt-dlp, with Scoop) only runs on users' computers, in Windows
       # PowerShell 5.1: check here that it parses there.
       - name: Check the programs setup script
@@ -206,9 +206,9 @@ jobs:
         working-directory: server
         run: go test -count 1 -timeout 8m ./...
 
-      # The version and the commit go into kumobox.exe (config.AppVersion and
+      # The version and the commit go into moviko.exe (config.AppVersion and
       # config.Commit): the updater compares them with the newest release's.
-      - name: Build kumobox.exe
+      - name: Build moviko.exe
         working-directory: server
         env:
           GOOS: windows
@@ -217,13 +217,13 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force ../dist/windows | Out-Null
           $config = "github.com/v0-0x/kumobox-movies/server/internal/config"
-          go build -trimpath -ldflags "-s -w -X $config.AppVersion=$env:VERSION -X $config.Commit=$env:GITHUB_SHA" -o ../dist/windows/kumobox.exe ./cmd/kumobox
+          go build -trimpath -ldflags "-s -w -X $config.AppVersion=$env:VERSION -X $config.Commit=$env:GITHUB_SHA" -o ../dist/windows/moviko.exe ./cmd/moviko
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $reported = & ../dist/windows/kumobox.exe --version
+          $reported = & ../dist/windows/moviko.exe --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "kumobox.exe --version: $reported"
-          if ($reported -ne "KumoBox $env:VERSION") {
-            throw "kumobox.exe says '$reported' instead of 'KumoBox $env:VERSION': the version didn't make it into the build."
+          "moviko.exe --version: $reported"
+          if ($reported -ne "Moviko $env:VERSION") {
+            throw "moviko.exe says '$reported' instead of 'Moviko $env:VERSION': the version didn't make it into the build."
           }
 
       # electron-builder names the files and versions the app after
@@ -246,13 +246,13 @@ jobs:
       - name: Start the app
         timeout-minutes: 3
         run: |
-          $exe = "dist/windows/release/win-unpacked/KumoBox.exe"
+          $exe = "dist/windows/release/win-unpacked/Moviko.exe"
           if (-not (Test-Path $exe)) { throw "$exe is missing" }
-          $out = Join-Path $env:RUNNER_TEMP "kumobox-smoke.log"
-          $err = Join-Path $env:RUNNER_TEMP "kumobox-smoke.err.log"
+          $out = Join-Path $env:RUNNER_TEMP "moviko-smoke.log"
+          $err = Join-Path $env:RUNNER_TEMP "moviko-smoke.err.log"
           $p = Start-Process -FilePath $exe -ArgumentList "--smoke" -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
           Get-Content $out, $err -ErrorAction SilentlyContinue
-          if ($p.ExitCode -ne 0) { throw "KumoBox --smoke exited with $($p.ExitCode)" }
+          if ($p.ExitCode -ne 0) { throw "Moviko --smoke exited with $($p.ExitCode)" }
 
       # archive: false uploads the files as they are (no zip around them),
       # named after the file: the run's Summary page lists them for download,
@@ -290,23 +290,23 @@ jobs:
           $repo = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
           # A beta is a pre-release, and never the repository's latest.
           $beta = $env:CHANNEL -eq "beta"
-          $title = if ($beta) { "KumoBox $env:VERSION beta for Windows" } else { "KumoBox $env:VERSION for Windows" }
+          $title = if ($beta) { "Moviko $env:VERSION beta for Windows" } else { "Moviko $env:VERSION for Windows" }
           $flags = @("--prerelease=$($beta.ToString().ToLower())", "--latest=$((-not $beta).ToString().ToLower())")
           $notes = @'
-          **KumoBox {version} for Windows 10 and 11 (64-bit)**, the app for your movies and TV shows. These files are for Windows only: on Arch Linux, build and install KumoBox from source with `packaging/arch`, as [the README]({readme}) explains.
+          **Moviko {version} for Windows 10 and 11 (64-bit)**, the app for your movies and TV shows. These files are for Windows only: on Arch Linux, build and install Moviko from source with `packaging/arch`, as [the README]({readme}) explains.
 
           | File | What it is |
           |---|---|
-          | `{installer}` | **Installer** (recommended). Installs KumoBox for your Windows user, without admin rights, in a folder you can change. Adds Start menu and desktop shortcuts; uninstall it from Settings > Apps. |
-          | `{portable}` | **Portable** build. Unzip it anywhere and run `KumoBox.exe`; nothing gets installed. Your data is still kept in `%APPDATA%\KumoBox`. |
+          | `{installer}` | **Installer** (recommended). Installs Moviko for your Windows user, without admin rights, in a folder you can change. Adds Start menu and desktop shortcuts; uninstall it from Settings > Apps. |
+          | `{portable}` | **Portable** build. Unzip it anywhere and run `Moviko.exe`; nothing gets installed. Your data is still kept in `%APPDATA%\Moviko`. |
 
           The files aren't code-signed, so Windows SmartScreen may warn "Windows protected your PC" the first time: click **More info**, then **Run anyway**.
 
-          KumoBox finds newer releases by itself: the installed app updates from its Home page (**Update**); for the portable build, download the newest zip.
+          Moviko finds newer releases by itself: the installed app updates from its Home page (**Update**); for the portable build, download the newest zip.
 
-          Movie and show details come from TMDB: the first time, KumoBox asks for your free TMDB API key. Letterboxd tracking only needs your Letterboxd username.
+          Movie and show details come from TMDB: the first time, Moviko asks for your free TMDB API key. Letterboxd tracking only needs your Letterboxd username.
 
-          Some features use other programs: ffmpeg (needed by the in-app player for most files), mpv (the external player) and yt-dlp (stream downloads); for torrents, qBittorrent or Transmission (optional). The installer offers to install ffmpeg, mpv and yt-dlp for you (with Scoop, no admin rights), and so does KumoBox's **Settings > App > Programs**. What to install for what, and where KumoBox keeps its data: [packaging/windows/README.md]({guide}).
+          Some features use other programs: ffmpeg (needed by the in-app player for most files), mpv (the external player) and yt-dlp (stream downloads); for torrents, qBittorrent or Transmission (optional). The installer offers to install ffmpeg, mpv and yt-dlp for you (with Scoop, no admin rights), and so does Moviko's **Settings > App > Programs**. What to install for what, and where Moviko keeps its data: [packaging/windows/README.md]({guide}).
 
           Built from {sha} by [workflow run {run}]({runurl}).
           '@
@@ -314,10 +314,14 @@ jobs:
           $notes = $notes.Replace("{guide}", "$repo/blob/$env:GITHUB_SHA/packaging/windows/README.md")
           $notes = $notes.Replace("{readme}", "$repo/blob/$env:GITHUB_SHA/README.md#install-arch-linux")
           $notes = $notes.Replace("{sha}", $env:GITHUB_SHA).Replace("{run}", $env:GITHUB_RUN_NUMBER).Replace("{runurl}", "$repo/actions/runs/$env:GITHUB_RUN_ID")
-          if ($beta) { $notes = "> **Beta.** This version is a pre-release: KumoBox offers it only to copies with **Settings › Updates & about › Beta updates** on. It may have rough edges; the stable releases are the ones without this note.`n`n" + $notes }
+          if ($beta) { $notes = "> **Beta.** This version is a pre-release: Moviko offers it only to copies with **Settings › Updates & about › Beta updates** on. It may have rough edges; the stable releases are the ones without this note.`n`n" + $notes }
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes.md"
           Set-Content -Path $notesFile -Value $notes -Encoding utf8
-          $files = @("dist/windows/release/$env:INSTALLER", "dist/windows/release/$env:PORTABLE")
+          # Moviko was called KumoBox before 2.0.9: KumoBox's updater (2.0.8 and
+          # older) looks for the installer by its old name, so a copy has it.
+          $old = "dist/windows/release/KumoBox-Setup-$env:VERSION-windows-x64.exe"
+          Copy-Item "dist/windows/release/$env:INSTALLER" $old
+          $files = @("dist/windows/release/$env:INSTALLER", "dist/windows/release/$env:PORTABLE", $old)
 
           gh release view $env:TAG --json tagName *> $null
           if ($LASTEXITCODE -eq 0) {

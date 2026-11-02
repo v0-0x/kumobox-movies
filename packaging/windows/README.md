@@ -1,39 +1,39 @@
-# KumoBox for Windows
+# Moviko for Windows
 
-KumoBox, the movies and TV shows app, runs on Windows 10 and 11 (64-bit). The
-Windows build is released on its own, as GitHub Releases named **KumoBox X.Y.Z
+Moviko, the movies and TV shows app, runs on Windows 10 and 11 (64-bit). The
+Windows build is released on its own, as GitHub Releases named **Moviko X.Y.Z
 for Windows** (tag `windows-vX.Y.Z`). None of it is for Linux: on Arch,
-install KumoBox from source with [`packaging/arch`](../arch/PKGBUILD) as the
+install Moviko from source with [`packaging/arch`](../arch/PKGBUILD) as the
 [main README](../../README.md#install-arch-linux) says.
 
 ## Install
 
 Open the [releases](https://github.com/v0-0x/kumobox-movies/releases), take the
-newest **KumoBox X.Y.Z for Windows** and download one of:
+newest **Moviko X.Y.Z for Windows** and download one of:
 
 | File | What it is |
 |---|---|
-| `KumoBox-Setup-X.Y.Z-windows-x64.exe` | **Installer** (recommended). Installs KumoBox for your Windows user, without admin rights, in `%LOCALAPPDATA%\Programs\KumoBox` (you can pick another folder). Adds Start menu and desktop shortcuts. Uninstall it from **Settings › Apps**. KumoBox then [updates itself](#updates). |
-| `KumoBox-X.Y.Z-windows-x64-portable.zip` | **Portable** build. Unzip it anywhere and run `KumoBox.exe`; nothing gets installed. Your data still goes to the folders [below](#where-kumobox-keeps-its-files). To update, download the newer zip. |
+| `Moviko-Setup-X.Y.Z-windows-x64.exe` | **Installer** (recommended). Installs Moviko for your Windows user, without admin rights, in `%LOCALAPPDATA%\Programs\Moviko` (you can pick another folder). Adds Start menu and desktop shortcuts. Uninstall it from **Settings › Apps**. Moviko then [updates itself](#updates). |
+| `Moviko-X.Y.Z-windows-x64-portable.zip` | **Portable** build. Unzip it anywhere and run `Moviko.exe`; nothing gets installed. Your data still goes to the folders [below](#where-moviko-keeps-its-files). To update, download the newer zip. |
 
 The builds aren't code-signed, so SmartScreen may show "Windows protected your
 PC": click **More info**, then **Run anyway**.
 
 Movie and show details (posters, seasons, episodes, cast) come from
-[TMDB](https://www.themoviedb.org): the first time, KumoBox asks for your free
+[TMDB](https://www.themoviedb.org): the first time, Moviko asks for your free
 TMDB API key (**Settings › Metadata**). Letterboxd tracking needs only your
 Letterboxd username.
 
-## Programs KumoBox uses
+## Programs Moviko uses
 
 | Program | For |
 |---|---|
 | ffmpeg (with ffprobe) | The in-app player, for most files (MKV, HEVC, AC3/DTS, several tracks…), stream downloads, and reading a file's audio and subtitle tracks |
-| mpv | The external player (optional: KumoBox has its own) |
+| mpv | The external player (optional: Moviko has its own) |
 | yt-dlp | Faster, more reliable stream downloads |
 | qBittorrent or Transmission | Torrents (optional) |
 
-**KumoBox installs ffmpeg, mpv and yt-dlp for you**: at the end of the install,
+**Moviko installs ffmpeg, mpv and yt-dlp for you**: at the end of the install,
 the installer asks whether to install them (also later from **Settings ›
 Desktop app & programs › Install**). A PowerShell window then installs, with
 [Scoop](https://scoop.sh) and for your Windows user only (no administrator
@@ -44,12 +44,12 @@ rights):
 - ffmpeg, mpv and yt-dlp
 
 Programs you already have are skipped, so you can run it again whenever
-something is missing. KumoBox picks newly installed programs up by itself. The
+something is missing. Moviko picks newly installed programs up by itself. The
 script is
 [`server/internal/winsetup/install-tools.ps1`](../../server/internal/winsetup/install-tools.ps1).
 
 To install them yourself instead, from a terminal (PowerShell or Windows
-Terminal): **Settings** shows what KumoBox found; for a program that isn't on
+Terminal): **Settings** shows what Moviko found; for a program that isn't on
 your `PATH`, enter its full path there.
 
 | For | Install |
@@ -78,50 +78,50 @@ scoop install ffmpeg yt-dlp mpv
 
 ### qBittorrent
 
-KumoBox talks to qBittorrent through its Web UI, which is off by default. In
+Moviko talks to qBittorrent through its Web UI, which is off by default. In
 qBittorrent: **Tools › Options › Web UI**, tick **Web User Interface (Remote
-control)**, and set a username and password. Then in KumoBox, **Settings ›
+control)**, and set a username and password. Then in Moviko, **Settings ›
 Torrents**: host `127.0.0.1`, the same port as qBittorrent's (8080
-unless you changed it), the same username and password. KumoBox can start
+unless you changed it), the same username and password. Moviko can start
 qBittorrent when it's needed: the path (`C:\Program Files\qBittorrent\qbittorrent.exe`)
 is found by itself. Transmission works the same way through its remote
 access (**Edit › Preferences › Remote**).
 
-## Where KumoBox keeps its files
+## Where Moviko keeps its files
 
 | Folder | What's in it |
 |---|---|
-| `%APPDATA%\KumoBox` | Your data: the database (your list, diary, library matches, settings, watch progress), downloaded artwork, extension storage |
-| `%LOCALAPPDATA%\KumoBox` | Cache and temporary files: the in-app player's segments (`hls`), the running server's address and token (`run`), the app window's browser data (`electron`), the last downloaded update (`update`) |
-| `%LOCALAPPDATA%\Programs\KumoBox` | The app, when installed with the installer |
+| `%APPDATA%\Moviko` | Your data: the database (your list, diary, library matches, settings, watch progress), downloaded artwork, extension storage |
+| `%LOCALAPPDATA%\Moviko` | Cache and temporary files: the in-app player's segments (`hls`), the running server's address and token (`run`), the app window's browser data (`electron`), the last downloaded update (`update`) |
+| `%LOCALAPPDATA%\Programs\Moviko` | The app, when installed with the installer |
 | `%USERPROFILE%\Videos` | The library folder, until you pick yours in **Settings › Local library** |
 
 Uninstalling keeps your data; delete the first two folders to remove it too.
 
 When **Allow devices on my network** is turned on, Windows Firewall asks
-whether `kumobox.exe` may accept connections: allow it on **private** networks.
+whether `moviko.exe` may accept connections: allow it on **private** networks.
 
-`kumobox.exe --web-ui` (in the app's `resources` folder) runs the server alone,
+`moviko.exe --web-ui` (in the app's `resources` folder) runs the server alone,
 without the window: the web UI is then at `http://127.0.0.1:43311`. The app
 window uses that server when it's already running.
 
 ## Updates
 
-KumoBox looks for a newer release on GitHub each time it opens, and every
+Moviko looks for a newer release on GitHub each time it opens, and every
 6 hours (**Settings › Updates & about** shows the last check and checks right
 away). When there is one, the **Home** page shows it, with what changed:
 
-- **Installed** with the installer: click **Update**. KumoBox downloads the new
+- **Installed** with the installer: click **Update**. Moviko downloads the new
   installer, checks it against GitHub's checksum, then closes; the installer
-  updates KumoBox where it's installed, without asking anything, and opens it
+  updates Moviko where it's installed, without asking anything, and opens it
   again. Your data stays as it is.
-- **Portable**: KumoBox can't update a folder you unzipped yourself. The Home
+- **Portable**: Moviko can't update a folder you unzipped yourself. The Home
   page links the new release: download the new zip and use it instead of the
-  old folder (your data is in `%APPDATA%\KumoBox`, not in that folder).
+  old folder (your data is in `%APPDATA%\Moviko`, not in that folder).
 
 Update checks need no GitHub account. (If you're signed in with the GitHub
-CLI, `gh`, or have a token in `KUMOBOX_GITHUB_TOKEN`, `GH_TOKEN` or
-`GITHUB_TOKEN`, KumoBox uses it, which raises GitHub's limit on requests.)
+CLI, `gh`, or have a token in `MOVIKO_GITHUB_TOKEN`, `GH_TOKEN` or
+`GITHUB_TOKEN`, Moviko uses it, which raises GitHub's limit on requests.)
 
 ## Build it yourself
 
@@ -131,22 +131,22 @@ On Windows, with Go, Node.js and Git:
 winget install GoLang.Go
 winget install OpenJS.NodeJS.LTS
 winget install Git.Git
-git clone https://github.com/v0-0x/kumobox-movies kumobox
-cd kumobox
+git clone https://github.com/v0-0x/kumobox-movies moviko
+cd moviko
 powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 ```
 
 [`build.ps1`](build.ps1) does what the release workflow does: builds the web
 UI, embeds it into the server, runs `go vet` and `go test` (`-SkipTests`
-skips them), builds `dist\windows\kumobox.exe`, then packages the app with
+skips them), builds `dist\windows\moviko.exe`, then packages the app with
 electron-builder ([`desktop/electron-builder.yml`](../../desktop/electron-builder.yml)).
 The installer and the zip land in `dist\windows\release`. Unlike a release, a
 build of your own keeps the version in `desktop/package.json` (2.0.0), so
-KumoBox offers it the newest release as an update.
+Moviko offers it the newest release as an update.
 
 For development, `cd desktop; npm ci; npx electron .` starts the window with
-`dist\windows\kumobox.exe`. On Linux, `make windows` cross-compiles that
-`kumobox.exe` (the installer is built on Windows).
+`dist\windows\moviko.exe`. On Linux, `make windows` cross-compiles that
+`moviko.exe` (the installer is built on Windows).
 
 ## How releases are made
 
@@ -165,14 +165,14 @@ the files as workflow artifacts.
 
 The version is `2.0.<commits since 2.0.0's>`: the first two numbers come from
 `desktop/package.json`, the last one grows with every commit (counted from
-the commit its `kumoboxVersionBase` names, 2.0.0's), so there's nothing to bump
-by hand. Releases before 2.0 were `1.0.<number of commits>`. The workflow builds it into `kumobox.exe` with the
-commit, and installed copies of KumoBox offer the release with the highest
+the commit its `movikoVersionBase` names, 2.0.0's), so there's nothing to bump
+by hand. Releases before 2.0 were `1.0.<number of commits>`. The workflow builds it into `moviko.exe` with the
+commit, and installed copies of Moviko offer the release with the highest
 version as their update. The Arch package gets the same version from its
 PKGBUILD.
 
 Each build is published as a **beta** first: a pre-release titled
-"KumoBox <version> beta for Windows", which installed copies offer only with
+"Moviko <version> beta for Windows", which installed copies offer only with
 Settings › Updates & about › Beta updates on. A build becomes a **stable**
 release (for everyone, and the repository's latest) when the pushed commit's
 message has `[stable]` in it, or when the workflow is run by hand from the

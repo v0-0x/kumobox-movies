@@ -1,16 +1,16 @@
 #!/bin/bash
-# Runs KumoBox's macOS programs setup (server/internal/macsetup/
+# Runs Moviko's macOS programs setup (server/internal/macsetup/
 # install-tools.command) like a user would, without Homebrew, into a fresh
 # folder, then checks that the programs it put there run on this Mac. The
 # macOS release workflow runs it on Apple silicon and on Intel.
 
-bin="${RUNNER_TEMP:-/tmp}/kumobox-bin"
-script="${RUNNER_TEMP:-/tmp}/kumobox-setup.command"
+bin="${RUNNER_TEMP:-/tmp}/moviko-bin"
+script="${RUNNER_TEMP:-/tmp}/moviko-setup.command"
 rm -rf "$bin"
-sed "s|'@KUMOBOX_BIN@'|'$bin'|" server/internal/macsetup/install-tools.command >"$script"
+sed "s|'@MOVIKO_BIN@'|'$bin'|" server/internal/macsetup/install-tools.command >"$script"
 chmod 755 "$script"
 echo "== $(uname -m), macOS $(sw_vers -productVersion)"
-KUMOBOX_SETUP_NO_BREW=1 TERM=dumb "$script" </dev/null
+MOVIKO_SETUP_NO_BREW=1 TERM=dumb "$script" </dev/null
 echo "== the setup ended with $?"
 
 failed=""

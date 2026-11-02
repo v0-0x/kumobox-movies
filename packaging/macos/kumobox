@@ -1,0 +1,5 @@
+#!/bin/sh
+# Moviko was called KumoBox before 2.0.9. KumoBox's updater (2.0.8 and older)
+# checks that a new version's app has its server here, under the old name:
+# this stands in for it, and starts Moviko's.
+exec "$(dirname "$0")/moviko" "$@"

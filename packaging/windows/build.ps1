@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Builds the KumoBox installer and portable zip for Windows.
+    Builds the Moviko installer and portable zip for Windows.
 
 .DESCRIPTION
     Does on your own PC what the "Windows release" GitHub workflow does:
     builds the web UI, embeds it into the server, runs go vet and go test,
-    builds kumobox.exe, then packages the desktop app with electron-builder.
+    builds moviko.exe, then packages the desktop app with electron-builder.
 
     Needs Go 1.21 or newer (it fetches the version server\go.mod asks for)
     and Node.js LTS with npm, both on the PATH:
@@ -13,8 +13,8 @@
         winget install OpenJS.NodeJS.LTS
 
     The results land in dist\windows\release:
-        KumoBox-Setup-<version>-windows-x64.exe      the installer
-        KumoBox-<version>-windows-x64-portable.zip   the portable build
+        Moviko-Setup-<version>-windows-x64.exe      the installer
+        Moviko-<version>-windows-x64-portable.zip   the portable build
 
 .PARAMETER SkipTests
     Don't run go vet and go test.
@@ -58,7 +58,7 @@ foreach ($tool in $tools) {
 }
 
 $version = (Get-Content (Join-Path $Root "desktop\package.json") -Raw | ConvertFrom-Json).version
-Write-Host "Building KumoBox $version for Windows (x64) in $Root"
+Write-Host "Building Moviko $version for Windows (x64) in $Root"
 
 Write-Step "Web UI"
 Push-Location (Join-Path $Root "web")
@@ -100,11 +100,11 @@ try {
         Assert-Success "go test" " Add -SkipTests to build without running the tests."
     }
 
-    Write-Step "Server: dist\windows\kumobox.exe"
+    Write-Step "Server: dist\windows\moviko.exe"
     $env:GOOS = "windows"
     $env:GOARCH = "amd64"
     New-Item -ItemType Directory -Path (Join-Path $Root "dist\windows") -Force | Out-Null
-    go build -trimpath -ldflags "-s -w" -o ..\dist\windows\kumobox.exe ./cmd/kumobox
+    go build -trimpath -ldflags "-s -w" -o ..\dist\windows\moviko.exe ./cmd/moviko
     Assert-Success "go build"
 } finally {
     Pop-Location
@@ -130,7 +130,7 @@ try {
 
 Write-Host ""
 Write-Host "Done:" -ForegroundColor Green
-foreach ($name in @("KumoBox-Setup-$version-windows-x64.exe", "KumoBox-$version-windows-x64-portable.zip")) {
+foreach ($name in @("Moviko-Setup-$version-windows-x64.exe", "Moviko-$version-windows-x64-portable.zip")) {
     $file = Join-Path $release $name
     if (-not (Test-Path $file)) {
         throw "$file is missing: check electron-builder's output above."

@@ -1,11 +1,11 @@
 {
-  "name": "kumobox",
-  "productName": "KumoBox",
+  "name": "moviko",
+  "productName": "Moviko",
   "version": "2.0.0",
-  "kumoboxVersionBase": 161,
-  "description": "KumoBox, a movie and TV show player and tracker: the desktop window (starts the local KumoBox server)",
+  "movikoVersionBase": 161,
+  "description": "Moviko, a movie and TV show player and tracker: the desktop window (starts the local Moviko server)",
   "main": "main.js",
-  "desktopName": "kumobox.desktop",
+  "desktopName": "moviko.desktop",
   "private": true,
   "license": "GPL-3.0-or-later",
   "scripts": {

@@ -1,7 +1,7 @@
 # build output
 /dist/
 /build/
-/server/kumobox
+/server/moviko
 /server/internal/webui/dist/*
 !/server/internal/webui/dist/.keep
 /web/node_modules/

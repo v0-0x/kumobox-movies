@@ -11,9 +11,9 @@ import (
 // canReexec: the server can replace itself with a new run of its program.
 const canReexec = true
 
-// reexec runs KumoBox's program again in this process, with the same
+// reexec runs Moviko's program again in this process, with the same
 // arguments and environment, so it keeps its PID (systemd sees no exit)
-// and its terminal. KumoBox's own files and sockets close on exec. It only
+// and its terminal. Moviko's own files and sockets close on exec. It only
 // returns when that fails.
 func reexec() error {
 	exe, err := os.Executable()

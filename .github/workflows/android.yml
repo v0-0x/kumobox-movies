@@ -1,16 +1,16 @@
-# Builds KumoBox for Android (made for TVs: a Fire TV Stick, mainly for the
+# Builds Moviko for Android (made for TVs: a Fire TV Stick, mainly for the
 # libraries the computers at home share) and publishes the APK as the GitHub
-# Release "KumoBox <version> for Android", tagged android-v<version> on the
+# Release "Moviko <version> for Android", tagged android-v<version> on the
 # commit it built.
 #
-# The app (android/) runs KumoBox's server, built here for Android with the NDK
+# The app (android/) runs Moviko's server, built here for Android with the NDK
 # (32-bit ARM, which most Fire TV sticks run, and 64-bit), and shows its web
 # UI. The version is 2.0.<commits since 2.0.0's>, like the other releases'
 # (its version code is the number of commits, always higher):
 # installed copies look for the android-v release with the highest version
 # and update from their Home page (server/internal/update).
 #
-# The APK is signed with KumoBox's key, in the repository's secrets
+# The APK is signed with Moviko's key, in the repository's secrets
 # ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and
 # ANDROID_KEY_PASSWORD (packaging/android/new-signing-key.sh makes it and puts
 # it there). Without the secrets it's signed with a throwaway key, kept as a
@@ -94,12 +94,12 @@ jobs:
             exit 1
           fi
           count=$(git rev-list --count HEAD)
-          # The commits since the one kumoboxVersionBase counts (2.0.0's); the
+          # The commits since the one movikoVersionBase counts (2.0.0's); the
           # app's code stays the count, always higher than the last one.
-          from=$(node -p 'require("./desktop/package.json").kumoboxVersionBase || 0')
+          from=$(node -p 'require("./desktop/package.json").movikoVersionBase || 0')
           patch=$(( count - from ))
           if (( patch < 0 )); then
-            echo "::error::This commit is before kumoboxVersionBase ($from) in desktop/package.json"
+            echo "::error::This commit is before movikoVersionBase ($from) in desktop/package.json"
             exit 1
           fi
           version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$patch"
@@ -107,9 +107,9 @@ jobs:
             echo "version=$version"
             echo "code=$count"
             echo "tag=android-v$version"
-            echo "apk=KumoBox-$version-android.apk"
+            echo "apk=Moviko-$version-android.apk"
           } >> "$GITHUB_OUTPUT"
-          echo "Building KumoBox $version for Android"
+          echo "Building Moviko $version for Android"
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -169,7 +169,7 @@ jobs:
             local abi=$1 goarch=$2 cc=$3 goarm=${4:-}
             mkdir -p "$libs/$abi"
             CGO_ENABLED=1 GOOS=android GOARCH=$goarch GOARM=$goarm CC="$tc/$cc" \
-              go build -trimpath -ldflags "-s -w -X $config.AppVersion=$VERSION -X $config.Commit=$GITHUB_SHA" -o "$libs/$abi/libkumobox.so" ./cmd/kumobox
+              go build -trimpath -ldflags "-s -w -X $config.AppVersion=$VERSION -X $config.Commit=$GITHUB_SHA" -o "$libs/$abi/libkumobox.so" ./cmd/moviko
           }
           build armeabi-v7a arm armv7a-linux-androideabi21-clang 7
           build arm64-v8a arm64 aarch64-linux-android21-clang
@@ -185,8 +185,8 @@ jobs:
           yes | "$sdkmanager" --licenses > /dev/null || true
           "$sdkmanager" "platforms;android-35" "build-tools;34.0.0" > /dev/null
 
-      # KumoBox's key from the secrets; without them, a throwaway key made
-      # here (like KumoBox's): the build can be tried, not published.
+      # Moviko's key from the secrets; without them, a throwaway key made
+      # here (like Moviko's): the build can be tried, not published.
       - name: Prepare the signing key
         id: key
         env:
@@ -195,36 +195,36 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          ks="$RUNNER_TEMP/kumobox-release.keystore"
+          ks="$RUNNER_TEMP/moviko-release.keystore"
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$ks"
             {
-              echo "KUMOBOX_KEYSTORE=$ks"
-              echo "KUMOBOX_KEYSTORE_PASSWORD=$STORE_PASS"
-              echo "KUMOBOX_KEY_ALIAS=${KEY_ALIAS:-kumobox}"
-              echo "KUMOBOX_KEY_PASSWORD=${KEY_PASS:-$STORE_PASS}"
+              echo "MOVIKO_KEYSTORE=$ks"
+              echo "MOVIKO_KEYSTORE_PASSWORD=$STORE_PASS"
+              echo "MOVIKO_KEY_ALIAS=${KEY_ALIAS:-moviko}"
+              echo "MOVIKO_KEY_PASSWORD=${KEY_PASS:-$STORE_PASS}"
             } >> "$GITHUB_ENV"
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
-            XDG_DATA_HOME="$RUNNER_TEMP/throwaway" KUMOBOX_NO_GH=1 bash packaging/android/new-signing-key.sh > /dev/null
-            tk="$RUNNER_TEMP/throwaway/kumobox-android-key"
+            XDG_DATA_HOME="$RUNNER_TEMP/throwaway" MOVIKO_NO_GH=1 bash packaging/android/new-signing-key.sh > /dev/null
+            tk="$RUNNER_TEMP/throwaway/moviko-android-key"
             pass=$(cat "$tk/password")
             echo "::add-mask::$pass"
             {
-              echo "KUMOBOX_KEYSTORE=$tk/kumobox-release.p12"
-              echo "KUMOBOX_KEYSTORE_PASSWORD=$pass"
-              echo "KUMOBOX_KEY_ALIAS=kumobox"
-              echo "KUMOBOX_KEY_PASSWORD=$pass"
+              echo "MOVIKO_KEYSTORE=$tk/moviko-release.p12"
+              echo "MOVIKO_KEYSTORE_PASSWORD=$pass"
+              echo "MOVIKO_KEY_ALIAS=moviko"
+              echo "MOVIKO_KEY_PASSWORD=$pass"
             } >> "$GITHUB_ENV"
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::KumoBox's Android key isn't in the repository's secrets (packaging/android/new-signing-key.sh puts it there): this APK is signed with a throwaway key, kept as a workflow artifact, and not published."
+            echo "::warning::Moviko's Android key isn't in the repository's secrets (packaging/android/new-signing-key.sh puts it there): this APK is signed with a throwaway key, kept as a workflow artifact, and not published."
           fi
 
       # Signed with the key above (build.gradle).
       - name: Build the APK
         env:
-          KUMOBOX_VERSION: ${{ steps.version.outputs.version }}
-          KUMOBOX_VERSION_CODE: ${{ steps.version.outputs.code }}
+          MOVIKO_VERSION: ${{ steps.version.outputs.version }}
+          MOVIKO_VERSION_CODE: ${{ steps.version.outputs.code }}
           APK: ${{ steps.version.outputs.apk }}
         run: |
           export JAVA_HOME="${JAVA_HOME_17_X64:-$JAVA_HOME}"
@@ -273,25 +273,28 @@ jobs:
           url="$repo/releases/download/$TAG/$APK"
           notes="$RUNNER_TEMP/release-notes.md"
           cat > "$notes" <<EOF
-          **KumoBox $VERSION for Android**, made for TVs (Fire TV Stick, Android TV) and working on phones and tablets too: it plays the libraries the computers at home share, driven by the remote.
+          **Moviko $VERSION for Android**, made for TVs (Fire TV Stick, Android TV) and working on phones and tablets too: it plays the libraries the computers at home share, driven by the remote.
 
           **On a Fire TV:** install the **Downloader** app, allow it in **Settings › My Fire TV › Developer options › Install unknown apps**, and open this address in it:
 
           \`$url\`
 
-          Then open KumoBox, and on a computer with KumoBox turn on **Settings › Other devices**: the TV shows up there. Turn on **Share my library** for it, and if you like **Let it download here** (its downloads and torrents go to that computer).
+          Then open Moviko, and on a computer with Moviko turn on **Settings › Other devices**: the TV shows up there. Turn on **Share my library** for it, and if you like **Let it download here** (its downloads and torrents go to that computer).
 
-          KumoBox finds newer releases by itself and updates from its Home page (**Update**); Android asks before installing.
+          Moviko finds newer releases by itself and updates from its Home page (**Update**); Android asks before installing.
 
           Built from $GITHUB_SHA by [workflow run $GITHUB_RUN_NUMBER]($repo/actions/runs/$GITHUB_RUN_ID).
           EOF
           if [ "$CHANNEL" = beta ]; then
-            pre=true title="KumoBox $VERSION beta for Android"
-            { printf '%s\n\n' "> **Beta.** This version is a pre-release: KumoBox offers it only to copies with **Settings › Updates & about › Beta updates** on. It may have rough edges; the stable releases are the ones without this note."; cat "$notes"; } > "$notes.new" && mv "$notes.new" "$notes"
+            pre=true title="Moviko $VERSION beta for Android"
+            { printf '%s\n\n' "> **Beta.** This version is a pre-release: Moviko offers it only to copies with **Settings › Updates & about › Beta updates** on. It may have rough edges; the stable releases are the ones without this note."; cat "$notes"; } > "$notes.new" && mv "$notes.new" "$notes"
           else
-            pre=false title="KumoBox $VERSION for Android"
+            pre=false title="Moviko $VERSION for Android"
           fi
-          files=("dist/android/$APK")
+          # Moviko was called KumoBox before 2.0.9: KumoBox's updater (2.0.8 and
+          # older) looks for the APK by its old name, so a copy has it.
+          cp "dist/android/$APK" "dist/android/KumoBox-$VERSION-android.apk"
+          files=("dist/android/$APK" "dist/android/KumoBox-$VERSION-android.apk")
           if gh release view "$TAG" --json tagName > /dev/null 2>&1; then
             echo "Updating the release $TAG"
             gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$pre" --latest=false

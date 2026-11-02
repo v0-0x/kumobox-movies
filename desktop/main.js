@@ -1,6 +1,6 @@
-// KumoBox desktop shell.
+// Moviko desktop shell.
 //
-// Starts the KumoBox server (bound to 127.0.0.1) or attaches to one that is
+// Starts the Moviko server (bound to 127.0.0.1) or attaches to one that is
 // already running, then shows the UI in a native window. Every request the
 // window makes carries the per-run shell token, which is how the server
 // recognises its own desktop window when the browser Web UI is turned off.
@@ -20,13 +20,35 @@ const isMac = process.platform === "darwin"
 const EXIT_RESTART = 75
 const EXIT_INSTALLING = 76
 
+// macOS: KumoBox's updater (Moviko's name before 2.0.9) put this version in
+// the app it had, KumoBox.app, which the Finder and Launchpad show as
+// "KumoBox". The app takes Moviko's name, then opens again from there, before
+// anything else starts from the old path (helpers, the server). Moviko's own
+// updates install as Moviko.app (server/internal/update/apply_mac.go).
+function renameKumoBoxApp() {
+    if (!isMac || !app.isPackaged) return false
+    const bundle = path.resolve(process.execPath, "..", "..", "..")
+    const renamed = path.join(path.dirname(bundle), "Moviko.app")
+    if (path.basename(bundle) !== "KumoBox.app" || fs.existsSync(renamed)) return false
+    try {
+        fs.renameSync(bundle, renamed)
+    } catch (err) {
+        console.error("couldn't rename KumoBox.app to Moviko.app:", err)
+        return false
+    }
+    app.relaunch({ execPath: path.join(renamed, "Contents", "MacOS", path.basename(process.execPath)), args: process.argv.slice(1) })
+    app.exit(0)
+    return true
+}
+if (renameKumoBoxApp()) return
+
 // On Windows this is the AppUserModelID, which must match "appId" in
 // electron-builder.yml: the installer's shortcuts carry it, and the taskbar
 // groups the window with them.
-const APP_ID = isWindows ? "app.kumobox.desktop" : "kumobox"
-app.setName("KumoBox")
+const APP_ID = isWindows ? "app.kumobox.desktop" : "moviko"
+app.setName("Moviko")
 app.setAppUserModelId?.(APP_ID)
-// The window mostly talks to KumoBox's own server, on this computer: run
+// The window mostly talks to Moviko's own server, on this computer: run
 // Chromium's network service inside the app instead of a process of its
 // own, which saves about 80 MB.
 const features = ["NetworkServiceInProcess2"]
@@ -36,17 +58,34 @@ if (process.platform === "linux") {
     app.commandLine.appendSwitch("ignore-gpu-blocklist")
 }
 app.commandLine.appendSwitch("enable-features", features.join(","))
+// Moviko was called KumoBox before 2.0.9: the folder KumoBox kept its
+// window's data in (the pages' settings, logins) becomes Moviko's the first
+// time. It returns the folder to use: the old one while it can't be moved
+// (Windows, when a file in it is still open), tried again on the next start.
+function movedFrom(oldDir, dir) {
+    try {
+        if (!fs.existsSync(dir) && fs.existsSync(oldDir)) fs.renameSync(oldDir, dir)
+    } catch (err) {
+        console.error(`couldn't move ${oldDir} to ${dir}:`, err)
+        return oldDir
+    }
+    return dir
+}
 if (isWindows && process.env.LOCALAPPDATA) {
     // Electron would keep the window's browser data (caches, local storage)
-    // in %APPDATA%\KumoBox, which is the server's data folder on Windows: keep
-    // it apart, with KumoBox's other local files.
-    app.setPath("userData", path.join(process.env.LOCALAPPDATA, "KumoBox", "electron"))
-}
-if (isMac) {
-    // Electron would keep them in ~/Library/Application Support/KumoBox, which
+    // in %APPDATA%\Moviko, which is the server's data folder on Windows: keep
+    // it apart, with Moviko's other local files.
+    const local = movedFrom(path.join(process.env.LOCALAPPDATA, "KumoBox"), path.join(process.env.LOCALAPPDATA, "Moviko"))
+    app.setPath("userData", path.join(local, "electron"))
+} else if (isMac) {
+    // Electron would keep them in ~/Library/Application Support/Moviko, which
     // is the server's data folder on macOS: keep them in a folder of their
-    // own in it.
-    app.setPath("userData", path.join(app.getPath("appData"), "KumoBox", "electron"))
+    // own in it (KumoBox's moves with the server's data).
+    const support = movedFrom(path.join(app.getPath("appData"), "KumoBox"), path.join(app.getPath("appData"), "Moviko"))
+    app.setPath("userData", path.join(support, "electron"))
+} else {
+    // ~/.config/Moviko, after the app's name.
+    app.setPath("userData", movedFrom(path.join(app.getPath("appData"), "KumoBox"), app.getPath("userData")))
 }
 
 // --smoke: the release workflows' check that the packaged app starts at all
@@ -56,8 +95,8 @@ if (isMac) {
 // answered, 1 otherwise. No window, no tray, no single-instance lock.
 const SMOKE = process.argv.includes("--smoke")
 if (SMOKE) {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kumobox-smoke-"))
-    process.env.KUMOBOX_DATA_DIR = path.join(tmp, "data")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "moviko-smoke-"))
+    process.env.MOVIKO_DATA_DIR = path.join(tmp, "data")
     app.setPath("userData", path.join(tmp, "electron"))
 }
 
@@ -69,7 +108,7 @@ let tray = null
 
 // The desktop app's own preferences (Settings › Desktop app & programs),
 // kept next to its browser data.
-//   keepRunning     closing the window leaves KumoBox running (tray icon, or the
+//   keepRunning     closing the window leaves Moviko running (tray icon, or the
 //                   Dock on a Mac): streaming to other devices, downloads and
 //                   the auto downloader keep going without the window's
 //                   memory. Off unless turned on (keepRunningChosen: it was
@@ -77,7 +116,7 @@ let tray = null
 //   freeWhenLocked  a few minutes after the computer is locked, the window
 //                   lets go of its page, and loads it again on unlocking.
 //   toldKeepRunning the notice about it was shown (the first time).
-//   window, mini    where KumoBox's window and the small player were, and how
+//   window, mini    where Moviko's window and the small player were, and how
 //                   big (the window: whether maximized): they open there.
 //   zoom            the pages' zoom (Ctrl + and -), kept between runs.
 const prefs = { keepRunning: false, keepRunningChosen: false, freeWhenLocked: true, toldKeepRunning: false, window: null, mini: null, zoom: 1 }
@@ -101,11 +140,11 @@ function savePrefs() {
 
 // Starting with the computer (Settings › Desktop app & programs), off unless
 // turned on: the system's own login items on Windows and macOS, an autostart
-// entry on Linux. Started that way, KumoBox opens in the background (tray, or
+// entry on Linux. Started that way, Moviko opens in the background (tray, or
 // the Dock on a Mac) when it keeps running without its window; otherwise
 // with its window, so it's never running unseen.
 const BACKGROUND = "--background"
-const autostartFile = () => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "autostart", "kumobox.desktop")
+const autostartFile = () => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "autostart", "moviko.desktop")
 
 function startsAtLogin() {
     if (process.platform === "linux") return fs.existsSync(autostartFile())
@@ -123,9 +162,9 @@ function setStartAtLogin(on) {
                 return null
             }
             // The package's launcher, else this Electron with this app.
-            const exec = fs.existsSync("/usr/bin/kumobox") ? "/usr/bin/kumobox" : `"${process.execPath}" "${app.getAppPath()}"`
+            const exec = fs.existsSync("/usr/bin/moviko") ? "/usr/bin/moviko" : `"${process.execPath}" "${app.getAppPath()}"`
             fs.mkdirSync(path.dirname(file), { recursive: true })
-            fs.writeFileSync(file, ["[Desktop Entry]", "Type=Application", "Name=KumoBox", "Comment=KumoBox in the background", `Exec=${exec} ${BACKGROUND}`, "Icon=kumobox", "Terminal=false", "X-GNOME-Autostart-enabled=true", ""].join("\n"))
+            fs.writeFileSync(file, ["[Desktop Entry]", "Type=Application", "Name=Moviko", "Comment=Moviko in the background", `Exec=${exec} ${BACKGROUND}`, "Icon=moviko", "Terminal=false", "X-GNOME-Autostart-enabled=true", ""].join("\n"))
             return null
         } catch (err) {
             return String(err?.message || err)
@@ -133,7 +172,7 @@ function setStartAtLogin(on) {
     }
     app.setLoginItemSettings(isWindows ? { openAtLogin: on, args: [BACKGROUND] } : { openAtLogin: on })
     if (isMac && on && app.getLoginItemSettings().status === "requires-approval") {
-        return "macOS asks you to allow it: in System Settings › General › Login Items (Login Items & Extensions), turn on KumoBox."
+        return "macOS asks you to allow it: in System Settings › General › Login Items (Login Items & Extensions), turn on Moviko."
     }
     return startsAtLogin() === on ? null : "The system didn't take the change."
 }
@@ -144,24 +183,59 @@ function startedAtLogin() {
     return isMac && app.getLoginItemSettings().wasOpenedAtLogin
 }
 
+// Desktop shortcuts are copies of moviko.desktop: those made when Moviko was
+// KumoBox start /usr/bin/kumobox (still a link to Moviko's). Point them at
+// Moviko (its program, name and icon), in place, so they keep their
+// permissions and the desktop's trust. Starting with the computer moves to
+// Moviko's entry too.
+function updateDesktopShortcuts() {
+    if (process.platform !== "linux") return
+    const oldAutostart = path.join(path.dirname(autostartFile()), "kumobox.desktop")
+    if (fs.existsSync(oldAutostart) && !fs.existsSync(autostartFile()) && setStartAtLogin(true) === null) fs.rmSync(oldAutostart, { force: true })
+    let dir, names
+    try {
+        dir = app.getPath("desktop")
+        names = fs.readdirSync(dir)
+    } catch {
+        return
+    }
+    for (const name of names) {
+        if (!name.endsWith(".desktop")) continue
+        const file = path.join(dir, name)
+        try {
+            if (!fs.lstatSync(file).isFile()) continue // never through a link
+            const text = fs.readFileSync(file, "utf8")
+            if (!/^Exec=(\/usr\/bin\/)?kumobox(\s|$)/m.test(text)) continue
+            const next = text
+                .replace(/^Exec=(\/usr\/bin\/)?kumobox(?=\s|$)/gm, "Exec=$1moviko")
+                .replace(/^Icon=kumobox[ \t]*$/gm, "Icon=moviko")
+                .replace(/^Name=KumoBox[ \t]*$/gm, "Name=Moviko")
+                .replace(/^StartupWMClass=KumoBox[ \t]*$/gm, "StartupWMClass=Moviko")
+            fs.writeFileSync(file, next)
+        } catch {
+            // someone else's file, or one we can't write: leave it
+        }
+    }
+}
+
 // Where the server writes server.json and the shell token: the same folder
 // as its config.RuntimeDir(). On Linux and macOS the server falls back to
-// <user cache dir>/kumobox/run when the usual folder ($XDG_RUNTIME_DIR/kumobox
-// or $TMPDIR/kumobox) isn't a real directory this user owns — a symlink, or
+// <user cache dir>/moviko/run when the usual folder ($XDG_RUNTIME_DIR/moviko
+// or $TMPDIR/moviko) isn't a real directory this user owns — a symlink, or
 // one another user made in a shared /tmp, whose shell token could be planted
 // or read by them. The window must look in the same place, so it mirrors the
 // check (config/paths_unix.go, paths_darwin.go). Windows is unchanged.
 function serverRuntimeDir() {
     if (isWindows) {
         const local = process.env.LOCALAPPDATA
-        return local ? path.join(local, "KumoBox", "run") : path.join(os.tmpdir(), "kumobox")
+        return local ? path.join(local, "Moviko", "run") : path.join(os.tmpdir(), "moviko")
     }
     // macOS: $TMPDIR, the user's own temporary folder.
     const base = isMac ? os.tmpdir() : process.env.XDG_RUNTIME_DIR || os.tmpdir()
-    const primary = path.join(base, "kumobox")
+    const primary = path.join(base, "moviko")
     if (ownRuntimeDir(primary)) return primary
     const cache = isMac ? path.join(os.homedir(), "Library", "Caches") : process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache")
-    return path.join(cache, "kumobox", "run")
+    return path.join(cache, "moviko", "run")
 }
 
 // ownRuntimeDir reports whether dir is safe to read the shell token from: it
@@ -181,23 +255,23 @@ function ownRuntimeDir(dir) {
 function serverCandidates() {
     if (isWindows) {
         return [
-            process.env.KUMOBOX_SERVER,
-            path.join(process.resourcesPath, "kumobox.exe"), // installed or portable app: resources\kumobox.exe
-            path.join(__dirname, "..", "dist", "windows", "kumobox.exe"), // development checkout
+            process.env.MOVIKO_SERVER,
+            path.join(process.resourcesPath, "moviko.exe"), // installed or portable app: resources\moviko.exe
+            path.join(__dirname, "..", "dist", "windows", "moviko.exe"), // development checkout
         ]
     }
     if (isMac) {
         return [
-            process.env.KUMOBOX_SERVER,
-            path.join(process.resourcesPath, "kumobox"), // KumoBox.app/Contents/Resources/kumobox
-            path.join(__dirname, "..", "dist", "kumobox"), // development checkout
+            process.env.MOVIKO_SERVER,
+            path.join(process.resourcesPath, "moviko"), // Moviko.app/Contents/Resources/moviko
+            path.join(__dirname, "..", "dist", "moviko"), // development checkout
         ]
     }
     return [
-        process.env.KUMOBOX_SERVER,
-        path.join(__dirname, "..", "kumobox"), // /usr/lib/kumobox/app -> /usr/lib/kumobox/kumobox
-        path.join(__dirname, "..", "dist", "kumobox"), // development checkout
-        "/usr/lib/kumobox/kumobox",
+        process.env.MOVIKO_SERVER,
+        path.join(__dirname, "..", "moviko"), // /usr/lib/moviko/app -> /usr/lib/moviko/moviko
+        path.join(__dirname, "..", "dist", "moviko"), // development checkout
+        "/usr/lib/moviko/moviko",
     ]
 }
 
@@ -257,7 +331,7 @@ async function existingServer() {
 }
 
 // The server's last lines (without their timestamps): what went wrong, for
-// the box that says KumoBox couldn't start.
+// the box that says Moviko couldn't start.
 const serverLines = []
 function noteServerOutput(text) {
     for (const line of text.split(/\r?\n/)) {
@@ -272,10 +346,10 @@ function startServer() {
         const bin = findServerBinary()
         if (!bin) {
             const msg = isWindows
-                ? "KumoBox's server (kumobox.exe) is missing from its folder. Install KumoBox again."
+                ? "Moviko's server (moviko.exe) is missing from its folder. Install Moviko again."
                 : isMac
-                  ? "KumoBox's server is missing from the app. Download KumoBox again."
-                  : "KumoBox's server (kumobox) is missing. Install the package again."
+                  ? "Moviko's server is missing from the app. Download Moviko again."
+                  : "Moviko's server (moviko) is missing. Install the package again."
             return reject(new Error(msg))
         }
         // windowsHide: on Windows the server, and the ffmpeg, ffprobe and
@@ -297,14 +371,14 @@ function startServer() {
             }
             if (/could not start the server/.test(text) && !resolved) {
                 resolved = true
-                // Its port taken: by another program (KumoBox itself would have
+                // Its port taken: by another program (Moviko itself would have
                 // been found running).
                 const port = /:(\d+): bind/.exec(text)?.[1]
                 reject(
                     new Error(
                         /address already in use|only one usage of each socket address/i.test(text)
-                            ? `Another program is using KumoBox's port${port ? ` (${port})` : ""}. Close it, then try again.`
-                            : "KumoBox's server couldn't start.",
+                            ? `Another program is using Moviko's port${port ? ` (${port})` : ""}. Close it, then try again.`
+                            : "Moviko's server couldn't start.",
                     ),
                 )
             }
@@ -315,38 +389,38 @@ function startServer() {
             // The server stopped for an update: no error box. After an
             // update was installed, the whole app starts again, so that its
             // window loads the new main.js too. On Windows an installer is
-            // replacing KumoBox, and starts it when it's done; on macOS the
+            // replacing Moviko, and starts it when it's done; on macOS the
             // server has put the new app in place, and a helper opens it once
             // this one has quit.
             if (code === EXIT_RESTART || code === EXIT_INSTALLING) {
                 serverProc = null
                 app.isQuitting = true
                 // Windows: the installer works unseen for a moment; said, so
-                // KumoBox doesn't just vanish.
-                if (code === EXIT_INSTALLING && Notification.isSupported()) new Notification({ title: "Updating KumoBox", body: "KumoBox opens again in a moment." }).show()
+                // Moviko doesn't just vanish.
+                if (code === EXIT_INSTALLING && Notification.isSupported()) new Notification({ title: "Updating Moviko", body: "Moviko opens again in a moment." }).show()
                 // With its window: not as started with the computer.
                 if (code === EXIT_RESTART) app.relaunch({ args: process.argv.slice(1).filter(a => a !== BACKGROUND) })
                 app.exit(0)
                 return
             }
-            if (!resolved) reject(new Error("KumoBox's server stopped while starting."))
+            if (!resolved) reject(new Error("Moviko's server stopped while starting."))
             serverProc = null
             if (resolved && !app.isQuitting) {
                 // Stopped, not crashed (the computer shutting down or signing
-                // out stops it first): KumoBox quits with it, quietly.
+                // out stops it first): Moviko quits with it, quietly.
                 if (code === 0 || ["SIGTERM", "SIGINT", "SIGHUP"].includes(signal)) {
                     app.isQuitting = true
                     app.quit()
                     return
                 }
-                const msg = "KumoBox's server stopped unexpectedly."
+                const msg = "Moviko's server stopped unexpectedly."
                 if (mainWindow) {
                     const answer = dialog.showMessageBoxSync(mainWindow, {
                         type: "error",
-                        title: "KumoBox",
+                        title: "Moviko",
                         message: msg,
                         detail: serverLines.slice(-6).join("\n"),
-                        buttons: ["Restart KumoBox", "Quit"],
+                        buttons: ["Restart Moviko", "Quit"],
                         defaultId: 0,
                         cancelId: 1,
                     })
@@ -357,7 +431,7 @@ function startServer() {
                 }
                 // Running without a window: no box that would hold up
                 // anything, just a notice.
-                if (Notification.isSupported()) new Notification({ title: "KumoBox stopped", body: msg + " Open it again to restart it." }).show()
+                if (Notification.isSupported()) new Notification({ title: "Moviko stopped", body: msg + " Open it again to restart it." }).show()
                 app.isQuitting = true
                 app.quit()
             }
@@ -365,13 +439,13 @@ function startServer() {
         setTimeout(() => {
             if (!resolved) {
                 resolved = true
-                reject(new Error("KumoBox's server took too long to start."))
+                reject(new Error("Moviko's server took too long to start."))
             }
         }, 30000)
     })
 }
 
-// KumoBox's address now: its port can be changed in Settings, the server moves
+// Moviko's address now: its port can be changed in Settings, the server moves
 // to it at once and writes it in server.json.
 let serverRead = 0
 function serverUrl() {
@@ -386,14 +460,14 @@ function serverUrl() {
 function installShellHeader() {
     const filter = { urls: ["http://127.0.0.1/*", "http://127.0.0.1:*/*"] }
     session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, cb) => {
-        // Only to KumoBox: not to another program listening on this computer.
+        // Only to Moviko: not to another program listening on this computer.
         const token = isInternal(details.url) ? readToken() : ""
         if (token) details.requestHeaders["X-KumoBox-Shell"] = token
         cb({ requestHeaders: details.requestHeaders })
     })
 }
 
-// A page of KumoBox's: at its address (the one it had when it started, or the
+// A page of Moviko's: at its address (the one it had when it started, or the
 // one it moved to).
 function isInternal(url) {
     try {
@@ -414,7 +488,7 @@ function appMenu() {
     const open = page => () => showWindowAt(page).catch(() => {})
     return Menu.buildFromTemplate([
         {
-            label: "KumoBox",
+            label: "Moviko",
             submenu: [
                 { role: "about" },
                 { type: "separator" },
@@ -448,7 +522,7 @@ function appMenu() {
 }
 
 // The pages' zoom: Ctrl (Cmd) with + and - or the mouse wheel, 0 back to
-// normal; kept between runs, and the same in each page of KumoBox's.
+// normal; kept between runs, and the same in each page of Moviko's.
 function zoomTo(f) {
     prefs.zoom = Math.round(Math.min(2, Math.max(0.5, f)) * 100) / 100
     savePrefs()
@@ -458,7 +532,7 @@ function zoomBy(d) {
     zoomTo(prefs.zoom + d)
 }
 
-// Where KumoBox's window opens: where it was, if that's still on a screen;
+// Where Moviko's window opens: where it was, if that's still on a screen;
 // else in the middle of the main one, as big as fits (up to 1600×1000).
 function windowBounds() {
     const w = prefs.window
@@ -473,18 +547,18 @@ function windowBounds() {
     return { x: area.x + Math.round((area.width - width) / 2), y: area.y + Math.round((area.height - height) / 2), width, height }
 }
 
-// What the window shows while KumoBox's server starts (a first start can take
+// What the window shows while Moviko's server starts (a first start can take
 // a few seconds), and if its page didn't load: in the app's colors.
 function waitingPage(text) {
     const logo =
         '<svg viewBox="0 0 64 64" width="56" height="56"><path d="M59.86 59.86C59.27 60.45 58.63 60.95 57.87 61.4C57.12 61.85 56.31 62.23 55.33 62.56C54.36 62.88 53.35 63.15 52.01 63.36C50.66 63.58 50.57 63.74 47.24 63.84C43.9 63.95 37.08 64 32 64C26.92 64 20.1 63.95 16.76 63.84C13.43 63.74 13.34 63.58 11.99 63.36C10.65 63.15 9.64 62.88 8.67 62.56C7.69 62.23 6.88 61.85 6.13 61.4C5.37 60.95 4.73 60.45 4.14 59.86C3.55 59.27 3.05 58.63 2.6 57.87C2.15 57.12 1.77 56.31 1.44 55.33C1.12 54.36 0.85 53.35 0.64 52.01C0.42 50.66 0.26 50.57 0.16 47.24C0.05 43.9 0 37.08 0 32C0 26.92 0.05 20.1 0.16 16.76C0.26 13.43 0.42 13.34 0.64 11.99C0.85 10.65 1.12 9.64 1.44 8.67C1.77 7.69 2.15 6.88 2.6 6.13C3.05 5.37 3.55 4.73 4.14 4.14C4.73 3.55 5.37 3.05 6.13 2.6C6.88 2.15 7.69 1.77 8.67 1.44C9.64 1.12 10.65 0.85 11.99 0.64C13.34 0.42 13.43 0.26 16.76 0.16C20.1 0.05 26.92 0 32 0C37.08 0 43.9 0.05 47.24 0.16C50.57 0.26 50.66 0.42 52.01 0.64C53.35 0.85 54.36 1.12 55.33 1.44C56.31 1.77 57.12 2.15 57.87 2.6C58.63 3.05 59.27 3.55 59.86 4.14C60.45 4.73 60.95 5.37 61.4 6.13C61.85 6.88 62.23 7.69 62.56 8.67C62.88 9.64 63.15 10.65 63.36 11.99C63.58 13.34 63.74 13.43 63.84 16.76C63.95 20.1 64 26.92 64 32C64 37.08 63.95 43.9 63.84 47.24C63.74 50.57 63.58 50.66 63.36 52.01C63.15 53.35 62.88 54.36 62.56 55.33C62.23 56.31 61.85 57.12 61.4 57.87C60.95 58.63 60.45 59.27 59.86 59.86Z" fill="#141416"/><path d="M17 27 H47 A4 4 0 0 1 51 31 V47 A4 4 0 0 1 47 51 H17 A4 4 0 0 1 13 47 V31 A4 4 0 0 1 17 27 Z" fill="#ececee"/><path d="M12.52 18.11 L47.06 9.50 L48.42 14.93 L13.87 23.55 Z" fill="#ececee" stroke="#ececee" stroke-width="2.4" stroke-linejoin="round"/><path d="M18.00 16.13 L21.88 15.16 L20.62 22.48 L16.74 23.45 Z M25.76 14.19 L29.65 13.22 L28.38 20.55 L24.50 21.51 Z M33.53 12.26 L37.41 11.29 L36.14 18.61 L32.26 19.58 Z M41.29 10.32 L45.17 9.35 L43.90 16.68 L40.02 17.64 Z" fill="#141416"/><path d="M29.70 34.90 L37.60 39.00 L29.70 43.10 Z" fill="#7c6cf2" stroke="#7c6cf2" stroke-width="2.4" stroke-linejoin="round"/></svg>'
-    const html = `<!doctype html><meta charset="utf-8"><title>KumoBox</title><body style="margin:0;height:100vh;display:grid;place-items:center;background:#0a0a0b;color:#a1a1a8;font:14px system-ui,-apple-system,'Segoe UI',sans-serif;-webkit-user-select:none;user-select:none"><div style="display:grid;justify-items:center;gap:18px">${logo}<div>${text}</div></div></body>`
+    const html = `<!doctype html><meta charset="utf-8"><title>Moviko</title><body style="margin:0;height:100vh;display:grid;place-items:center;background:#0a0a0b;color:#a1a1a8;font:14px system-ui,-apple-system,'Segoe UI',sans-serif;-webkit-user-select:none;user-select:none"><div style="display:grid;justify-items:center;gap:18px">${logo}<div>${text}</div></div></body>`
     return "data:text/html;charset=utf-8," + encodeURIComponent(html)
 }
 
 // The window's own icon. On Linux it's invisible: KDE and other desktops draw
-// it in the window's title bar, where KumoBox shows none, while the taskbar and
-// the app menu take KumoBox's icon from its desktop entry. On Windows the
+// it in the window's title bar, where Moviko shows none, while the taskbar and
+// the app menu take Moviko's icon from its desktop entry. On Windows the
 // window's icon is also the taskbar's.
 function windowIcon() {
     if (process.platform === "linux") return nativeImage.createFromBitmap(Buffer.alloc(32 * 32 * 4), { width: 32, height: 32 })
@@ -492,7 +566,7 @@ function windowIcon() {
     return iconPath ? nativeImage.createFromPath(iconPath) : undefined
 }
 
-// createWindow opens KumoBox's window, at a page of it (page, "" for Home);
+// createWindow opens Moviko's window, at a page of it (page, "" for Home);
 // waiting: while the server starts, which shows it when it's ready (load).
 // (Not named path: that's the path module, used here.)
 function createWindow(page = "", waiting = false) {
@@ -501,7 +575,7 @@ function createWindow(page = "", waiting = false) {
         ...windowBounds(),
         minWidth: 960,
         minHeight: 620,
-        title: "KumoBox",
+        title: "Moviko",
         backgroundColor: "#0a0a0b",
         autoHideMenuBar: true,
         show: false,
@@ -548,11 +622,11 @@ function createWindow(page = "", waiting = false) {
         if (cmd === "browser-backward") go(wc, -1)
         if (cmd === "browser-forward") go(wc, 1)
     })
-    // KumoBox's page didn't load (the server busy, restarting): said, and
+    // Moviko's page didn't load (the server busy, restarting): said, and
     // tried again in a moment, instead of a blank window.
     wc.on("did-fail-load", (_e, code, _desc, url, mainFrame) => {
         if (!mainFrame || code === -3 || !isInternal(url)) return
-        wc.loadURL(waitingPage("KumoBox isn't answering yet: trying again…")).catch(() => {})
+        wc.loadURL(waitingPage("Moviko isn't answering yet: trying again…")).catch(() => {})
         setTimeout(() => {
             if (mainWindow && !mainWindow.isDestroyed() && !parkedUrl) mainWindow.loadURL(url).catch(() => {})
         }, 2000)
@@ -561,7 +635,7 @@ function createWindow(page = "", waiting = false) {
     // opened again.
     wc.on("render-process-gone", (_e, details) => {
         if (details.reason === "clean-exit") return
-        console.error("KumoBox's page stopped:", details.reason)
+        console.error("Moviko's page stopped:", details.reason)
         setTimeout(() => mainWindow?.webContents.reload(), 500)
     })
     // Where it is and how big, for the next time it opens.
@@ -578,14 +652,14 @@ function createWindow(page = "", waiting = false) {
     mainWindow.on("closed", () => {
         mainWindow = null
         parkedUrl = null
-        // KumoBox quits with its window (not kept running): the small player
+        // Moviko quits with its window (not kept running): the small player
         // too, or nothing would be left to close it with.
         if (!prefs.keepRunning && !app.isQuitting) miniWindow?.close()
     })
     // Windows is shutting down or signing out, which stops the server too:
     // that isn't worth an error box (the event only exists on Windows).
     mainWindow.on("query-session-end", () => (app.isQuitting = true))
-    mainWindow.loadURL(waiting ? waitingPage("Starting KumoBox…") : serverUrl() + page).catch(() => {})
+    mainWindow.loadURL(waiting ? waitingPage("Starting Moviko…") : serverUrl() + page).catch(() => {})
 }
 
 // go moves through the window's pages (-1 back, 1 forward), where there's one.
@@ -594,11 +668,11 @@ function go(wc, step) {
     if (step < 0 ? h.canGoBack() : h.canGoForward()) step < 0 ? h.goBack() : h.goForward()
 }
 
-// External links open in the system browser; KumoBox's windows never navigate
-// away from KumoBox.
+// External links open in the system browser; Moviko's windows never navigate
+// away from Moviko.
 function keepInside(contents) {
     // Right-click: cut, copy and paste in text fields, copy what's selected,
-    // and a link's own items. KumoBox's own menus (a card's) come first: the
+    // and a link's own items. Moviko's own menus (a card's) come first: the
     // page handles those clicks itself.
     contents.on("context-menu", (_e, p) => {
         const items = []
@@ -641,14 +715,14 @@ function keepInside(contents) {
     })
 }
 
-// Picture in picture: KumoBox's player in a small window on top of the others
+// Picture in picture: Moviko's player in a small window on top of the others
 // (its /mini page, the episode in its address), at the bottom right of the
-// screen KumoBox's window is on, or where the last one was. Its button to go back hands the episode, where
-// it's at, to KumoBox's window (pendingPlay until that window asks for it).
+// screen Moviko's window is on, or where the last one was. Its button to go back hands the episode, where
+// it's at, to Moviko's window (pendingPlay until that window asks for it).
 let miniWindow = null
 let pendingPlay = null
 
-ipcMain.handle("kumobox:mini-open", (_e, page) => {
+ipcMain.handle("moviko:mini-open", (_e, page) => {
     const base = serverUrl()
     if (!base || typeof page !== "string" || !/^\/mini#/.test(page)) return false
     // One open already: a new one where it was (only its address's end would
@@ -675,7 +749,7 @@ ipcMain.handle("kumobox:mini-open", (_e, page) => {
         y: bounds?.y ?? area.y + area.height - height - 24,
         minWidth: 320,
         minHeight: 180,
-        title: "KumoBox",
+        title: "Moviko",
         frame: false,
         alwaysOnTop: true,
         fullscreenable: false,
@@ -705,13 +779,13 @@ ipcMain.handle("kumobox:mini-open", (_e, page) => {
     win.loadURL(base + page).catch(() => {})
     return true
 })
-ipcMain.on("kumobox:mini-close", () => miniWindow?.close())
-ipcMain.on("kumobox:mini-expand", (_e, req) => {
+ipcMain.on("moviko:mini-close", () => miniWindow?.close())
+ipcMain.on("moviko:mini-expand", (_e, req) => {
     // An episode (see web/src/lib/pip.ts asRequest), small.
     if (!req || typeof req !== "object" || JSON.stringify(req).length > 4096) return
     miniWindow?.close()
     if (mainWindow && !mainWindow.webContents.isLoading()) {
-        mainWindow.webContents.send("kumobox:play", req)
+        mainWindow.webContents.send("moviko:play", req)
         showWindow()
     } else {
         // Opened (or loading): it asks when it's ready.
@@ -719,19 +793,19 @@ ipcMain.on("kumobox:mini-expand", (_e, req) => {
         showWindow()
     }
 })
-ipcMain.handle("kumobox:take-play", () => {
+ipcMain.handle("moviko:take-play", () => {
     const req = pendingPlay
     pendingPlay = null
     return req
 })
 
-ipcMain.on("kumobox:open-external", (_e, url) => {
+ipcMain.on("moviko:open-external", (_e, url) => {
     if (typeof url === "string" && /^https?:\/\//.test(url)) shell.openExternal(url)
 })
 
-ipcMain.handle("kumobox:get-prefs", () => ({ keepRunning: prefs.keepRunning, freeWhenLocked: prefs.freeWhenLocked, startAtLogin: startsAtLogin() }))
+ipcMain.handle("moviko:get-prefs", () => ({ keepRunning: prefs.keepRunning, freeWhenLocked: prefs.freeWhenLocked, startAtLogin: startsAtLogin() }))
 // set-pref returns true, or { error } when it couldn't be done.
-ipcMain.handle("kumobox:set-pref", (_e, name, value) => {
+ipcMain.handle("moviko:set-pref", (_e, name, value) => {
     if (typeof value !== "boolean") return { error: "not a setting" }
     if (name === "startAtLogin") {
         const error = setStartAtLogin(value)
@@ -745,11 +819,11 @@ ipcMain.handle("kumobox:set-pref", (_e, name, value) => {
     return true
 })
 
-ipcMain.on("kumobox:quit", () => app.quit())
+ipcMain.on("moviko:quit", () => app.quit())
 
 // ---------------------------------------------------------------------------
-// Updated while running: a package update (makepkg) replaces KumoBox's files
-// but not the KumoBox running in the background. Opened again, it restarts into
+// Updated while running: a package update (makepkg) replaces Moviko's files
+// but not the Moviko running in the background. Opened again, it restarts into
 // the version installed: the server stops asking to be started again
 // (exit code 75), and the app does, with its new files.
 
@@ -766,7 +840,7 @@ function installedVersion() {
     }
 }
 
-// serverCall makes a request to a running KumoBox server as its desktop window.
+// serverCall makes a request to a running Moviko server as its desktop window.
 function serverCall(url, method, p) {
     return new Promise(resolve => {
         const req = http.request(url + p, { method, timeout: 3000, headers: { "X-KumoBox-Shell": readToken() || "", "Content-Type": "application/json" } }, res => {
@@ -790,10 +864,10 @@ function serverCall(url, method, p) {
     })
 }
 
-// restartIfOutdated restarts the KumoBox running at url when it's another
+// restartIfOutdated restarts the Moviko running at url when it's another
 // version than the one installed, and reports whether it did.
 async function restartIfOutdated(url) {
-    // Only a package (Arch) is updated under a running KumoBox: Windows and
+    // Only a package (Arch) is updated under a running Moviko: Windows and
     // macOS updates restart it themselves. Not asked there, then (it runs
     // the server program, a moment on each click of the tray or the Dock).
     if (!url || process.platform !== "linux") return false
@@ -801,7 +875,7 @@ async function restartIfOutdated(url) {
     const running = (await serverCall(url, "GET", "/api/status"))?.version
     // 1.0.0: built by hand, its version unknown.
     if (!installed || !running || running === "1.0.0" || !olderVersion(running, installed)) return false
-    console.log(`KumoBox ${running} is running, ${installed} is installed: restarting into it`)
+    console.log(`Moviko ${running} is running, ${installed} is installed: restarting into it`)
     return !!(await serverCall(url, "POST", "/api/update/restart"))
 }
 
@@ -819,11 +893,11 @@ function olderVersion(a, b) {
 
 let restarting = false
 
-// showWindow brings KumoBox's window back, or opens a new one after it was
-// closed while KumoBox kept running (the tray's and the Dock's handlers: what
+// showWindow brings Moviko's window back, or opens a new one after it was
+// closed while Moviko kept running (the tray's and the Dock's handlers: what
 // they pass isn't a page).
 function showWindow() {
-    return showWindowAt("").catch(err => console.error("couldn't show KumoBox's window:", err))
+    return showWindowAt("").catch(err => console.error("couldn't show Moviko's window:", err))
 }
 
 // showWindowAt does, at a page of it when one is given ("/entry?id=1").
@@ -909,20 +983,20 @@ function backgroundAlert(a) {
     n.show()
 }
 
-// The tray icon, while KumoBox keeps running with its window closed (Windows
+// The tray icon, while Moviko keeps running with its window closed (Windows
 // and Linux: on a Mac the Dock icon does it). Without a tray on the
-// desktop (GNOME without an extension), opening KumoBox again shows its window.
+// desktop (GNOME without an extension), opening Moviko again shows its window.
 function updateTray() {
     if (isMac) return
     if (prefs.keepRunning && !tray) {
         const icon = nativeImage.createFromPath(path.join(__dirname, "icon.png"))
         tray = new Tray(icon.isEmpty() ? icon : icon.resize({ width: 32, height: 32, quality: "best" }))
-        tray.setToolTip("KumoBox")
+        tray.setToolTip("Moviko")
         tray.setContextMenu(
             Menu.buildFromTemplate([
-                { label: "Open KumoBox", click: showWindow },
+                { label: "Open Moviko", click: showWindow },
                 { type: "separator" },
-                { label: "Quit KumoBox", click: () => app.quit() },
+                { label: "Quit Moviko", click: () => app.quit() },
             ]),
         )
         tray.on("click", showWindow)
@@ -932,23 +1006,23 @@ function updateTray() {
     }
 }
 
-// The window was closed and KumoBox keeps running: said once, in a box (a
+// The window was closed and Moviko keeps running: said once, in a box (a
 // notification may be turned off, or missed), with where to find it.
 function wentToBackground() {
     if (prefs.toldKeepRunning) return
     prefs.toldKeepRunning = true
     savePrefs()
     const where = isMac
-        ? "Click KumoBox in the Dock to open it again, or quit it with Cmd+Q."
+        ? "Click Moviko in the Dock to open it again, or quit it with Cmd+Q."
         : isWindows
-          ? "Open or quit it from its icon at the right of the taskbar (under ^ when it's hidden there). Opening KumoBox again also brings its window back."
-          : "Open or quit it from its tray icon (on GNOME, the AppIndicator extension shows it). Opening KumoBox again also brings its window back."
+          ? "Open or quit it from its icon at the right of the taskbar (under ^ when it's hidden there). Opening Moviko again also brings its window back."
+          : "Open or quit it from its tray icon (on GNOME, the AppIndicator extension shows it). Opening Moviko again also brings its window back."
     const answer = dialog.showMessageBoxSync({
         type: "info",
-        title: "KumoBox",
-        message: "KumoBox keeps running",
+        title: "Moviko",
+        message: "Moviko keeps running",
         detail: `Streaming to your other devices, downloads and the auto downloader keep going while its window is closed. ${where}\n\nYou can change this in Settings › Desktop app & programs.`,
-        buttons: ["OK", "Quit KumoBox"],
+        buttons: ["OK", "Quit Moviko"],
         defaultId: 0,
         cancelId: 0,
     })
@@ -985,15 +1059,15 @@ function unparkPage() {
     if (mainWindow && isInternal(url)) mainWindow.loadURL(url).catch(() => {})
 }
 
-// KumoBox couldn't start: why, the server's last lines, and Try again.
+// Moviko couldn't start: why, the server's last lines, and Try again.
 function startupFailed(err) {
     serverProc?.kill()
     serverProc = null
     const detail = [String(err?.message || err), serverLines.length ? "\n" + serverLines.slice(-8).join("\n") : ""].join("\n").trim()
     const answer = dialog.showMessageBoxSync({
         type: "error",
-        title: "KumoBox",
-        message: "KumoBox couldn't start",
+        title: "Moviko",
+        message: "Moviko couldn't start",
         detail,
         buttons: ["Try again", "Copy details", "Quit"],
         defaultId: 0,
@@ -1006,9 +1080,9 @@ function startupFailed(err) {
 }
 
 async function boot() {
-    // Started with the computer: in the background, if KumoBox runs without
+    // Started with the computer: in the background, if Moviko runs without
     // its window (the tray icon or the Dock opens it). Otherwise the window
-    // shows at once, saying KumoBox is starting.
+    // shows at once, saying Moviko is starting.
     const withWindow = !(startedAtLogin() && prefs.keepRunning)
     if (withWindow) createWindow("", true)
     try {
@@ -1052,7 +1126,7 @@ async function smoke() {
         else proc.kill("SIGTERM")
     }
     const timer = setTimeout(() => {
-        console.error("KumoBox smoke test failed: the server didn't answer within 60 seconds")
+        console.error("Moviko smoke test failed: the server didn't answer within 60 seconds")
         done(1)
     }, 60000)
     try {
@@ -1060,11 +1134,11 @@ async function smoke() {
         for (let i = 0; i < 50 && !readToken(); i++) await new Promise(r => setTimeout(r, 100))
         if (!(await ping(url))) throw new Error(`the server at ${url} didn't answer`)
         clearTimeout(timer)
-        console.log(`KumoBox smoke test passed: the server answers at ${url} (Electron ${process.versions.electron})`)
+        console.log(`Moviko smoke test passed: the server answers at ${url} (Electron ${process.versions.electron})`)
         done(0)
     } catch (err) {
         clearTimeout(timer)
-        console.error(`KumoBox smoke test failed: ${err?.message || err}`)
+        console.error(`Moviko smoke test failed: ${err?.message || err}`)
         done(1)
     }
 }
@@ -1072,7 +1146,7 @@ async function smoke() {
 if (SMOKE) {
     app.whenReady().then(smoke)
 } else if (!app.requestSingleInstanceLock()) {
-    // KumoBox is running already and shows its window. When it's an older
+    // Moviko is running already and shows its window. When it's an older
     // version (updated while it ran in the background), it's asked to
     // restart into this one: versions before this check only know that.
     existingServer()
@@ -1080,8 +1154,8 @@ if (SMOKE) {
         .catch(() => {})
         .finally(() => app.quit())
 } else {
-    // Opening KumoBox again shows its window, also after it was closed while
-    // KumoBox kept running.
+    // Opening Moviko again shows its window, also after it was closed while
+    // Moviko kept running.
     app.on("second-instance", (_e, argv) => {
         // Started with the computer while already running: nothing to show.
         if (!argv.includes(BACKGROUND)) showWindow()
@@ -1094,6 +1168,7 @@ if (SMOKE) {
             // whatever the system's own are.
             nativeTheme.themeSource = "dark"
             Menu.setApplicationMenu(appMenu())
+            updateDesktopShortcuts()
             return boot()
         })
         .catch(startupFailed)
